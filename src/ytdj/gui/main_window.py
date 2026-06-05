@@ -548,19 +548,20 @@ class MainWindow(QMainWindow):
         self,
         job_id: str,
         metadata: TrackMetadata,
-        state: ReviewState,
+        state: ReviewState | str,
         candidates: list[MetadataCandidate],
     ) -> None:
+        review_state = _review_state_value(state)
         job = self.jobs[job_id]
         job.selected_metadata = metadata
         job.candidates = candidates
-        job.status = DownloadStatus.DOWNLOADING if state == ReviewState.AUTO_APPROVED else DownloadStatus.REVIEW_REQUIRED
+        job.status = DownloadStatus.DOWNLOADING if review_state == ReviewState.AUTO_APPROVED else DownloadStatus.REVIEW_REQUIRED
         self._update_row(job)
         self._load_job_for_review(job)
-        if state == ReviewState.AUTO_APPROVED:
+        if review_state == ReviewState.AUTO_APPROVED:
             self._append_log(job_id, "metadata auto-approved")
         else:
-            self._append_log(job_id, f"metadata requires review: {state.value}")
+            self._append_log(job_id, f"metadata requires review: {review_state.value}")
 
     def _on_job_done(self, job_id: str, final_path: str) -> None:
         job = self.jobs[job_id]
@@ -925,3 +926,11 @@ def _cookie_browser_value(value: Any) -> str:
     if isinstance(value, CookieBrowser):
         return value.value
     return str(value or "")
+
+
+def _review_state_value(value: ReviewState | str) -> ReviewState:
+    if isinstance(value, ReviewState):
+        return value
+    if isinstance(value, str) and value in ReviewState._value2member_map_:
+        return ReviewState(value)
+    return ReviewState.REVIEW_REQUIRED

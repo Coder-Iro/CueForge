@@ -145,3 +145,25 @@ def test_copy_diagnostics_puts_report_on_clipboard(tmp_path, monkeypatch) -> Non
     finally:
         window.close()
         app.processEvents()
+
+
+def test_metadata_ready_accepts_review_state_string(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+
+        window._on_metadata_ready(
+            job.id,
+            TrackMetadata(title="Song", artist="Artist"),
+            "review_required",
+            [],
+        )
+
+        assert job.status == DownloadStatus.REVIEW_REQUIRED
+        assert "metadata requires review: review_required" in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()

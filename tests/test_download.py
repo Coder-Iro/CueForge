@@ -53,6 +53,18 @@ def test_fetch_info_uses_ytdlp_without_download(tmp_path: Path) -> None:
     assert FakeYDL.calls[-1]["remote_components"] == ["ejs:github"]
 
 
+def test_fetch_info_accepts_cookie_browser_string_from_qt(tmp_path: Path) -> None:
+    FakeYDL.calls.clear()
+    downloader = YTDLPDownloader(
+        DownloadConfig(output_dir=tmp_path, cookie_browser="chrome"),
+        ydl_factory=FakeYDL,
+    )
+
+    downloader.fetch_info("https://music.youtube.com/watch?v=abc")
+
+    assert FakeYDL.calls[-1]["cookiesfrombrowser"] == ("chrome",)
+
+
 def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
     progresses: list[DownloadProgress] = []
     downloader = YTDLPDownloader(

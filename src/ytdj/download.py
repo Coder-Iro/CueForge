@@ -19,7 +19,7 @@ class CookieBrowser(str, Enum):
 class DownloadConfig:
     output_dir: Path
     ffmpeg_location: Path | None = None
-    cookie_browser: CookieBrowser | None = None
+    cookie_browser: CookieBrowser | str | None = None
     audio_bitrate_kbps: int = 320
     keep_original: bool = False
     allow_remote_js_components: bool = True
@@ -104,8 +104,9 @@ class YTDLPDownloader:
         }
         if self.config.ffmpeg_location:
             options["ffmpeg_location"] = str(self.config.ffmpeg_location)
-        if self.config.cookie_browser:
-            options["cookiesfrombrowser"] = (self.config.cookie_browser.value,)
+        cookie_browser = _cookie_browser_value(self.config.cookie_browser)
+        if cookie_browser:
+            options["cookiesfrombrowser"] = (cookie_browser,)
         if self.config.allow_remote_js_components:
             options["remote_components"] = ["ejs:github"]
         return options
@@ -146,3 +147,11 @@ class YTDLPDownloader:
         from yt_dlp import YoutubeDL
 
         return YoutubeDL(options)
+
+
+def _cookie_browser_value(cookie_browser: CookieBrowser | str | None) -> str:
+    if isinstance(cookie_browser, CookieBrowser):
+        return cookie_browser.value
+    if isinstance(cookie_browser, str):
+        return cookie_browser.strip()
+    return ""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import traceback
 
 from ytdj.runtime import configure_dependency_path, format_diagnostics
 
@@ -13,12 +14,22 @@ def main() -> int:
     diagnose_file = _diagnose_file_arg(sys.argv)
     smoke_metadata_url = _arg_value(sys.argv, "--smoke-metadata-url")
     if smoke_metadata_url:
-        payload = _smoke_metadata(smoke_metadata_url)
+        exit_code = 0
+        try:
+            payload = _smoke_metadata(smoke_metadata_url)
+        except Exception as exc:
+            exit_code = 2
+            payload = {
+                "url": smoke_metadata_url,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+                "diagnostics": format_diagnostics(),
+            }
         output = json.dumps(payload, ensure_ascii=False, indent=2)
         if diagnose_file:
             diagnose_file.write_text(output + "\n", encoding="utf-8")
         print(output)
-        return 0
+        return exit_code
     if "--diagnose" in sys.argv or diagnose_file:
         diagnostics = format_diagnostics()
         if "--smoke-gui" in sys.argv:

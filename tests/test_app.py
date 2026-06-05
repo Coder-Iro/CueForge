@@ -1,3 +1,6 @@
+import sys
+
+from ytdj import app as ytdj_app
 from ytdj.app import _smoke_metadata
 from ytdj.download import DownloadConfig
 from ytdj.metadata.resolver import MetadataResolution
@@ -54,3 +57,23 @@ def test_smoke_metadata_reports_resolved_metadata(monkeypatch) -> None:
     assert payload["candidates"][0]["provider"] == "musicbrainz"
     assert payload["logs"] == ["cover art: Cover Art Archive 500px"]
     assert payload["diagnostics"] == "diagnostics"
+
+
+def test_main_writes_metadata_smoke_failures(tmp_path, monkeypatch) -> None:
+    output = tmp_path / "smoke.json"
+
+    def failing_smoke(url: str) -> dict:
+        raise RuntimeError("metadata failed")
+
+    monkeypatch.setattr(ytdj_app, "_smoke_metadata", failing_smoke)
+    monkeypatch.setattr(ytdj_app, "format_diagnostics", lambda: "diagnostics")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ytdj", "--smoke-metadata-url", "https://youtu.be/abc", "--diagnose-file", str(output)],
+    )
+
+    assert ytdj_app.main() == 2
+    text = output.read_text(encoding="utf-8")
+    assert "metadata failed" in text
+    assert "diagnostics" in text

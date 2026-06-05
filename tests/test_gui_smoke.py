@@ -2,15 +2,20 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from ytdj.gui.main_window import MainWindow, _cover_source_from_url
 from ytdj.models import DownloadStatus, MetadataCandidate, TrackMetadata
 
 
-def test_main_window_can_queue_url() -> None:
+def _test_settings(tmp_path) -> QSettings:
+    return QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+
+
+def test_main_window_can_queue_url(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
-    window = MainWindow()
+    window = MainWindow(settings=_test_settings(tmp_path))
     try:
         window.url_input.setText("https://music.youtube.com/watch?v=abc")
         window._add_url()
@@ -25,9 +30,9 @@ def test_main_window_can_queue_url() -> None:
         app.processEvents()
 
 
-def test_main_window_marks_soundcloud_source() -> None:
+def test_main_window_marks_soundcloud_source(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
-    window = MainWindow()
+    window = MainWindow(settings=_test_settings(tmp_path))
     try:
         window.url_input.setText("https://soundcloud.com/artist/track")
         window._add_url()
@@ -40,11 +45,12 @@ def test_main_window_marks_soundcloud_source() -> None:
         app.processEvents()
 
 
-def test_main_window_has_audio_recognition_settings() -> None:
+def test_main_window_has_audio_recognition_settings(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
-    window = MainWindow()
+    window = MainWindow(settings=_test_settings(tmp_path))
     try:
         assert window.audio_recognition_checkbox.isChecked() is True
+        assert window.verify_auto_approved_checkbox.isChecked() is False
         window.acoustid_key_input.setText("client-key")
         window.fpcalc_path_input.setText("C:\\tools\\fpcalc.exe")
 
@@ -55,9 +61,34 @@ def test_main_window_has_audio_recognition_settings() -> None:
         app.processEvents()
 
 
-def test_review_candidate_table_applies_selected_candidate() -> None:
+def test_main_window_persists_beta_settings(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
-    window = MainWindow()
+    settings = _test_settings(tmp_path)
+    window = MainWindow(settings=settings)
+    try:
+        window.output_dir_input.setText("D:\\Music")
+        window.cookie_combo.setCurrentIndex(1)
+        window.verify_auto_approved_checkbox.setChecked(True)
+        window.acoustid_key_input.setText("client-key")
+        window.save_settings()
+    finally:
+        window.close()
+        app.processEvents()
+
+    restored = MainWindow(settings=settings)
+    try:
+        assert restored.output_dir_input.text() == "D:\\Music"
+        assert restored.cookie_combo.currentData() == "chrome"
+        assert restored.verify_auto_approved_checkbox.isChecked() is True
+        assert restored.acoustid_key_input.text() == "client-key"
+    finally:
+        restored.close()
+        app.processEvents()
+
+
+def test_review_candidate_table_applies_selected_candidate(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
     try:
         window.url_input.setText("https://youtu.be/abc")
         window._add_url()

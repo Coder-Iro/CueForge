@@ -110,6 +110,65 @@ def test_worker_downloads_temp_audio_for_low_confidence_youtube(tmp_path: Path) 
     assert FakeDownloader.downloads == [downloaded_path]
 
 
+def test_worker_skips_auto_approved_audio_recognition_by_default(tmp_path: Path) -> None:
+    FakeDownloader.downloads.clear()
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    worker = JobWorker(
+        job,
+        cookie_browser=None,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+        acoustid_provider_factory=FakeAcoustIDReleaseProvider,
+    )
+
+    metadata, state, candidates, downloaded_path = worker._try_audio_recognition(
+        metadata=TrackMetadata(title="Auto", artist="Uploader"),
+        state=ReviewState.AUTO_APPROVED,
+        candidates=[],
+        platform=SourcePlatform.YOUTUBE,
+    )
+
+    assert metadata.title == "Auto"
+    assert state == ReviewState.AUTO_APPROVED
+    assert candidates == []
+    assert downloaded_path is None
+    assert FakeDownloader.downloads == []
+
+
+def test_worker_can_verify_auto_approved_metadata_with_acoustid(tmp_path: Path) -> None:
+    FakeDownloader.downloads.clear()
+    FakeCoverArtProvider.calls.clear()
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    worker = JobWorker(
+        job,
+        cookie_browser=None,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
+        verify_auto_approved_metadata=True,
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+        acoustid_provider_factory=FakeAcoustIDReleaseProvider,
+        cover_art_provider_factory=FakeCoverArtProvider,
+    )
+
+    metadata, state, candidates, downloaded_path = worker._try_audio_recognition(
+        metadata=TrackMetadata(title="Wrong Auto", artist="Wrong Artist", cover_url="https://img.youtube.com/yt-thumb.jpg"),
+        state=ReviewState.AUTO_APPROVED,
+        candidates=[],
+        platform=SourcePlatform.YOUTUBE,
+    )
+
+    assert state == ReviewState.REVIEW_REQUIRED
+    assert metadata.title == "Recognized"
+    assert metadata.artist == "Artist"
+    assert metadata.cover_url == "https://coverartarchive.org/release/rel-1/front-500.jpg"
+    assert candidates[0].provider == "acoustid"
+    assert downloaded_path == job.downloaded_path
+    assert FakeDownloader.downloads == [downloaded_path]
+
+
 def test_worker_refreshes_cover_art_after_audio_recognition(tmp_path: Path) -> None:
     FakeDownloader.downloads.clear()
     FakeCoverArtProvider.calls.clear()

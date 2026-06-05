@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from ytdj.download import CookieBrowser, DownloadConfig, DownloadProgress, YTDLPDownloader
 from ytdj.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, MetadataResolver
 from ytdj.metadata.fingerprint import FingerprintError, FingerprintUnavailable
+from ytdj.metadata.matching import text_similarity
 from ytdj.metadata.normalize import merge_metadata
 from ytdj.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
 from ytdj.runtime import find_executable
@@ -65,6 +66,7 @@ class JobWorker(QThread):
         ffmpeg_location: Path | None,
         acoustid_config: AcoustIDConfig | None = None,
         audio_recognition_enabled: bool = True,
+        verify_auto_approved_metadata: bool = False,
         approved_metadata: TrackMetadata | None = None,
         downloader_factory: DownloaderFactory | None = None,
         resolver_factory: ResolverFactory | None = None,
@@ -79,6 +81,7 @@ class JobWorker(QThread):
         self.ffmpeg_location = ffmpeg_location
         self.acoustid_config = acoustid_config or AcoustIDConfig()
         self.audio_recognition_enabled = audio_recognition_enabled
+        self.verify_auto_approved_metadata = verify_auto_approved_metadata
         self.approved_metadata = approved_metadata
         self._downloader_factory = downloader_factory or _create_downloader
         self._resolver_factory = resolver_factory
@@ -93,7 +96,7 @@ class JobWorker(QThread):
             downloaded_path = self.job.downloaded_path
             if metadata is None:
                 metadata, state, candidates, platform = self._resolve_metadata(downloader)
-                if state != ReviewState.AUTO_APPROVED:
+                if state != ReviewState.AUTO_APPROVED or self.verify_auto_approved_metadata:
                     metadata, state, candidates, downloaded_path = self._try_audio_recognition(
                         metadata=metadata,
                         state=state,
@@ -162,13 +165,17 @@ class JobWorker(QThread):
             platform=platform,
             state=state,
             enabled=self.audio_recognition_enabled,
+            verify_auto_approved=self.verify_auto_approved_metadata,
             config=self.acoustid_config,
         )
         if reason:
             self.log_message.emit(self.job.id, f"audio recognition skipped: {reason}")
             return metadata, state, candidates, None
 
-        self.log_message.emit(self.job.id, "metadata low confidence; downloading temporary audio for AcoustID lookup")
+        if state == ReviewState.AUTO_APPROVED:
+            self.log_message.emit(self.job.id, "verifying auto-approved metadata with AcoustID")
+        else:
+            self.log_message.emit(self.job.id, "metadata low confidence; downloading temporary audio for AcoustID lookup")
         result = self._new_downloader(_temp_output_dir(self.job)).download_audio(self.job.url)
         self.job.downloaded_path = result.path
 
@@ -234,10 +241,11 @@ class MainWindow(QMainWindow):
     COLUMNS = ("Status", "Progress", "Source", "URL", "Title", "Artist", "Output")
     CANDIDATE_COLUMNS = ("Provider", "Score", "Matched", "Title", "Artist", "Album", "Date", "ISRC", "Cover")
 
-    def __init__(self) -> None:
+    def __init__(self, *, settings: QSettings | None = None) -> None:
         super().__init__()
         self.setWindowTitle("YT-DJ")
         self.resize(1120, 720)
+        self._settings = settings or QSettings("YT-DJ", "YT-DJ")
         self.jobs: dict[str, DownloadJob] = {}
         self.row_job_ids: list[str] = []
         self.worker: JobWorker | None = None
@@ -256,6 +264,7 @@ class MainWindow(QMainWindow):
         self.ffmpeg_path_input = QLineEdit()
         self.audio_recognition_checkbox = QCheckBox("Use AcoustID when metadata confidence is low")
         self.audio_recognition_checkbox.setChecked(True)
+        self.verify_auto_approved_checkbox = QCheckBox("Verify YouTube auto-approved metadata with AcoustID")
         self.acoustid_key_input = QLineEdit()
         self.acoustid_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.fpcalc_path_input = QLineEdit()
@@ -301,6 +310,7 @@ class MainWindow(QMainWindow):
         self.cover_preview_label.setStyleSheet("border: 1px solid #b8b8b8;")
         self.review_fields["cover_url"].editingFinished.connect(self._cover_url_edited)
 
+        self._load_settings()
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -405,6 +415,7 @@ class MainWindow(QMainWindow):
         recognition_group = QGroupBox("Audio recognition")
         recognition_form = QFormLayout(recognition_group)
         recognition_form.addRow(self.audio_recognition_checkbox)
+        recognition_form.addRow(self.verify_auto_approved_checkbox)
         recognition_form.addRow("AcoustID client key", self.acoustid_key_input)
         recognition_form.addRow("fpcalc path", self._path_row(self.fpcalc_path_input, self._browse_fpcalc))
 
@@ -423,6 +434,42 @@ class MainWindow(QMainWindow):
         button.clicked.connect(callback)
         layout.addWidget(button, 0, 1)
         return row
+
+    def _load_settings(self) -> None:
+        self.output_dir_input.setText(str(self._settings.value("paths/output_dir", self.output_dir_input.text())))
+        self.auth_path_input.setText(str(self._settings.value("paths/ytmusic_auth", "")))
+        self.ffmpeg_path_input.setText(str(self._settings.value("paths/ffmpeg", "")))
+        self.fpcalc_path_input.setText(str(self._settings.value("paths/fpcalc", "")))
+        self.acoustid_key_input.setText(str(self._settings.value("acoustid/client_key", "")))
+        self.audio_recognition_checkbox.setChecked(_settings_bool(self._settings.value("acoustid/enabled", True), default=True))
+        self.verify_auto_approved_checkbox.setChecked(
+            _settings_bool(self._settings.value("acoustid/verify_auto_approved", False), default=False)
+        )
+        self._set_cookie_browser(str(self._settings.value("auth/cookie_browser", "")))
+
+    def save_settings(self) -> None:
+        self._settings.setValue("paths/output_dir", self.output_dir_input.text().strip())
+        self._settings.setValue("paths/ytmusic_auth", self.auth_path_input.text().strip())
+        self._settings.setValue("paths/ffmpeg", self.ffmpeg_path_input.text().strip())
+        self._settings.setValue("paths/fpcalc", self.fpcalc_path_input.text().strip())
+        self._settings.setValue("acoustid/client_key", self.acoustid_key_input.text().strip())
+        self._settings.setValue("acoustid/enabled", self.audio_recognition_checkbox.isChecked())
+        self._settings.setValue("acoustid/verify_auto_approved", self.verify_auto_approved_checkbox.isChecked())
+        cookie_browser = self.cookie_combo.currentData()
+        self._settings.setValue("auth/cookie_browser", _cookie_browser_value(cookie_browser))
+        self._settings.sync()
+
+    def _set_cookie_browser(self, value: str) -> None:
+        for index in range(self.cookie_combo.count()):
+            item = self.cookie_combo.itemData(index)
+            item_value = _cookie_browser_value(item)
+            if item_value == value:
+                self.cookie_combo.setCurrentIndex(index)
+                return
+
+    def closeEvent(self, event: Any) -> None:
+        self.save_settings()
+        super().closeEvent(event)
 
     def _add_url(self) -> None:
         url = self.url_input.text().strip()
@@ -450,6 +497,7 @@ class MainWindow(QMainWindow):
                 return
 
     def _run_worker(self, job: DownloadJob, approved_metadata: TrackMetadata | None = None) -> None:
+        self.save_settings()
         job.status = DownloadStatus.DOWNLOADING if approved_metadata else DownloadStatus.METADATA
         self._update_row(job)
         self.worker = JobWorker(
@@ -462,6 +510,7 @@ class MainWindow(QMainWindow):
                 fpcalc_path=_optional_path(self.fpcalc_path_input.text()),
             ),
             audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
+            verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
             approved_metadata=approved_metadata,
         )
         self.worker.progress_changed.connect(self._on_progress)
@@ -751,9 +800,10 @@ def _audio_recognition_skip_reason(
     platform: SourcePlatform,
     state: ReviewState,
     enabled: bool,
+    verify_auto_approved: bool,
     config: AcoustIDConfig,
 ) -> str:
-    if state == ReviewState.AUTO_APPROVED:
+    if state == ReviewState.AUTO_APPROVED and not verify_auto_approved:
         return "metadata already auto-approved"
     if platform not in {SourcePlatform.YOUTUBE, SourcePlatform.YOUTUBE_MUSIC}:
         if platform == SourcePlatform.SOUNDCLOUD:
@@ -780,6 +830,16 @@ def _merge_audio_recognition_candidates(
     fingerprint_candidates: list[MetadataCandidate],
 ) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate]]:
     combined = sorted([*candidates, *fingerprint_candidates], key=lambda candidate: candidate.score, reverse=True)
+    best_fingerprint = max(fingerprint_candidates, key=lambda candidate: candidate.score, default=None)
+    if (
+        state == ReviewState.AUTO_APPROVED
+        and best_fingerprint
+        and best_fingerprint.score >= 0.85
+        and _metadata_conflicts(metadata, best_fingerprint.metadata)
+    ):
+        merged = best_fingerprint.metadata.with_defaults_from(metadata).normalized()
+        return merged, ReviewState.REVIEW_REQUIRED, combined
+
     mergeable = [candidate for candidate in combined if candidate.score >= 0.65]
     if not mergeable:
         return metadata, state, combined
@@ -819,3 +879,29 @@ def _cover_source_from_url(url: str) -> str:
     if "ytimg.com" in lowered or "youtube" in lowered:
         return "YouTube fallback"
     return "manual" if url else ""
+
+
+def _metadata_conflicts(left: TrackMetadata, right: TrackMetadata) -> bool:
+    if left.title and right.title and text_similarity(left.title, right.title) < 0.65:
+        return True
+    if left.artist and right.artist and text_similarity(left.artist, right.artist) < 0.65:
+        return True
+    return False
+
+
+def _settings_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.casefold()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
+def _cookie_browser_value(value: Any) -> str:
+    if isinstance(value, CookieBrowser):
+        return value.value
+    return str(value or "")

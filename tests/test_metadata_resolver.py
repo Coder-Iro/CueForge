@@ -251,3 +251,31 @@ def test_youtube_auto_generated_description_does_not_create_theme_hint() -> None
     assert resolution.metadata.title == 'Dear Mother Father (feat. DD"Nakata"Metal)'
     assert resolution.metadata.artist == "RoughSketch"
     assert resolution.candidates == []
+
+
+def test_youtube_resolver_uses_compact_title_pattern_for_user_uploads() -> None:
+    class EmptyYTMusicProvider:
+        def lookup(self, url: str) -> TrackMetadata:
+            return TrackMetadata()
+
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=lambda auth_path: EmptyYTMusicProvider(),
+        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
+    )
+
+    resolution = resolver.resolve(
+        url="https://youtu.be/Jty1MDOAKvQ",
+        info={
+            "extractor_key": "Youtube",
+            "title": "린-개미관찰",
+            "uploader": "윤다희",
+            "upload_date": "20140427",
+            "webpage_url": "https://www.youtube.com/watch?v=Jty1MDOAKvQ",
+        },
+    )
+
+    assert resolution.metadata.title == "개미관찰"
+    assert resolution.metadata.artist == "린"
+    assert resolution.metadata.release_date == "2014-04-27"
+    assert resolution.state == ReviewState.REVIEW_REQUIRED
+    assert resolution.candidates[0].provider == "title_artist_title"

@@ -9,6 +9,20 @@ def test_parse_artist_title_removes_video_noise() -> None:
     assert title == "Track Name"
 
 
+def test_parse_artist_title_accepts_compact_dash_for_user_uploads() -> None:
+    artist, title = parse_artist_title("린-개미관찰")
+
+    assert artist == "린"
+    assert title == "개미관찰"
+
+
+def test_parse_artist_title_trims_decorative_trailing_dash() -> None:
+    artist, title = parse_artist_title("보컬로이드 -개미관찰-")
+
+    assert artist == "보컬로이드"
+    assert title == "개미관찰"
+
+
 def test_safe_fallback_prefers_track_fields() -> None:
     metadata = build_safe_fallback(
         {
@@ -25,6 +39,20 @@ def test_safe_fallback_prefers_track_fields() -> None:
     assert metadata.artist == "Song Artist"
     assert metadata.album == "Album"
     assert metadata.release_date == "2026-05-01"
+
+
+def test_safe_fallback_prefers_parsed_artist_before_uploader() -> None:
+    metadata = build_safe_fallback(
+        {
+            "title": "린-개미관찰",
+            "uploader": "윤다희",
+            "upload_date": "20140427",
+        }
+    )
+
+    assert metadata.title == "개미관찰"
+    assert metadata.artist == "린"
+    assert metadata.release_date == "2014-04-27"
 
 
 def test_merge_metadata_user_values_win() -> None:
@@ -66,4 +94,3 @@ def test_low_confidence_candidate_requires_review() -> None:
 
     assert resolved.is_minimum_viable()
     assert state == ReviewState.REVIEW_REQUIRED
-

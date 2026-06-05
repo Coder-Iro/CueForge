@@ -28,5 +28,6 @@ The Windows online installer downloads external command-line tools during setup 
 ## External Services
 
 - MusicBrainz: metadata lookup and MusicBrainz identifiers.
+- Cover Art Archive: cover artwork lookup by MusicBrainz release identifier.
 - AcoustID: optional acoustic fingerprint metadata lookup; users provide their own client key.
 - YouTube, YouTube Music, and SoundCloud: URLs are processed through yt-dlp. Users are responsible for using the app only with content they are authorized to download.

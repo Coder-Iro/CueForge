@@ -10,11 +10,13 @@ YT-DJ is a Windows-first desktop app for downloading authorized YouTube/YouTube 
 - ffmpeg conversion to MP3 320 kbps
 - ID3v2.3 tagging for rekordbox compatibility
 - YouTube description/YTMusic metadata first, MusicBrainz enrichment second
+- Cover Art Archive release artwork preferred over YouTube thumbnails when MusicBrainz release metadata is available
 - AcoustID/Chromaprint audio recognition for low-confidence YouTube metadata
 - Low-confidence metadata review before final tagging
 
 SoundCloud tracks are treated differently from YouTube videos: native SoundCloud title, artist/uploader, genre, tags, artwork, and source URL are trusted by default so remix, bootleg, edit, and mashup titles are preserved.
 Automatic audio recognition is skipped for SoundCloud by default to avoid replacing remix or bootleg metadata with the original commercial release.
+The review screen shows alternative metadata candidates, cover-art source, and a cover preview so beta testers can catch bad matches before tagging.
 
 ## Development
 
@@ -26,6 +28,7 @@ python -m venv .venv
 ```
 
 The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings.
+Use `python -m ytdj --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
 
 ## Windows Packaging
 

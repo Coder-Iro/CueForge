@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction
@@ -33,10 +34,17 @@ from PySide6.QtWidgets import (
 )
 
 from ytdj.download import CookieBrowser, DownloadConfig, DownloadProgress, YTDLPDownloader
-from ytdj.metadata import MetadataResolver
-from ytdj.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TrackMetadata
-from ytdj.sources import detect_source_platform, trust_policy_for
+from ytdj.metadata import AcoustIDConfig, AcoustIDProvider, MetadataResolver
+from ytdj.metadata.fingerprint import FingerprintError, FingerprintUnavailable
+from ytdj.metadata.normalize import merge_metadata
+from ytdj.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
+from ytdj.sources import SourcePlatform, detect_source_platform, trust_policy_for
 from ytdj.tags import RekordboxTagWriter, safe_track_filename
+
+DownloaderFactory = Callable[[DownloadConfig, Any], YTDLPDownloader]
+ResolverFactory = Callable[[], MetadataResolver]
+AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
+TagWriterFactory = Callable[[], Any]
 
 
 class JobWorker(QThread):
@@ -53,46 +61,75 @@ class JobWorker(QThread):
         cookie_browser: CookieBrowser | None,
         ytmusic_auth_path: Path | None,
         ffmpeg_location: Path | None,
+        acoustid_config: AcoustIDConfig | None = None,
+        audio_recognition_enabled: bool = True,
         approved_metadata: TrackMetadata | None = None,
+        downloader_factory: DownloaderFactory | None = None,
+        resolver_factory: ResolverFactory | None = None,
+        acoustid_provider_factory: AcoustIDProviderFactory | None = None,
+        tag_writer_factory: TagWriterFactory | None = None,
     ) -> None:
         super().__init__()
         self.job = job
         self.cookie_browser = cookie_browser
         self.ytmusic_auth_path = ytmusic_auth_path
         self.ffmpeg_location = ffmpeg_location
+        self.acoustid_config = acoustid_config or AcoustIDConfig()
+        self.audio_recognition_enabled = audio_recognition_enabled
         self.approved_metadata = approved_metadata
+        self._downloader_factory = downloader_factory or _create_downloader
+        self._resolver_factory = resolver_factory or MetadataResolver
+        self._acoustid_provider_factory = acoustid_provider_factory or AcoustIDProvider
+        self._tag_writer_factory = tag_writer_factory or RekordboxTagWriter
 
     def run(self) -> None:
         try:
-            downloader = YTDLPDownloader(
-                DownloadConfig(
-                    output_dir=self.job.output_dir,
-                    cookie_browser=self.cookie_browser,
-                    ffmpeg_location=self.ffmpeg_location,
-                ),
-                progress_callback=self._on_progress,
-            )
+            downloader = self._new_downloader(self.job.output_dir)
             metadata = self.approved_metadata
+            downloaded_path = self.job.downloaded_path
             if metadata is None:
-                metadata, state, candidates = self._resolve_metadata(downloader)
+                metadata, state, candidates, platform = self._resolve_metadata(downloader)
+                if state != ReviewState.AUTO_APPROVED:
+                    metadata, state, candidates, downloaded_path = self._try_audio_recognition(
+                        metadata=metadata,
+                        state=state,
+                        candidates=candidates,
+                        platform=platform,
+                    )
                 self.metadata_ready.emit(self.job.id, metadata, state, candidates)
                 if state != ReviewState.AUTO_APPROVED:
                     return
 
-            result = downloader.download_audio(self.job.url)
+            if downloaded_path and not downloaded_path.exists():
+                self.log_message.emit(self.job.id, f"prepared download missing, downloading again: {downloaded_path}")
+                downloaded_path = None
+
+            if downloaded_path is None:
+                result = downloader.download_audio(self.job.url)
+                downloaded_path = result.path
             self.progress_changed.emit(self.job.id, 100.0, DownloadStatus.TAGGING.value)
-            final_path = _move_to_final(result.path, self.job.output_dir, metadata)
-            tag_result = RekordboxTagWriter().write(final_path, metadata)
+            final_path = _move_to_final(downloaded_path, self.job.output_dir, metadata)
+            tag_result: TagWriteResult = self._tag_writer_factory().write(final_path, metadata)
             for warning in tag_result.warnings:
                 self.log_message.emit(self.job.id, warning)
             self.job_done.emit(self.job.id, str(final_path))
         except Exception as exc:
             self.job_failed.emit(self.job.id, str(exc))
 
-    def _resolve_metadata(self, downloader: YTDLPDownloader) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate]]:
+    def _new_downloader(self, output_dir: Path) -> YTDLPDownloader:
+        return self._downloader_factory(
+            DownloadConfig(
+                output_dir=output_dir,
+                cookie_browser=self.cookie_browser,
+                ffmpeg_location=self.ffmpeg_location,
+            ),
+            self._on_progress,
+        )
+
+    def _resolve_metadata(self, downloader: YTDLPDownloader) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate], SourcePlatform]:
         self.progress_changed.emit(self.job.id, 0.0, DownloadStatus.METADATA.value)
         info = downloader.fetch_info(self.job.url)
-        resolution = MetadataResolver().resolve(
+        resolution = self._resolver_factory().resolve(
             url=self.job.url,
             info=info,
             ytmusic_auth_path=self.ytmusic_auth_path,
@@ -102,7 +139,52 @@ class JobWorker(QThread):
             self.job.id,
             f"source: {resolution.platform.display_name}; {trust_policy_for(resolution.platform).note}",
         )
-        return resolution.metadata, resolution.state, resolution.candidates
+        return resolution.metadata, resolution.state, resolution.candidates, resolution.platform
+
+    def _try_audio_recognition(
+        self,
+        *,
+        metadata: TrackMetadata,
+        state: ReviewState,
+        candidates: list[MetadataCandidate],
+        platform: SourcePlatform,
+    ) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate], Path | None]:
+        reason = _audio_recognition_skip_reason(
+            platform=platform,
+            state=state,
+            enabled=self.audio_recognition_enabled,
+            config=self.acoustid_config,
+        )
+        if reason:
+            self.log_message.emit(self.job.id, f"audio recognition skipped: {reason}")
+            return metadata, state, candidates, None
+
+        self.log_message.emit(self.job.id, "metadata low confidence; downloading temporary audio for AcoustID lookup")
+        result = self._new_downloader(_temp_output_dir(self.job)).download_audio(self.job.url)
+        self.job.downloaded_path = result.path
+
+        try:
+            fingerprint_candidates = self._acoustid_provider_factory(self.acoustid_config).lookup(result.path)
+        except FingerprintUnavailable as exc:
+            self.log_message.emit(self.job.id, f"audio recognition skipped: {exc}")
+            return metadata, state, candidates, result.path
+        except FingerprintError as exc:
+            self.log_message.emit(self.job.id, f"audio recognition failed: {exc}")
+            return metadata, state, candidates, result.path
+
+        if not fingerprint_candidates:
+            self.log_message.emit(self.job.id, "audio recognition found no AcoustID match")
+            return metadata, state, candidates, result.path
+
+        merged_metadata, merged_state, merged_candidates = _merge_audio_recognition_candidates(
+            metadata=metadata,
+            state=state,
+            candidates=candidates,
+            fingerprint_candidates=fingerprint_candidates,
+        )
+        best = fingerprint_candidates[0]
+        self.log_message.emit(self.job.id, f"AcoustID best match: {best.metadata.artist} - {best.metadata.title} ({best.score:.2f})")
+        return merged_metadata, merged_state, merged_candidates, result.path
 
     def _on_progress(self, progress: DownloadProgress) -> None:
         percent = progress.percent if progress.percent is not None else 0.0
@@ -464,6 +546,57 @@ def run_app() -> int:
 def _optional_path(value: str) -> Path | None:
     stripped = value.strip()
     return Path(stripped) if stripped else None
+
+
+def _create_downloader(config: DownloadConfig, progress_callback: Any) -> YTDLPDownloader:
+    return YTDLPDownloader(config, progress_callback=progress_callback)
+
+
+def _audio_recognition_skip_reason(
+    *,
+    platform: SourcePlatform,
+    state: ReviewState,
+    enabled: bool,
+    config: AcoustIDConfig,
+) -> str:
+    if state == ReviewState.AUTO_APPROVED:
+        return "metadata already auto-approved"
+    if platform not in {SourcePlatform.YOUTUBE, SourcePlatform.YOUTUBE_MUSIC}:
+        if platform == SourcePlatform.SOUNDCLOUD:
+            return "SoundCloud native metadata is trusted"
+        return "source is not eligible"
+    if not enabled:
+        return "disabled"
+    if not config.client_key.strip():
+        return "AcoustID client key is not configured"
+    if not _has_fpcalc(config):
+        return "fpcalc executable was not found"
+    return ""
+
+
+def _has_fpcalc(config: AcoustIDConfig) -> bool:
+    if config.fpcalc_path:
+        return config.fpcalc_path.exists()
+    return shutil.which("fpcalc") is not None
+
+
+def _merge_audio_recognition_candidates(
+    *,
+    metadata: TrackMetadata,
+    state: ReviewState,
+    candidates: list[MetadataCandidate],
+    fingerprint_candidates: list[MetadataCandidate],
+) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate]]:
+    combined = sorted([*candidates, *fingerprint_candidates], key=lambda candidate: candidate.score, reverse=True)
+    mergeable = [candidate for candidate in combined if candidate.score >= 0.65]
+    if not mergeable:
+        return metadata, state, combined
+    merged, merged_state = merge_metadata(youtube=metadata, candidates=mergeable, fallback=metadata)
+    return merged, merged_state, combined
+
+
+def _temp_output_dir(job: DownloadJob) -> Path:
+    return job.output_dir / ".ytdj-temp" / job.id
 
 
 def _move_to_final(downloaded: Path, output_dir: Path, metadata: TrackMetadata) -> Path:

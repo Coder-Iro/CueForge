@@ -1,0 +1,46 @@
+from ytdj.metadata.hints import build_hint_candidates, extract_metadata_hints, preferred_theme_types
+
+
+def test_extract_japanese_ending_theme_from_next_line() -> None:
+    hints = extract_metadata_hints(
+        {
+            "description": "▮エンディングテーマ\nナナヲアカリ「明日の私に幸あれ」\n\n▮スタッフ\n監督：長澤剛"
+        }
+    )
+
+    assert len(hints) == 1
+    assert hints[0].context == "エンディングテーマ"
+    assert hints[0].metadata.artist == "ナナヲアカリ"
+    assert hints[0].metadata.title == "明日の私に幸あれ"
+    assert hints[0].metadata.genre == "Anison"
+
+
+def test_extract_japanese_opening_theme_from_same_line() -> None:
+    hints = extract_metadata_hints({"description": "▮オープニングテーマ 310「パーフェクトデイ」"})
+
+    assert len(hints) == 1
+    assert hints[0].metadata.artist == "310"
+    assert hints[0].metadata.title == "パーフェクトデイ"
+
+
+def test_build_hint_candidate_records_provenance() -> None:
+    candidates = build_hint_candidates({"description": 'Ending Theme: "Song Title" by Artist Name (eps 1-12)'})
+
+    assert candidates[0].provider == "description_ending_theme"
+    assert candidates[0].metadata.title == "Song Title"
+    assert candidates[0].metadata.artist == "Artist Name"
+    assert candidates[0].raw["source"] == "description"
+
+
+def test_build_hint_candidates_prefers_ending_when_video_title_says_ending() -> None:
+    candidates = build_hint_candidates(
+        {
+            "title": "ノンクレジットエンディング映像",
+            "description": "▮オープニングテーマ\n310「パーフェクトデイ」\n▮エンディングテーマ\nナナヲアカリ「明日の私に幸あれ」",
+        }
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].metadata.artist == "ナナヲアカリ"
+    assert candidates[0].metadata.title == "明日の私に幸あれ"
+    assert preferred_theme_types({"title": "ノンクレジットエンディング映像"}) == {"ED"}

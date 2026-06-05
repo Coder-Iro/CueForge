@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ytdj.metadata.hints import build_hint_candidates
 from ytdj.metadata.normalize import build_safe_fallback, merge_metadata
 from ytdj.metadata.soundcloud import as_reference_candidate, build_soundcloud_native_candidate
 from ytdj.metadata.ytmusic import YouTubeMusicProvider
@@ -55,7 +56,12 @@ class MetadataResolver:
         if policy.use_youtube_music:
             youtube = self._ytmusic_provider_factory(ytmusic_auth_path).lookup(url)
         reference = youtube.with_defaults_from(fallback).normalized()
-        candidates = self._musicbrainz_candidates(reference, info, log=log)
+        hint_candidates = build_hint_candidates(info)
+        candidates = self._enriched_hint_candidates(hint_candidates, info, log=log)
+        reference_candidates = self._musicbrainz_candidates(reference, info, log=log)
+        if hint_candidates:
+            reference_candidates = [as_reference_candidate(candidate) for candidate in reference_candidates]
+        candidates.extend(reference_candidates)
         metadata, state = merge_metadata(youtube=reference, candidates=candidates, fallback=fallback)
         return MetadataResolution(metadata=metadata, state=state, candidates=candidates, platform=platform)
 
@@ -95,6 +101,38 @@ class MetadataResolver:
                 log(f"MusicBrainz lookup skipped: {exc}")
             return []
 
+    def _enriched_hint_candidates(
+        self,
+        hints: list[MetadataCandidate],
+        info: dict[str, Any],
+        *,
+        log: Callable[[str], None] | None,
+    ) -> list[MetadataCandidate]:
+        if not hints:
+            return []
+        candidates: list[MetadataCandidate] = []
+        for hint in hints:
+            enriched = self._musicbrainz_candidates(hint.metadata, info, log=log)
+            if enriched:
+                for candidate in enriched:
+                    metadata = candidate.metadata.with_defaults_from(hint.metadata).normalized()
+                    candidates.append(
+                        MetadataCandidate(
+                            provider=f"{candidate.provider}_from_{hint.provider}",
+                            metadata=metadata,
+                            score=candidate.score,
+                            matched_fields=tuple(dict.fromkeys((*hint.matched_fields, *candidate.matched_fields))),
+                            raw={
+                                **candidate.raw,
+                                "hint": hint.raw,
+                                "hint_metadata": hint.metadata,
+                            },
+                        )
+                    )
+            else:
+                candidates.append(hint)
+        return candidates
+
 
 def _duration_ms(info: dict[str, Any]) -> int | None:
     duration = info.get("duration")
@@ -102,4 +140,3 @@ def _duration_ms(info: dict[str, Any]) -> int | None:
         return int(float(duration) * 1000)
     except (TypeError, ValueError):
         return None
-

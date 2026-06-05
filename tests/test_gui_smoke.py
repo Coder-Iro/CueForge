@@ -131,3 +131,17 @@ def test_cover_source_infers_known_artwork_hosts() -> None:
     assert _cover_source_from_url("https://coverartarchive.org/release/rel/front-500.jpg") == "Cover Art Archive"
     assert _cover_source_from_url("https://i1.sndcdn.com/artworks-test.jpg") == "SoundCloud native"
     assert _cover_source_from_url("https://i.ytimg.com/vi/abc/maxresdefault.jpg") == "YouTube fallback"
+
+
+def test_copy_diagnostics_puts_report_on_clipboard(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    monkeypatch.setattr("ytdj.gui.main_window.format_diagnostics", lambda: "diagnostics report")
+    try:
+        window._copy_diagnostics()
+
+        assert QApplication.clipboard().text() == "diagnostics report"
+        assert "diagnostics copied" in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()

@@ -39,7 +39,7 @@ from ytdj.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from ytdj.metadata.matching import text_similarity
 from ytdj.metadata.normalize import merge_metadata
 from ytdj.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
-from ytdj.runtime import find_executable
+from ytdj.runtime import find_executable, format_diagnostics
 from ytdj.sources import SourcePlatform, detect_source_platform, trust_policy_for
 from ytdj.tags import RekordboxTagWriter, safe_track_filename
 
@@ -117,6 +117,10 @@ class JobWorker(QThread):
             self.progress_changed.emit(self.job.id, 100.0, DownloadStatus.TAGGING.value)
             final_path = _move_to_final(downloaded_path, self.job.output_dir, metadata)
             tag_result: TagWriteResult = self._tag_writer_factory().write(final_path, metadata)
+            if tag_result.written_fields:
+                self.log_message.emit(self.job.id, f"tags written: {', '.join(tag_result.written_fields)}")
+            if tag_result.skipped_fields:
+                self.log_message.emit(self.job.id, f"tags skipped: {', '.join(tag_result.skipped_fields)}")
             for warning in tag_result.warnings:
                 self.log_message.emit(self.job.id, warning)
             self.job_done.emit(self.job.id, str(final_path))
@@ -151,6 +155,14 @@ class JobWorker(QThread):
             self.job.id,
             f"source: {resolution.platform.display_name}; {trust_policy_for(resolution.platform).note}",
         )
+        if resolution.candidates:
+            best = resolution.candidates[0]
+            matched = ", ".join(best.matched_fields) or "no matched fields"
+            self.log_message.emit(self.job.id, f"best metadata candidate: {best.provider} {best.score:.2f} ({matched})")
+        self.log_message.emit(self.job.id, f"selected metadata: {resolution.metadata.artist} - {resolution.metadata.title}")
+        if resolution.metadata.cover_url:
+            cover_source = resolution.metadata.cover_source or _cover_source_from_url(resolution.metadata.cover_url)
+            self.log_message.emit(self.job.id, f"cover source: {cover_source}")
         return resolution.metadata, resolution.state, resolution.candidates, resolution.platform
 
     def _try_audio_recognition(
@@ -418,9 +430,13 @@ class MainWindow(QMainWindow):
         recognition_form.addRow(self.verify_auto_approved_checkbox)
         recognition_form.addRow("AcoustID client key", self.acoustid_key_input)
         recognition_form.addRow("fpcalc path", self._path_row(self.fpcalc_path_input, self._browse_fpcalc))
+        diagnostics_button = QPushButton("Copy Diagnostics")
+        diagnostics_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
+        diagnostics_button.clicked.connect(self._copy_diagnostics)
 
         layout.addWidget(paths_group)
         layout.addWidget(recognition_group)
+        layout.addWidget(diagnostics_button)
         layout.addStretch()
         return root
 
@@ -777,6 +793,10 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "fpcalc executable", "", "Executables (*.exe);;All files (*)")
         if path:
             self.fpcalc_path_input.setText(path)
+
+    def _copy_diagnostics(self) -> None:
+        QApplication.clipboard().setText(format_diagnostics())
+        self._append_log("system", "diagnostics copied to clipboard")
 
 
 def run_app() -> int:

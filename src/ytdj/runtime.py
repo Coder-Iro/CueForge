@@ -77,6 +77,10 @@ def find_executable(name: str, *, explicit_path: Path | None = None, root: Path 
     detected = shutil.which(executable)
     if detected:
         return DependencyStatus(name=name, path=Path(detected), source="PATH")
+
+    winget = _find_winget_executable(executable)
+    if winget:
+        return DependencyStatus(name=name, path=winget, source="winget")
     return DependencyStatus(name=name, path=None, source="missing")
 
 
@@ -146,6 +150,19 @@ def _find_bundled_executable(executable: str, *, root: Path | None) -> Path | No
     if direct.exists():
         return direct
     matches = sorted(bin_root.rglob(executable))
+    return matches[0] if matches else None
+
+
+def _find_winget_executable(executable: str) -> Path | None:
+    if os.name != "nt":
+        return None
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    package_root = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
+    if not package_root.exists():
+        return None
+    matches = sorted(package_root.rglob(executable))
     return matches[0] if matches else None
 
 

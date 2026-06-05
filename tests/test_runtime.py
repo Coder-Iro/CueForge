@@ -26,6 +26,28 @@ def test_find_executable_falls_back_to_bundled_bin(tmp_path: Path, monkeypatch) 
     assert status.source == "bundled"
 
 
+def test_find_executable_falls_back_to_winget_packages(tmp_path: Path, monkeypatch) -> None:
+    fpcalc = (
+        tmp_path
+        / "Microsoft"
+        / "WinGet"
+        / "Packages"
+        / "AcoustID.Chromaprint_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        / "chromaprint-fpcalc-1.6.0-windows-x86_64"
+        / "fpcalc.exe"
+    )
+    fpcalc.parent.mkdir(parents=True)
+    fpcalc.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: None)
+    monkeypatch.setattr(runtime.os, "name", "nt")
+
+    status = runtime.find_executable("fpcalc", root=tmp_path)
+
+    assert status.path == fpcalc
+    assert status.source == "winget"
+
+
 def test_configure_dependency_path_prepends_bundled_dirs(tmp_path: Path, monkeypatch) -> None:
     nested = tmp_path / "bin" / "deno"
     nested.mkdir(parents=True)
@@ -41,6 +63,7 @@ def test_configure_dependency_path_prepends_bundled_dirs(tmp_path: Path, monkeyp
 def test_format_diagnostics_includes_dependencies(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(runtime, "_with_version", lambda status, args: status)
     monkeypatch.setattr(runtime.shutil, "which", lambda name: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "empty-local-app-data"))
 
     output = runtime.format_diagnostics(root=tmp_path)
 

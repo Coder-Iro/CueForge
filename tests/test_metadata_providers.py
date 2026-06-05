@@ -186,8 +186,9 @@ def test_fpcalc_fingerprinter_parses_json(tmp_path: Path) -> None:
     assert fingerprint.fingerprint == "abcdef"
 
 
-def test_fpcalc_fingerprinter_requires_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fpcalc_fingerprinter_requires_executable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("ytdj.runtime.shutil.which", lambda name: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "empty-local-app-data"))
 
     with pytest.raises(FingerprintUnavailable, match="fpcalc"):
         FpcalcFingerprinter().fingerprint(Path("track.mp3"))

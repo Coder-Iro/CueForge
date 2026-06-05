@@ -4,8 +4,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from ytdj.gui.main_window import MainWindow
-from ytdj.models import DownloadStatus
+from ytdj.gui.main_window import MainWindow, _cover_source_from_url
+from ytdj.models import DownloadStatus, MetadataCandidate, TrackMetadata
 
 
 def test_main_window_can_queue_url() -> None:
@@ -53,3 +53,50 @@ def test_main_window_has_audio_recognition_settings() -> None:
     finally:
         window.close()
         app.processEvents()
+
+
+def test_review_candidate_table_applies_selected_candidate() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.REVIEW_REQUIRED
+        job.selected_metadata = TrackMetadata(title="Fallback", artist="Uploader")
+        job.candidates = [
+            MetadataCandidate(
+                provider="musicbrainz",
+                score=0.70,
+                matched_fields=("title",),
+                metadata=TrackMetadata(title="Candidate A", artist="Artist A"),
+            ),
+            MetadataCandidate(
+                provider="acoustid",
+                score=0.96,
+                matched_fields=("fingerprint", "title", "artist"),
+                metadata=TrackMetadata(title="Candidate B", artist="Artist B", album="Album B"),
+            ),
+        ]
+        window.table.selectRow(0)
+        window._load_job_for_review(job)
+
+        assert window.candidate_table.rowCount() == 2
+        assert window.candidate_table.item(1, 0).text() == "acoustid"
+
+        window.candidate_table.selectRow(1)
+        app.processEvents()
+
+        assert window.review_fields["title"].text() == "Candidate B"
+        assert window.review_fields["artist"].text() == "Artist B"
+        assert window.review_fields["album"].text() == "Album B"
+        assert job.selected_metadata.title == "Candidate B"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_cover_source_infers_known_artwork_hosts() -> None:
+    assert _cover_source_from_url("https://coverartarchive.org/release/rel/front-500.jpg") == "Cover Art Archive"
+    assert _cover_source_from_url("https://i1.sndcdn.com/artworks-test.jpg") == "SoundCloud native"
+    assert _cover_source_from_url("https://i.ytimg.com/vi/abc/maxresdefault.jpg") == "YouTube fallback"

@@ -35,6 +35,7 @@ def build_soundcloud_metadata(info: dict[str, Any], source_url: str = "") -> Tra
     url = squash_spaces(source_url or str(info.get("webpage_url") or info.get("original_url") or ""))
     description = squash_spaces(str(info.get("description") or ""))
     comment_parts = [part for part in (url, _description_excerpt(description)) if part]
+    cover_url = squash_spaces(str(info.get("thumbnail") or ""))
 
     metadata = TrackMetadata(
         title=title,
@@ -43,7 +44,8 @@ def build_soundcloud_metadata(info: dict[str, Any], source_url: str = "") -> Tra
         album_artist=artist,
         genre=_soundcloud_genre(info),
         release_date=str(info.get("release_date") or info.get("upload_date") or ""),
-        cover_url=squash_spaces(str(info.get("thumbnail") or "")),
+        cover_url=cover_url,
+        cover_source="SoundCloud native" if cover_url else "",
         source_url=url,
         comments=" | ".join(comment_parts),
     )
@@ -60,6 +62,7 @@ def build_soundcloud_metadata(info: dict[str, Any], source_url: str = "") -> Tra
         label=cleaned.label,
         isrc=cleaned.isrc,
         cover_url=cleaned.cover_url,
+        cover_source=cleaned.cover_source,
         source_url=cleaned.source_url,
         musicbrainz_recording_id=cleaned.musicbrainz_recording_id,
         musicbrainz_release_id=cleaned.musicbrainz_release_id,
@@ -137,4 +140,3 @@ def _first(value: Any) -> str:
     if isinstance(value, list | tuple) and value:
         return str(value[0])
     return ""
-

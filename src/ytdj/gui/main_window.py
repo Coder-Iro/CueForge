@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -207,8 +207,32 @@ class JobWorker(QThread):
         self.progress_changed.emit(self.job.id, percent, status)
 
 
+class CoverPreviewWorker(QThread):
+    cover_loaded = Signal(str, str, object, str)
+
+    def __init__(self, job_id: str, url: str) -> None:
+        super().__init__()
+        self.job_id = job_id
+        self.url = url
+
+    def run(self) -> None:
+        try:
+            import requests
+
+            response = requests.get(self.url, timeout=8)
+            response.raise_for_status()
+            mime = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if mime and not mime.startswith("image/"):
+                self.cover_loaded.emit(self.job_id, self.url, b"", f"non-image cover response: {mime}")
+                return
+            self.cover_loaded.emit(self.job_id, self.url, response.content, "")
+        except Exception as exc:
+            self.cover_loaded.emit(self.job_id, self.url, b"", str(exc))
+
+
 class MainWindow(QMainWindow):
     COLUMNS = ("Status", "Progress", "Source", "URL", "Title", "Artist", "Output")
+    CANDIDATE_COLUMNS = ("Provider", "Score", "Matched", "Title", "Artist", "Album", "Date", "ISRC", "Cover")
 
     def __init__(self) -> None:
         super().__init__()
@@ -217,6 +241,8 @@ class MainWindow(QMainWindow):
         self.jobs: dict[str, DownloadJob] = {}
         self.row_job_ids: list[str] = []
         self.worker: JobWorker | None = None
+        self._loading_review = False
+        self._cover_preview_workers: list[CoverPreviewWorker] = []
 
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("YouTube / YouTube Music / SoundCloud URL")
@@ -242,6 +268,15 @@ class MainWindow(QMainWindow):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._load_selected_job)
 
+        self.candidate_table = QTableWidget(0, len(self.CANDIDATE_COLUMNS))
+        self.candidate_table.setHorizontalHeaderLabels(self.CANDIDATE_COLUMNS)
+        self.candidate_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.candidate_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.candidate_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.candidate_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.candidate_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.candidate_table.itemSelectionChanged.connect(self._apply_selected_candidate)
+
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
@@ -259,6 +294,12 @@ class MainWindow(QMainWindow):
         }
         self.review_state_label = QLabel("No track selected")
         self.candidate_label = QLabel("")
+        self.cover_source_label = QLabel("Cover source: none")
+        self.cover_preview_label = QLabel("No cover")
+        self.cover_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cover_preview_label.setFixedSize(180, 180)
+        self.cover_preview_label.setStyleSheet("border: 1px solid #b8b8b8;")
+        self.review_fields["cover_url"].editingFinished.connect(self._cover_url_edited)
 
         self._build_ui()
 
@@ -308,6 +349,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
         layout.addWidget(self.review_state_label)
         layout.addWidget(self.candidate_label)
+        layout.addWidget(self.candidate_table)
 
         form = QFormLayout()
         labels = {
@@ -324,6 +366,14 @@ class MainWindow(QMainWindow):
         for key, label in labels.items():
             form.addRow(label, self.review_fields[key])
         layout.addLayout(form)
+
+        cover_row = QWidget()
+        cover_layout = QGridLayout(cover_row)
+        cover_layout.setContentsMargins(0, 0, 0, 0)
+        cover_layout.addWidget(self.cover_preview_label, 0, 0, 2, 1)
+        cover_layout.addWidget(self.cover_source_label, 0, 1)
+        cover_layout.setColumnStretch(1, 1)
+        layout.addWidget(cover_row)
 
         approve_button = QPushButton("Approve && Download")
         approve_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
@@ -498,21 +548,126 @@ class MainWindow(QMainWindow):
     def _load_job_for_review(self, job: DownloadJob) -> None:
         metadata = job.selected_metadata
         platform = detect_source_platform(job.url)
+        self._loading_review = True
         self.review_state_label.setText(f"{job.status.value}: {platform.display_name}: {job.url}")
         if job.candidates:
             best = job.candidates[0]
-            trust_note = ""
-            if best.provider == "soundcloud" and best.raw.get("trusted_native"):
-                trust_note = " - SoundCloud metadata trusted"
-            self.candidate_label.setText(
-                f"Best candidate: {best.provider} {best.score:.2f} ({', '.join(best.matched_fields)}){trust_note}"
-            )
+            self._set_candidate_summary(best)
         else:
             self.candidate_label.setText("No external candidate")
+        self._populate_candidate_table(job)
+        self._set_review_fields(metadata)
+        self._loading_review = False
+        self._refresh_cover_preview(job, metadata)
+
+    def _set_candidate_summary(self, candidate: MetadataCandidate) -> None:
+        trust_note = ""
+        if candidate.provider == "soundcloud" and candidate.raw.get("trusted_native"):
+            trust_note = " - SoundCloud metadata trusted"
+        matched = ", ".join(candidate.matched_fields) or "no matched fields"
+        self.candidate_label.setText(f"Best candidate: {candidate.provider} {candidate.score:.2f} ({matched}){trust_note}")
+
+    def _populate_candidate_table(self, job: DownloadJob) -> None:
+        self.candidate_table.setRowCount(len(job.candidates))
+        for row, candidate in enumerate(job.candidates):
+            values = (
+                candidate.provider,
+                f"{candidate.score:.3f}",
+                ", ".join(candidate.matched_fields),
+                candidate.metadata.title,
+                candidate.metadata.artist,
+                candidate.metadata.album,
+                candidate.metadata.release_date,
+                candidate.metadata.isrc,
+                candidate.metadata.cover_source or _cover_source_from_url(candidate.metadata.cover_url),
+            )
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value or ""))
+                item.setData(Qt.ItemDataRole.UserRole, row)
+                self.candidate_table.setItem(row, col, item)
+        self.candidate_table.resizeRowsToContents()
+
+    def _set_review_fields(self, metadata: TrackMetadata) -> None:
         for key, field in self.review_fields.items():
             field.setText(str(getattr(metadata, key) or ""))
 
+    def _apply_selected_candidate(self) -> None:
+        if self._loading_review:
+            return
+        job = self._selected_job()
+        row = self.candidate_table.currentRow()
+        if not job or row < 0:
+            return
+        item = self.candidate_table.item(row, 0)
+        if not item:
+            return
+        candidate_index = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(candidate_index, int) or candidate_index >= len(job.candidates):
+            return
+        candidate = job.candidates[candidate_index]
+        metadata = candidate.metadata.with_defaults_from(job.selected_metadata).normalized()
+        job.selected_metadata = metadata
+        self._set_candidate_summary(candidate)
+        self._set_review_fields(metadata)
+        self._update_row(job)
+        self._refresh_cover_preview(job, metadata)
+
+    def _cover_url_edited(self) -> None:
+        if self._loading_review:
+            return
+        job = self._selected_job()
+        if not job:
+            return
+        metadata = self._metadata_from_review_fields(job.selected_metadata)
+        job.selected_metadata = metadata
+        self._refresh_cover_preview(job, metadata)
+
+    def _refresh_cover_preview(self, job: DownloadJob, metadata: TrackMetadata) -> None:
+        cover_url = self.review_fields["cover_url"].text().strip()
+        source = metadata.cover_source or _cover_source_from_url(cover_url)
+        self.cover_source_label.setText(f"Cover source: {source or 'none'}")
+        if not cover_url:
+            self.cover_preview_label.setPixmap(QPixmap())
+            self.cover_preview_label.setText("No cover")
+            return
+
+        self.cover_preview_label.setPixmap(QPixmap())
+        self.cover_preview_label.setText("Loading cover...")
+        worker = CoverPreviewWorker(job.id, cover_url)
+        worker.cover_loaded.connect(self._on_cover_preview_loaded)
+        worker.finished.connect(lambda worker=worker: self._cover_preview_finished(worker))
+        self._cover_preview_workers.append(worker)
+        worker.start()
+
+    def _on_cover_preview_loaded(self, job_id: str, url: str, data: bytes, error: str) -> None:
+        job = self._selected_job()
+        if not job or job.id != job_id or self.review_fields["cover_url"].text().strip() != url:
+            return
+        if error:
+            self.cover_preview_label.setPixmap(QPixmap())
+            self.cover_preview_label.setText("Cover unavailable")
+            return
+        pixmap = QPixmap()
+        if not pixmap.loadFromData(data):
+            self.cover_preview_label.setPixmap(QPixmap())
+            self.cover_preview_label.setText("Cover unavailable")
+            return
+        scaled = pixmap.scaled(
+            self.cover_preview_label.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.cover_preview_label.setText("")
+        self.cover_preview_label.setPixmap(scaled)
+
+    def _cover_preview_finished(self, worker: CoverPreviewWorker) -> None:
+        if worker in self._cover_preview_workers:
+            self._cover_preview_workers.remove(worker)
+        worker.deleteLater()
+
     def _metadata_from_review_fields(self, base: TrackMetadata) -> TrackMetadata:
+        cover_url = self.review_fields["cover_url"].text().strip()
+        cover_source = "manual" if cover_url and cover_url != base.cover_url else base.cover_source
         return TrackMetadata(
             title=self.review_fields["title"].text().strip(),
             artist=self.review_fields["artist"].text().strip(),
@@ -522,7 +677,8 @@ class MainWindow(QMainWindow):
             release_date=self.review_fields["release_date"].text().strip(),
             label=self.review_fields["label"].text().strip(),
             isrc=self.review_fields["isrc"].text().strip(),
-            cover_url=self.review_fields["cover_url"].text().strip(),
+            cover_url=cover_url,
+            cover_source=cover_source,
             source_url=base.source_url,
             musicbrainz_recording_id=base.musicbrainz_recording_id,
             musicbrainz_release_id=base.musicbrainz_release_id,
@@ -652,3 +808,14 @@ def _unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
     raise FileExistsError(f"Could not find available filename for {path}")
+
+
+def _cover_source_from_url(url: str) -> str:
+    lowered = url.casefold()
+    if "coverartarchive.org" in lowered:
+        return "Cover Art Archive"
+    if "sndcdn.com" in lowered or "soundcloud" in lowered:
+        return "SoundCloud native"
+    if "ytimg.com" in lowered or "youtube" in lowered:
+        return "YouTube fallback"
+    return "manual" if url else ""

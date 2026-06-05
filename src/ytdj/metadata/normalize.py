@@ -65,6 +65,7 @@ def clean_metadata(metadata: TrackMetadata) -> TrackMetadata:
         label=squash_spaces(metadata.label),
         isrc=squash_spaces(metadata.isrc).upper(),
         cover_url=squash_spaces(metadata.cover_url),
+        cover_source=squash_spaces(metadata.cover_source),
         source_url=squash_spaces(metadata.source_url),
         musicbrainz_recording_id=squash_spaces(metadata.musicbrainz_recording_id),
         musicbrainz_release_id=squash_spaces(metadata.musicbrainz_release_id),
@@ -95,6 +96,7 @@ def build_safe_fallback(info: dict[str, Any], source_url: str = "") -> TrackMeta
             track_number=_to_int(info.get("track_number")),
             disc_number=_to_int(info.get("disc_number")),
             cover_url=str(info.get("thumbnail") or ""),
+            cover_source="platform thumbnail" if info.get("thumbnail") else "",
             source_url=source_url or str(info.get("webpage_url") or ""),
             comments=str(info.get("webpage_url") or source_url or ""),
         )
@@ -144,4 +146,3 @@ def _to_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-

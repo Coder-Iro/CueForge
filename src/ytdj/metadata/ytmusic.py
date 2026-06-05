@@ -85,13 +85,15 @@ def _metadata_from_ytmusic(
         or []
     )
 
+    cover_url = _largest_thumbnail(thumbnails)
     return TrackMetadata(
         title=str(track.get("title") or details.get("title") or microformat.get("title") or ""),
         artist=_join_names(artists) or str(details.get("author") or microformat.get("ownerChannelName") or ""),
         album=str(album.get("name") or ""),
         album_artist=_join_names(artists) or str(details.get("author") or ""),
         release_date=str(microformat.get("publishDate") or ""),
-        cover_url=_largest_thumbnail(thumbnails),
+        cover_url=cover_url,
+        cover_source="YouTube Music thumbnail" if cover_url else "",
         source_url=source_url if "://" in source_url else f"https://music.youtube.com/watch?v={video_id}",
         comments=f"https://music.youtube.com/watch?v={video_id}",
     )
@@ -119,4 +121,3 @@ def _largest_thumbnail(thumbnails: list[Any]) -> str:
         return ""
     best = max(valid, key=lambda item: int(item.get("width") or 0) * int(item.get("height") or 0))
     return str(best["url"])
-

@@ -39,6 +39,7 @@ class TrackMetadata:
     label: str = ""
     isrc: str = ""
     cover_url: str = ""
+    cover_source: str = ""
     source_url: str = ""
     musicbrainz_recording_id: str = ""
     musicbrainz_release_id: str = ""
@@ -122,4 +123,3 @@ class TagWriteResult:
     written_fields: tuple[str, ...]
     skipped_fields: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
-

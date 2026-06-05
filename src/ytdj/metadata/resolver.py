@@ -103,7 +103,7 @@ class MetadataResolver:
     ) -> TrackMetadata:
         if platform == SourcePlatform.SOUNDCLOUD and metadata.cover_url:
             _log(log, "cover art: SoundCloud native artwork")
-            return metadata
+            return replace(metadata, cover_source=metadata.cover_source or "SoundCloud native")
 
         if metadata.musicbrainz_release_id:
             try:
@@ -113,12 +113,12 @@ class MetadataResolver:
             else:
                 if cover_url:
                     _log(log, "cover art: Cover Art Archive 500px")
-                    return replace(metadata, cover_url=cover_url)
+                    return replace(metadata, cover_url=cover_url, cover_source="Cover Art Archive")
 
         fallback = fallback_cover_url or metadata.cover_url
         if fallback:
             _log(log, "cover art fallback: platform thumbnail")
-            return replace(metadata, cover_url=fallback)
+            return replace(metadata, cover_url=fallback, cover_source=metadata.cover_source or "platform thumbnail")
 
         _log(log, "cover art unavailable")
         return metadata

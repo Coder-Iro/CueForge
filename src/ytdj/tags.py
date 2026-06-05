@@ -88,9 +88,13 @@ class RekordboxTagWriter:
         if metadata.cover_url:
             try:
                 data, mime = self._cover_fetcher(metadata.cover_url)
-                if data:
+                mime = _normalize_cover_mime(mime, metadata.cover_url)
+                if data and _is_image_mime(mime):
                     tags.setall("APIC:", [APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data)])
                     written.append("cover")
+                elif data:
+                    skipped.append("cover")
+                    warnings.append(f"cover fetch returned non-image content type: {mime}")
                 else:
                     skipped.append("cover")
             except Exception as exc:
@@ -154,8 +158,16 @@ def _fetch_cover(url: str) -> tuple[bytes, str]:
 
     response = requests.get(url, timeout=15)
     response.raise_for_status()
-    mime = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
-    if not mime:
-        mime = mimetypes.guess_type(url)[0] or "image/jpeg"
+    mime = _normalize_cover_mime(response.headers.get("Content-Type", ""), url)
     return response.content, mime
 
+
+def _normalize_cover_mime(mime: str, url: str) -> str:
+    cleaned = (mime or "").split(";", 1)[0].strip().lower()
+    if cleaned:
+        return cleaned
+    return mimetypes.guess_type(url)[0] or "image/jpeg"
+
+
+def _is_image_mime(mime: str) -> bool:
+    return mime.startswith("image/")

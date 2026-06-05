@@ -45,6 +45,31 @@ def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
     assert tags["TCON"].text[0] == "House"
     assert tags["TRCK"].text[0] == "7"
     assert tags["TSRC"].text[0] == "USABC260001"
+    pictures = tags.getall("APIC")
+    assert len(pictures) == 1
+    assert pictures[0].mime == "image/jpeg"
+    assert pictures[0].type == 3
+    assert pictures[0].desc == "Cover"
+    assert pictures[0].data == b"image-bytes"
     assert "cover" in result.written_fields
     assert not result.warnings
 
+
+def test_writer_skips_non_image_cover_response(tmp_path: Path) -> None:
+    target = tmp_path / "track.mp3"
+    target.write_bytes(b"")
+    writer = RekordboxTagWriter(cover_fetcher=lambda url: (b"<html></html>", "text/html"))
+
+    result = writer.write(
+        target,
+        TrackMetadata(
+            title="Song",
+            artist="Artist",
+            cover_url="https://example.com/cover.jpg",
+        ),
+    )
+
+    tags = ID3(target)
+    assert not tags.getall("APIC")
+    assert "cover" in result.skipped_fields
+    assert result.warnings == ("cover fetch returned non-image content type: text/html",)

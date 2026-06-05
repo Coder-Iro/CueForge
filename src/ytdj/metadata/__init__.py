@@ -7,6 +7,7 @@ from ytdj.metadata.normalize import (
     parse_artist_title,
 )
 from ytdj.metadata.hints import MetadataHint, build_hint_candidates, extract_metadata_hints
+from ytdj.metadata.fingerprint import AcoustIDConfig, AcoustIDProvider, AudioFingerprint, FpcalcFingerprinter
 from ytdj.metadata.musicbrainz import MusicBrainzConfig, MusicBrainzProvider
 from ytdj.metadata.resolver import MetadataResolution, MetadataResolver
 from ytdj.metadata.soundcloud import (
@@ -19,6 +20,10 @@ from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
 
 __all__ = [
     "MetadataCandidate",
+    "AcoustIDConfig",
+    "AcoustIDProvider",
+    "AudioFingerprint",
+    "FpcalcFingerprinter",
     "MusicBrainzConfig",
     "MetadataHint",
     "MusicBrainzProvider",

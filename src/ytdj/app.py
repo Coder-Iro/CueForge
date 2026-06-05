@@ -58,8 +58,9 @@ def _finish_cli(exit_code: int) -> int:
 
 
 def _force_process_exit(exit_code: int) -> None:
-    sys.stdout.flush()
-    sys.stderr.flush()
+    if not getattr(sys, "frozen", False):
+        sys.stdout.flush()
+        sys.stderr.flush()
     if sys.platform == "win32":
         import ctypes
 

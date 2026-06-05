@@ -18,6 +18,17 @@ NOISE_PATTERNS = [
     re.compile(r"\s*\b(?:HD|HQ|4K)\b\s*$", re.IGNORECASE),
 ]
 
+GENERIC_ARTIST_LABELS = {
+    "보컬로이드",
+    "보컬 로이드",
+    "보카로",
+    "vocaloid",
+    "ボーカロイド",
+    "ボカロ",
+    "utau",
+    "우타우",
+}
+
 
 def squash_spaces(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
@@ -39,11 +50,25 @@ def parse_artist_title(value: str) -> tuple[str, str]:
     for separator in (" - ", " – ", " — "):
         if separator in cleaned:
             artist, title = cleaned.split(separator, 1)
-            return clean_artist(artist), clean_title(title)
+            return _validated_parsed_artist_title(artist, title)
     match = re.match(r"^(?P<artist>[^-–—]{1,80}?)\s*[-–—]\s*(?P<title>[^-–—].+)$", cleaned)
     if match:
-        return clean_artist(match.group("artist")), clean_title(match.group("title"))
+        return _validated_parsed_artist_title(match.group("artist"), match.group("title"))
     return "", cleaned
+
+
+def is_generic_artist_label(value: str) -> bool:
+    normalized = squash_spaces(value).casefold()
+    compact = normalized.replace(" ", "")
+    return normalized in GENERIC_ARTIST_LABELS or compact in {label.replace(" ", "") for label in GENERIC_ARTIST_LABELS}
+
+
+def _validated_parsed_artist_title(artist: str, title: str) -> tuple[str, str]:
+    parsed_artist = clean_artist(artist)
+    parsed_title = clean_title(title)
+    if is_generic_artist_label(parsed_artist):
+        return "", parsed_title
+    return parsed_artist, parsed_title
 
 
 def _clean_date(value: str) -> str:

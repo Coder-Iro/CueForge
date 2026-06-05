@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
-from ytdj.metadata.normalize import clean_metadata
+from ytdj.metadata.normalize import clean_metadata, clean_title, parse_artist_title
 from ytdj.models import TrackMetadata
 
 
@@ -85,12 +85,17 @@ def _metadata_from_ytmusic(
         or []
     )
 
+    title = str(track.get("title") or details.get("title") or microformat.get("title") or "")
+    parsed_artist, parsed_title = parse_artist_title(title)
+    if not parsed_artist and parsed_title and parsed_title != clean_title(title):
+        title = parsed_title
+    artist = _join_names(artists) or str(details.get("author") or microformat.get("ownerChannelName") or "")
     cover_url = _largest_thumbnail(thumbnails)
     return TrackMetadata(
-        title=str(track.get("title") or details.get("title") or microformat.get("title") or ""),
-        artist=_join_names(artists) or str(details.get("author") or microformat.get("ownerChannelName") or ""),
+        title=title,
+        artist=artist,
         album=str(album.get("name") or ""),
-        album_artist=_join_names(artists) or str(details.get("author") or ""),
+        album_artist=artist or str(details.get("author") or ""),
         release_date=str(microformat.get("publishDate") or ""),
         cover_url=cover_url,
         cover_source="YouTube Music thumbnail" if cover_url else "",

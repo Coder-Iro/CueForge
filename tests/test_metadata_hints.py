@@ -108,6 +108,19 @@ def test_extracts_compact_artist_title_from_user_upload_title() -> None:
     assert candidates[0].metadata.release_date == "2014-04-27"
 
 
+def test_generic_vocaloid_prefix_does_not_create_artist_title_candidate() -> None:
+    candidates = build_hint_candidates(
+        {
+            "title": "보컬로이드 -개미관찰-",
+            "uploader": "토우링고",
+            "upload_date": "20140729",
+            "webpage_url": "https://www.youtube.com/watch?v=7B4yU08Bs5A",
+        }
+    )
+
+    assert candidates == []
+
+
 def test_extracts_original_song_from_korean_translation_description() -> None:
     hints = extract_credit_hints(
         {

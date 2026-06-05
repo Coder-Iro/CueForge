@@ -16,10 +16,10 @@ def test_parse_artist_title_accepts_compact_dash_for_user_uploads() -> None:
     assert title == "개미관찰"
 
 
-def test_parse_artist_title_trims_decorative_trailing_dash() -> None:
+def test_parse_artist_title_keeps_generic_vocaloid_prefix_out_of_artist() -> None:
     artist, title = parse_artist_title("보컬로이드 -개미관찰-")
 
-    assert artist == "보컬로이드"
+    assert artist == ""
     assert title == "개미관찰"
 
 
@@ -53,6 +53,20 @@ def test_safe_fallback_prefers_parsed_artist_before_uploader() -> None:
     assert metadata.title == "개미관찰"
     assert metadata.artist == "린"
     assert metadata.release_date == "2014-04-27"
+
+
+def test_safe_fallback_uses_uploader_when_title_prefix_is_generic() -> None:
+    metadata = build_safe_fallback(
+        {
+            "title": "보컬로이드 -개미관찰-",
+            "uploader": "토우링고",
+            "upload_date": "20140729",
+        }
+    )
+
+    assert metadata.title == "개미관찰"
+    assert metadata.artist == "토우링고"
+    assert metadata.release_date == "2014-07-29"
 
 
 def test_merge_metadata_user_values_win() -> None:

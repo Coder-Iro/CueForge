@@ -36,6 +36,21 @@ class FakeYTMusic:
         }
 
 
+class FakeYTMusicGenericPrefix:
+    def get_song(self, videoId: str) -> dict:
+        return {"videoDetails": {"title": "보컬로이드 -개미관찰-", "author": "토우링고"}}
+
+    def get_watch_playlist(self, videoId: str, limit: int = 25) -> dict:
+        return {
+            "tracks": [
+                {
+                    "title": "보컬로이드 -개미관찰-",
+                    "artists": [{"name": "토우링고"}],
+                }
+            ]
+        }
+
+
 class FakeResponse:
     def __init__(self, payload: dict) -> None:
         self.payload = payload
@@ -139,6 +154,15 @@ def test_youtube_music_provider_maps_track_metadata() -> None:
     assert metadata.album == "Album"
     assert metadata.release_date == "2026-05-01"
     assert metadata.cover_url == "large"
+
+
+def test_youtube_music_provider_uses_generic_prefix_as_title_cleanup_only() -> None:
+    provider = YouTubeMusicProvider(client=FakeYTMusicGenericPrefix())
+
+    metadata = provider.lookup("https://music.youtube.com/watch?v=abc")
+
+    assert metadata.title == "개미관찰"
+    assert metadata.artist == "토우링고"
 
 
 def test_musicbrainz_provider_scores_and_caches(tmp_path: Path) -> None:

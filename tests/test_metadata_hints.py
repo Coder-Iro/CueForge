@@ -1,4 +1,4 @@
-from ytdj.metadata.hints import build_hint_candidates, extract_metadata_hints, preferred_theme_types
+from ytdj.metadata.hints import build_hint_candidates, extract_credit_hints, extract_metadata_hints, preferred_theme_types
 
 
 def test_extract_japanese_ending_theme_from_next_line() -> None:
@@ -57,3 +57,34 @@ def test_ignores_auto_generated_youtube_description_with_quoted_featured_artist(
     )
 
     assert candidates == []
+
+
+def test_extracts_official_mv_quoted_song_from_title() -> None:
+    candidates = build_hint_candidates(
+        {
+            "title": "ano「ちゅ、多様性。」Music Video",
+            "release_date": "20221124",
+            "webpage_url": "https://www.youtube.com/watch?v=-lec--FlSJ4",
+        }
+    )
+
+    assert candidates[0].provider == "title_quoted_song"
+    assert candidates[0].metadata.artist == "ano"
+    assert candidates[0].metadata.title == "ちゅ、多様性。"
+    assert candidates[0].metadata.release_date == "2022-11-24"
+
+
+def test_extracts_original_song_from_korean_translation_description() -> None:
+    hints = extract_credit_hints(
+        {
+            "description": "ロストアンブレラ (Lost Umbrella)\n"
+            "노래 : 歌愛ユキ\n"
+            "작사/작곡 : 稲葉曇\n\n"
+            "원본 : https://youtu.be/DeKLpgzh-qQ"
+        }
+    )
+
+    assert len(hints) == 1
+    assert hints[0].context == "credits"
+    assert hints[0].metadata.title == "ロストアンブレラ"
+    assert hints[0].metadata.artist == "稲葉曇"

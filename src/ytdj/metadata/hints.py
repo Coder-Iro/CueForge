@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ytdj.metadata.normalize import clean_metadata, parse_artist_title, squash_spaces
+from ytdj.metadata.normalize import build_safe_fallback, clean_metadata, parse_artist_title, squash_spaces
 from ytdj.models import MetadataCandidate, TrackMetadata
 
 THEME_HEADER_RE = re.compile(
@@ -24,10 +24,42 @@ QUOTED_SONG_RE = re.compile(
     r"(?P<artist>.+?)[「『\"“](?P<title>.+?)[」』\"”]"
 )
 
+TITLE_QUOTED_SONG_RE = re.compile(
+    r"(?P<artist>.+?)[「『“](?P<title>.+?)[」』”]"
+)
+
 BY_SONG_RE = re.compile(
     r"[\"“](?P<title>.+?)[\"”]\s+by\s+(?P<artist>.+)",
     re.IGNORECASE,
 )
+
+CREDIT_RE = re.compile(r"^(?P<label>[^:：]{1,24})\s*[:：]\s*(?P<value>.+)$", re.IGNORECASE)
+COMPOSER_LABELS = {
+    "작사/작곡",
+    "작곡/작사",
+    "작곡",
+    "작사",
+    "작사 작곡",
+    "작곡 작사",
+    "作詞/作曲",
+    "作曲/作詞",
+    "作詞",
+    "作曲",
+    "composer",
+    "composition",
+    "music",
+    "lyrics/music",
+}
+VOCAL_LABELS = {
+    "노래",
+    "보컬",
+    "가수",
+    "歌",
+    "歌唱",
+    "vocal",
+    "vocals",
+    "singer",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +70,12 @@ class MetadataHint:
     raw_text: str
 
     def to_candidate(self) -> MetadataCandidate:
+        provider_prefix = self.source.casefold().replace(" ", "_")
+        matched_fields = (self.source, self.context, "title", "artist")
         return MetadataCandidate(
-            provider=f"description_{self.context.casefold().replace(' ', '_')}",
+            provider=f"{provider_prefix}_{self.context.casefold().replace(' ', '_')}",
             score=0.78,
-            matched_fields=("description", "theme_context", "title", "artist"),
+            matched_fields=matched_fields,
             metadata=self.metadata,
             raw={
                 "source": self.source,
@@ -87,12 +121,73 @@ def extract_metadata_hints(info: dict[str, Any]) -> list[MetadataHint]:
 
 def build_hint_candidates(info: dict[str, Any]) -> list[MetadataCandidate]:
     hints = extract_metadata_hints(info)
+    if not hints:
+        hints = [*extract_title_hints(info), *extract_credit_hints(info)]
     preferred_types = preferred_theme_types(info)
     if preferred_types:
         matching_hints = [hint for hint in hints if theme_type_from_context(hint.context) in preferred_types]
         if matching_hints:
             hints = matching_hints
-    return [hint.to_candidate() for hint in hints]
+    fallback = build_safe_fallback(info)
+    return [_candidate_with_fallback(hint.to_candidate(), fallback) for hint in hints]
+
+
+def extract_title_hints(info: dict[str, Any]) -> list[MetadataHint]:
+    title = squash_spaces(str(info.get("title") or ""))
+    metadata = _parse_title_quoted_song(title)
+    if not metadata or not metadata.is_minimum_viable():
+        return []
+    return [
+        MetadataHint(
+            metadata=metadata,
+            context="quoted_song",
+            source="title",
+            raw_text=title,
+        )
+    ]
+
+
+def extract_credit_hints(info: dict[str, Any]) -> list[MetadataHint]:
+    description = str(info.get("description") or "")
+    lines = [squash_spaces(line) for line in description.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return []
+
+    title = _description_song_title(lines)
+    if not title:
+        return []
+
+    composer = ""
+    vocalist = ""
+    for line in lines[1:12]:
+        match = CREDIT_RE.match(line)
+        if not match:
+            continue
+        label = _normalize_credit_label(match.group("label"))
+        value = _clean_credit_value(match.group("value"))
+        if not value:
+            continue
+        if label in COMPOSER_LABELS and not composer:
+            composer = value
+        if label in VOCAL_LABELS and not vocalist:
+            vocalist = value
+
+    artist = composer or vocalist
+    if not artist:
+        return []
+
+    metadata = clean_metadata(TrackMetadata(title=title, artist=artist, album_artist=artist))
+    if not metadata.is_minimum_viable():
+        return []
+    return [
+        MetadataHint(
+            metadata=metadata,
+            context="credits",
+            source="description",
+            raw_text="\n".join(lines[:12]),
+        )
+    ]
 
 
 def preferred_theme_types(info: dict[str, Any]) -> set[str]:
@@ -138,6 +233,15 @@ def _parse_quoted_song(line: str) -> TrackMetadata | None:
     return clean_metadata(TrackMetadata(title=title, artist=artist, album_artist=artist, genre="Anison"))
 
 
+def _parse_title_quoted_song(line: str) -> TrackMetadata | None:
+    match = TITLE_QUOTED_SONG_RE.search(line)
+    if not match:
+        return None
+    artist = _strip_artist_prefix(match.group("artist"))
+    title = match.group("title")
+    return clean_metadata(TrackMetadata(title=title, artist=artist, album_artist=artist))
+
+
 def _parse_by_song(line: str) -> TrackMetadata | None:
     match = BY_SONG_RE.search(line)
     if not match:
@@ -152,6 +256,72 @@ def _parse_artist_dash_title(line: str) -> TrackMetadata | None:
     if not artist or not title:
         return None
     return clean_metadata(TrackMetadata(title=title, artist=artist, album_artist=artist, genre="Anison"))
+
+
+def _candidate_with_fallback(candidate: MetadataCandidate, fallback: TrackMetadata) -> MetadataCandidate:
+    metadata = candidate.metadata.with_defaults_from(
+        TrackMetadata(
+            genre=fallback.genre,
+            release_date=fallback.release_date,
+            cover_url=fallback.cover_url,
+            cover_source=fallback.cover_source,
+            source_url=fallback.source_url,
+            comments=fallback.comments,
+        )
+    ).normalized()
+    return MetadataCandidate(
+        provider=candidate.provider,
+        score=candidate.score,
+        matched_fields=candidate.matched_fields,
+        metadata=metadata,
+        raw=candidate.raw,
+    )
+
+
+def _description_song_title(lines: list[str]) -> str:
+    for line in lines[:4]:
+        if CREDIT_RE.match(line):
+            continue
+        if line.casefold().startswith(("http://", "https://", "streaming ", "download ")):
+            continue
+        if " by " in line.casefold() and len(line) > 80:
+            continue
+        return _strip_parenthetical_alias(line)
+    return ""
+
+
+def _strip_parenthetical_alias(value: str) -> str:
+    value = squash_spaces(value)
+    match = re.match(r"^(?P<base>.+?)\s*[（(](?P<alias>[^）)]+)[）)]\s*$", value)
+    if not match:
+        return value
+    base = squash_spaces(match.group("base"))
+    alias = squash_spaces(match.group("alias"))
+    if _contains_cjk(base) and _mostly_latin(alias):
+        return base
+    return value
+
+
+def _contains_cjk(value: str) -> bool:
+    return any("\u3040" <= char <= "\u30ff" or "\u3400" <= char <= "\u9fff" or "\uac00" <= char <= "\ud7af" for char in value)
+
+
+def _mostly_latin(value: str) -> bool:
+    letters = [char for char in value if char.isalpha()]
+    if not letters:
+        return False
+    latin = [char for char in letters if "a" <= char.casefold() <= "z"]
+    return len(latin) / len(letters) >= 0.7
+
+
+def _normalize_credit_label(value: str) -> str:
+    return squash_spaces(value).casefold()
+
+
+def _clean_credit_value(value: str) -> str:
+    value = squash_spaces(value)
+    value = re.split(r"\s{2,}|[／/]\s*(?:편곡|arrange|編曲)\b", value, maxsplit=1, flags=re.IGNORECASE)[0]
+    return squash_spaces(value)
 
 
 def _strip_artist_prefix(value: str) -> str:

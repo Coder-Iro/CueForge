@@ -1,7 +1,7 @@
 import sys
 
 from ytdj import app as ytdj_app
-from ytdj.app import _finish_cli, _is_cli_utility_mode, _smoke_metadata, _write_cli_output
+from ytdj.app import _finish_cli, _is_cli_utility_mode, _print_cli_output, _smoke_metadata, _write_cli_output
 from ytdj.download import DownloadConfig
 from ytdj.metadata.resolver import MetadataResolution
 from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
@@ -101,3 +101,34 @@ def test_finish_cli_returns_code_when_not_frozen(monkeypatch) -> None:
     monkeypatch.delattr(sys, "frozen", raising=False)
 
     assert _finish_cli(7) == 7
+
+
+def test_cli_output_falls_back_to_utf8_buffer(monkeypatch) -> None:
+    class Buffer:
+        def __init__(self) -> None:
+            self.payload = b""
+
+        def write(self, payload: bytes) -> None:
+            self.payload += payload
+
+        def flush(self) -> None:
+            pass
+
+    class Stdout:
+        encoding = "cp949"
+
+        def __init__(self) -> None:
+            self.buffer = Buffer()
+
+        def write(self, value: str) -> None:
+            raise UnicodeEncodeError("cp949", value, 0, 1, "blocked")
+
+        def flush(self) -> None:
+            pass
+
+    stdout = Stdout()
+    monkeypatch.setattr(sys, "stdout", stdout)
+
+    _print_cli_output("様")
+
+    assert stdout.buffer.payload == "様\n".encode("utf-8")

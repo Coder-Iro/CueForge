@@ -74,7 +74,20 @@ def _write_cli_output(text: str, diagnose_file: object | None) -> None:
         diagnose_file.write_text(text + "\n", encoding="utf-8")
     if getattr(sys, "frozen", False):
         return
-    print(text)
+    _print_cli_output(text)
+
+
+def _print_cli_output(text: str) -> None:
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        buffer = getattr(sys.stdout, "buffer", None)
+        if buffer is not None:
+            buffer.write((text + "\n").encode("utf-8"))
+            buffer.flush()
+            return
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
 
 def _is_cli_utility_mode(argv: list[str]) -> bool:

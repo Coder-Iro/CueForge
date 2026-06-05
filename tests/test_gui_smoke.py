@@ -167,3 +167,32 @@ def test_metadata_ready_accepts_review_state_string(tmp_path) -> None:
     finally:
         window.close()
         app.processEvents()
+
+
+def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.REVIEW_REQUIRED
+        job.selected_metadata = TrackMetadata(title="Review Title", artist="Review Artist")
+        window._load_job_for_review(job)
+        assert window.table.currentRow() < 0
+
+        started = []
+
+        def fake_run_worker(run_job, approved_metadata=None):
+            started.append((run_job, approved_metadata))
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+        window._approve_selected()
+
+        assert started
+        assert started[0][0] is job
+        assert started[0][1].title == "Review Title"
+        assert started[0][1].artist == "Review Artist"
+    finally:
+        window.close()
+        app.processEvents()

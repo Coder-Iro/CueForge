@@ -261,6 +261,7 @@ class MainWindow(QMainWindow):
         self.jobs: dict[str, DownloadJob] = {}
         self.row_job_ids: list[str] = []
         self.worker: JobWorker | None = None
+        self.active_review_job_id: str | None = None
         self._loading_review = False
         self._cover_preview_workers: list[CoverPreviewWorker] = []
 
@@ -586,8 +587,10 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             QMessageBox.warning(self, "Queue running", "Wait for the current job to finish before approving another track.")
             return
-        job = self._selected_job()
+        job = self._active_review_job()
         if not job:
+            self.log.appendPlainText("[review] approve skipped: no track loaded for review")
+            QMessageBox.warning(self, "No track loaded", "Load a track in the Review tab before approving.")
             return
         metadata = self._metadata_from_review_fields(job.selected_metadata)
         job.selected_metadata = metadata
@@ -612,6 +615,7 @@ class MainWindow(QMainWindow):
             self._load_job_for_review(job)
 
     def _load_job_for_review(self, job: DownloadJob) -> None:
+        self.active_review_job_id = job.id
         metadata = job.selected_metadata
         platform = detect_source_platform(job.url)
         self._loading_review = True
@@ -660,7 +664,7 @@ class MainWindow(QMainWindow):
     def _apply_selected_candidate(self) -> None:
         if self._loading_review:
             return
-        job = self._selected_job()
+        job = self._active_review_job()
         row = self.candidate_table.currentRow()
         if not job or row < 0:
             return
@@ -681,7 +685,7 @@ class MainWindow(QMainWindow):
     def _cover_url_edited(self) -> None:
         if self._loading_review:
             return
-        job = self._selected_job()
+        job = self._active_review_job()
         if not job:
             return
         metadata = self._metadata_from_review_fields(job.selected_metadata)
@@ -706,7 +710,7 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _on_cover_preview_loaded(self, job_id: str, url: str, data: bytes, error: str) -> None:
-        job = self._selected_job()
+        job = self._active_review_job()
         if not job or job.id != job_id or self.review_fields["cover_url"].text().strip() != url:
             return
         if error:
@@ -770,6 +774,11 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= len(self.row_job_ids):
             return None
         return self.jobs[self.row_job_ids[row]]
+
+    def _active_review_job(self) -> DownloadJob | None:
+        if self.active_review_job_id:
+            return self.jobs.get(self.active_review_job_id)
+        return self._selected_job()
 
     def _append_log(self, job_id: str, message: str) -> None:
         short_id = job_id[:8]

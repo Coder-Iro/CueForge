@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 
@@ -45,6 +46,27 @@ def main() -> int:
     from ytdj.gui.main_window import run_app
 
     return run_app()
+
+
+def run() -> None:
+    exit_code = main()
+    if _is_cli_utility_mode(sys.argv):
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(exit_code)
+    raise SystemExit(exit_code)
+
+
+def _is_cli_utility_mode(argv: list[str]) -> bool:
+    return any(
+        flag in argv
+        for flag in (
+            "--diagnose",
+            "--diagnose-file",
+            "--smoke-gui",
+            "--smoke-metadata-url",
+        )
+    )
 
 
 def _diagnose_file_arg(argv: list[str]) -> "Path | None":
@@ -122,4 +144,4 @@ def _smoke_gui() -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    run()

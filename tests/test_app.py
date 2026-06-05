@@ -1,7 +1,7 @@
 import sys
 
 from ytdj import app as ytdj_app
-from ytdj.app import _smoke_metadata
+from ytdj.app import _is_cli_utility_mode, _smoke_metadata
 from ytdj.download import DownloadConfig
 from ytdj.metadata.resolver import MetadataResolution
 from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
@@ -77,3 +77,11 @@ def test_main_writes_metadata_smoke_failures(tmp_path, monkeypatch) -> None:
     text = output.read_text(encoding="utf-8")
     assert "metadata failed" in text
     assert "diagnostics" in text
+
+
+def test_cli_utility_modes_force_entrypoint_exit() -> None:
+    assert _is_cli_utility_mode(["ytdj", "--diagnose"])
+    assert _is_cli_utility_mode(["ytdj", "--diagnose-file", "diagnostics.txt"])
+    assert _is_cli_utility_mode(["ytdj", "--smoke-gui"])
+    assert _is_cli_utility_mode(["ytdj", "--smoke-metadata-url", "https://youtu.be/abc"])
+    assert not _is_cli_utility_mode(["ytdj"])

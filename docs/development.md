@@ -10,6 +10,7 @@ python -m venv .venv
 ```
 
 `ffmpeg` must be on PATH or selected in the Settings tab.
+Optional audio recognition requires `fpcalc` from Chromaprint. Put `fpcalc` on PATH or select the executable in Settings.
 
 ## Git Workflow
 
@@ -31,11 +32,18 @@ The app can run without browser cookies for public URLs. For account-scoped acce
 
 For YouTube Music metadata calls, create a `ytmusicapi` browser auth JSON outside git and select it in Settings. Do not commit auth JSON or copied request headers.
 
+## Audio Recognition
+
+AcoustID recognition is used only when YouTube or YouTube Music metadata is not auto-approved by the text-based resolver. The worker downloads a temporary MP3 under `.ytdj-temp`, runs `fpcalc`, queries AcoustID, and reuses that prepared file after review approval so the same URL is not downloaded twice.
+
+Configure an AcoustID application client key in Settings. Do not commit keys or user credentials. The free AcoustID web service is intended for non-commercial use and rate-limits clients, so this app uses it only as a fallback recognition layer.
+
 ## SoundCloud Metadata
 
 SoundCloud is primarily supported for DJ-focused remix, bootleg, edit, mashup, and free download workflows. The app trusts SoundCloud native metadata by default and preserves the original title instead of normalizing it against canonical release databases.
 
 MusicBrainz or other external matches may be shown as reference candidates later, but they should not automatically overwrite SoundCloud title, uploader/creator, genre, artwork, or source URL.
+Automatic AcoustID recognition is skipped for SoundCloud tracks for the same reason.
 
 ## Packaging
 
@@ -46,4 +54,4 @@ The packaging extra installs PyInstaller:
 .\.venv\Scripts\pyinstaller --noconfirm --windowed --name YT-DJ --collect-all PySide6 src\ytdj\app.py
 ```
 
-For releases, either bundle a reviewed ffmpeg build or document that users must install ffmpeg separately. If ffmpeg is bundled, verify the build license and include the required notices.
+For releases, either bundle reviewed ffmpeg/fpcalc builds or document that users must install them separately. If binaries are bundled, verify the build licenses and include the required notices.

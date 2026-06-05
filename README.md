@@ -25,6 +25,6 @@ python -m venv .venv
 .\.venv\Scripts\python -m ytdj
 ```
 
-The app expects `ffmpeg` to be available on PATH during development. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings.
+The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings.
 
 See [docs/development.md](docs/development.md) for commit, authentication, and packaging notes.

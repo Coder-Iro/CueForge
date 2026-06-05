@@ -50,6 +50,7 @@ def test_fetch_info_uses_ytdlp_without_download(tmp_path: Path) -> None:
 
     assert info["id"] == "abc"
     assert FakeYDL.calls[-1]["cookiesfrombrowser"] == ("chrome",)
+    assert FakeYDL.calls[-1]["remote_components"] == ["ejs:github"]
 
 
 def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
@@ -68,3 +69,14 @@ def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
     assert result.path == Path("D:/music/abc.mp3")
     assert progresses[0].percent == 50.0
 
+
+def test_download_can_disable_remote_js_components(tmp_path: Path) -> None:
+    FakeYDL.calls.clear()
+    downloader = YTDLPDownloader(
+        DownloadConfig(output_dir=tmp_path, allow_remote_js_components=False),
+        ydl_factory=FakeYDL,
+    )
+
+    downloader.fetch_info("https://music.youtube.com/watch?v=abc")
+
+    assert "remote_components" not in FakeYDL.calls[-1]

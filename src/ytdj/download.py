@@ -22,6 +22,7 @@ class DownloadConfig:
     cookie_browser: CookieBrowser | None = None
     audio_bitrate_kbps: int = 320
     keep_original: bool = False
+    allow_remote_js_components: bool = True
     quiet: bool = True
 
 
@@ -105,6 +106,8 @@ class YTDLPDownloader:
             options["ffmpeg_location"] = str(self.config.ffmpeg_location)
         if self.config.cookie_browser:
             options["cookiesfrombrowser"] = (self.config.cookie_browser.value,)
+        if self.config.allow_remote_js_components:
+            options["remote_components"] = ["ejs:github"]
         return options
 
     def _progress_hook(self, payload: dict[str, Any]) -> None:
@@ -143,4 +146,3 @@ class YTDLPDownloader:
         from yt_dlp import YoutubeDL
 
         return YoutubeDL(options)
-

@@ -10,6 +10,7 @@ python -m venv .venv
 ```
 
 `ffmpeg` must be on PATH or selected in the Settings tab.
+Install Deno on PATH for YouTube JavaScript challenge solving. The downloader enables yt-dlp's `ejs:github` remote component by default so Deno can run the current solver script.
 Optional audio recognition requires `fpcalc` from Chromaprint. Put `fpcalc` on PATH or select the executable in Settings.
 
 ## Git Workflow

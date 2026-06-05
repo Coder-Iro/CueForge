@@ -6,8 +6,10 @@ __pycache__/
 .mypy_cache/
 build/
 dist/
+release/
 *.egg-info/
 *.spec
+!packaging/*.spec
 downloads/
 *.log
 *.tmp
@@ -16,4 +18,3 @@ downloads/
 *.db
 browser.json
 auth.json
-

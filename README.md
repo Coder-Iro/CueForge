@@ -27,4 +27,14 @@ python -m venv .venv
 
 The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings.
 
+## Windows Packaging
+
+The release flow builds a PyInstaller app and an Inno Setup online installer. The installer downloads locked Windows builds of Deno, Chromaprint `fpcalc`, and ffmpeg during setup, verifies each archive by SHA-256, and installs them under the app's `bin` directory so end users do not need to install those tools manually.
+
+```powershell
+.\scripts\package_windows.ps1
+```
+
+Use `-SkipInstaller` to build only the PyInstaller app. External dependency versions and hashes are pinned in `packaging/dependencies.windows-x64.json`; update `THIRD_PARTY_NOTICES.md` when changing that lock file.
+
 See [docs/development.md](docs/development.md) for commit, authentication, and packaging notes.

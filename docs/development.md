@@ -48,11 +48,21 @@ Automatic AcoustID recognition is skipped for SoundCloud tracks for the same rea
 
 ## Packaging
 
-The packaging extra installs PyInstaller:
+Windows releases are built as a PyInstaller application plus an Inno Setup online installer. The installer downloads external binary dependencies during setup instead of bundling them into git or the PyInstaller tree.
 
 ```powershell
 .\.venv\Scripts\python -m pip install -e ".[packaging]"
-.\.venv\Scripts\pyinstaller --noconfirm --windowed --name YT-DJ --collect-all PySide6 src\ytdj\app.py
+.\scripts\package_windows.ps1
 ```
 
-For releases, either bundle reviewed ffmpeg/fpcalc builds or document that users must install them separately. If binaries are bundled, verify the build licenses and include the required notices.
+The package script runs tests, builds `dist\YT-DJ\YT-DJ.exe`, verifies the packaged app with `--diagnose-file`, then invokes Inno Setup if `ISCC.exe` is available. Use `-SkipInstaller` when only the PyInstaller app is needed, or `-SkipTests` for a repeat build after tests have already passed.
+
+External dependency versions are locked in `packaging\dependencies.windows-x64.json`:
+
+- Deno for yt-dlp's JavaScript challenge solver
+- Chromaprint `fpcalc` for AcoustID fingerprinting
+- ffmpeg and ffprobe for audio conversion and probing
+
+The Inno script downloads these ZIP archives, checks SHA-256 hashes, and extracts them to `{app}\bin`. The runtime prepends discovered dependency directories to `PATH`, so the bundled app can find `ffmpeg`, `ffprobe`, `fpcalc`, and `deno` without system-wide installs.
+
+When changing dependency versions, update the lock file, `packaging\ytdj-online.iss`, and `THIRD_PARTY_NOTICES.md` together. Recompute hashes from the exact release archives and run the packaging tests before cutting a release.

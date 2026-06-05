@@ -7,6 +7,7 @@ from ytdj.metadata.normalize import (
     parse_artist_title,
 )
 from ytdj.metadata.musicbrainz import MusicBrainzConfig, MusicBrainzProvider
+from ytdj.metadata.resolver import MetadataResolution, MetadataResolver
 from ytdj.metadata.soundcloud import (
     as_reference_candidate,
     build_soundcloud_metadata,
@@ -19,6 +20,8 @@ __all__ = [
     "MetadataCandidate",
     "MusicBrainzConfig",
     "MusicBrainzProvider",
+    "MetadataResolution",
+    "MetadataResolver",
     "ReviewState",
     "TrackMetadata",
     "YouTubeMusicProvider",

@@ -6,10 +6,13 @@ YT-DJ is a Windows-first desktop app for downloading authorized YouTube/YouTube 
 
 - PySide6 desktop UI
 - Embedded `yt-dlp` download pipeline
+- YouTube, YouTube Music, and SoundCloud URLs supported through yt-dlp
 - ffmpeg conversion to MP3 320 kbps
 - ID3v2.3 tagging for rekordbox compatibility
 - YouTube Music metadata first, MusicBrainz enrichment second
 - Low-confidence metadata review before final tagging
+
+SoundCloud tracks are treated differently from YouTube videos: native SoundCloud title, artist/uploader, genre, tags, artwork, and source URL are trusted by default so remix, bootleg, edit, and mashup titles are preserved.
 
 ## Development
 

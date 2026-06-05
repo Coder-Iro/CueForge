@@ -31,6 +31,12 @@ The app can run without browser cookies for public URLs. For account-scoped acce
 
 For YouTube Music metadata calls, create a `ytmusicapi` browser auth JSON outside git and select it in Settings. Do not commit auth JSON or copied request headers.
 
+## SoundCloud Metadata
+
+SoundCloud is primarily supported for DJ-focused remix, bootleg, edit, mashup, and free download workflows. The app trusts SoundCloud native metadata by default and preserves the original title instead of normalizing it against canonical release databases.
+
+MusicBrainz or other external matches may be shown as reference candidates later, but they should not automatically overwrite SoundCloud title, uploader/creator, genre, artwork, or source URL.
+
 ## Packaging
 
 The packaging extra installs PyInstaller:
@@ -41,4 +47,3 @@ The packaging extra installs PyInstaller:
 ```
 
 For releases, either bundle a reviewed ffmpeg build or document that users must install ffmpeg separately. If ffmpeg is bundled, verify the build license and include the required notices.
-

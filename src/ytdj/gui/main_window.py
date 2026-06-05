@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -39,6 +38,7 @@ from ytdj.metadata import AcoustIDConfig, AcoustIDProvider, MetadataResolver
 from ytdj.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from ytdj.metadata.normalize import merge_metadata
 from ytdj.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
+from ytdj.runtime import find_executable
 from ytdj.sources import SourcePlatform, detect_source_platform, trust_policy_for
 from ytdj.tags import RekordboxTagWriter, safe_track_filename
 
@@ -599,9 +599,7 @@ def _audio_recognition_skip_reason(
 
 
 def _has_fpcalc(config: AcoustIDConfig) -> bool:
-    if config.fpcalc_path:
-        return config.fpcalc_path.exists()
-    return shutil.which("fpcalc") is not None
+    return find_executable("fpcalc", explicit_path=config.fpcalc_path).available
 
 
 def _merge_audio_recognition_candidates(

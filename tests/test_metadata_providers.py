@@ -169,22 +169,25 @@ def test_score_candidate_marks_low_confidence_manual() -> None:
     assert candidate.review_state == ReviewState.MANUAL_REQUIRED
 
 
-def test_fpcalc_fingerprinter_parses_json() -> None:
+def test_fpcalc_fingerprinter_parses_json(tmp_path: Path) -> None:
+    fpcalc = tmp_path / "fpcalc.exe"
+    fpcalc.write_text("", encoding="utf-8")
+
     def runner(args: list[str], *, capture_output: bool, text: bool, check: bool) -> FakeRunResult:
-        assert args == ["C:\\tools\\fpcalc.exe", "-json", "track.mp3"]
+        assert args == [str(fpcalc), "-json", "track.mp3"]
         assert capture_output is True
         assert text is True
         assert check is False
         return FakeRunResult(stdout='{"duration": 180.4, "fingerprint": "abcdef"}')
 
-    fingerprint = FpcalcFingerprinter(Path("C:\\tools\\fpcalc.exe"), runner=runner).fingerprint(Path("track.mp3"))
+    fingerprint = FpcalcFingerprinter(fpcalc, runner=runner).fingerprint(Path("track.mp3"))
 
     assert fingerprint.duration_seconds == 180
     assert fingerprint.fingerprint == "abcdef"
 
 
 def test_fpcalc_fingerprinter_requires_executable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("ytdj.metadata.fingerprint.shutil.which", lambda name: None)
+    monkeypatch.setattr("ytdj.runtime.shutil.which", lambda name: None)
 
     with pytest.raises(FingerprintUnavailable, match="fpcalc"):
         FpcalcFingerprinter().fingerprint(Path("track.mp3"))

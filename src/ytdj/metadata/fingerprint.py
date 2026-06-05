@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from typing import Any, Protocol
 
 from ytdj.metadata.normalize import clean_metadata
 from ytdj.models import MetadataCandidate, TrackMetadata
+from ytdj.runtime import find_executable
 
 
 class FingerprintError(Exception):
@@ -90,12 +90,10 @@ class FpcalcFingerprinter:
         return AudioFingerprint(duration_seconds=duration, fingerprint=fingerprint)
 
     def _executable(self) -> str:
-        if self.fpcalc_path:
-            return str(self.fpcalc_path)
-        detected = shutil.which("fpcalc")
-        if not detected:
+        detected = find_executable("fpcalc", explicit_path=self.fpcalc_path)
+        if not detected.path:
             raise FingerprintUnavailable("fpcalc is not on PATH")
-        return detected
+        return str(detected.path)
 
 
 class AcoustIDProvider:

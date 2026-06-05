@@ -10,11 +10,11 @@ from ytdj.metadata.normalize import clean_metadata, parse_artist_title, squash_s
 from ytdj.models import MetadataCandidate, TrackMetadata
 
 THEME_HEADER_RE = re.compile(
-    r"(?:▮|■|#|\*|-)?\s*"
+    r"^\s*(?:▮|■|#|\*|-)?\s*"
     r"(?P<context>"
     r"オープニングテーマ|エンディングテーマ|主題歌|挿入歌|"
     r"opening\s*theme|ending\s*theme|insert\s*song|"
-    r"OP(?:テーマ)?|ED(?:テーマ)?"
+    r"OPテーマ|EDテーマ|OP\b|ED\b"
     r")\s*[:：]?\s*"
     r"(?P<rest>.*)",
     re.IGNORECASE,
@@ -62,7 +62,7 @@ def extract_metadata_hints(info: dict[str, Any]) -> list[MetadataHint]:
         line = squash_spaces(raw_line)
         if not line:
             continue
-        header = THEME_HEADER_RE.search(line)
+        header = THEME_HEADER_RE.match(line)
         if header:
             pending_context = squash_spaces(header.group("context"))
             rest = squash_spaces(header.group("rest"))

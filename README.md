@@ -22,3 +22,4 @@ python -m venv .venv
 
 The app expects `ffmpeg` to be available on PATH during development.
 
+See [docs/development.md](docs/development.md) for commit, authentication, and packaging notes.

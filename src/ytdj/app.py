@@ -60,6 +60,11 @@ def _finish_cli(exit_code: int) -> int:
 def _force_process_exit(exit_code: int) -> None:
     sys.stdout.flush()
     sys.stderr.flush()
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.TerminateProcess(kernel32.GetCurrentProcess(), exit_code)
     os._exit(exit_code)
 
 

@@ -44,6 +44,34 @@ class FakeAcoustIDProvider:
         ]
 
 
+class FakeAcoustIDReleaseProvider:
+    def __init__(self, config: AcoustIDConfig) -> None:
+        self.config = config
+
+    def lookup(self, audio_path: Path) -> list[MetadataCandidate]:
+        return [
+            MetadataCandidate(
+                provider="acoustid",
+                score=0.96,
+                matched_fields=("fingerprint", "title", "artist", "album"),
+                metadata=TrackMetadata(
+                    title="Recognized",
+                    artist="Artist",
+                    album="Album",
+                    musicbrainz_release_id="rel-1",
+                ),
+            )
+        ]
+
+
+class FakeCoverArtProvider:
+    calls: list[str] = []
+
+    def lookup(self, release_id: str) -> str:
+        self.calls.append(release_id)
+        return "https://coverartarchive.org/release/rel-1/front-500.jpg"
+
+
 class FakeTagWriter:
     writes: list[Path] = []
 
@@ -80,6 +108,35 @@ def test_worker_downloads_temp_audio_for_low_confidence_youtube(tmp_path: Path) 
     assert downloaded_path is not None
     assert downloaded_path.parent == tmp_path / ".ytdj-temp" / job.id
     assert FakeDownloader.downloads == [downloaded_path]
+
+
+def test_worker_refreshes_cover_art_after_audio_recognition(tmp_path: Path) -> None:
+    FakeDownloader.downloads.clear()
+    FakeCoverArtProvider.calls.clear()
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    worker = JobWorker(
+        job,
+        cookie_browser=None,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+        acoustid_provider_factory=FakeAcoustIDReleaseProvider,
+        cover_art_provider_factory=FakeCoverArtProvider,
+    )
+
+    metadata, state, candidates, downloaded_path = worker._try_audio_recognition(
+        metadata=TrackMetadata(title="Fallback", artist="Uploader", cover_url="https://img.youtube.com/yt-thumb.jpg"),
+        state=ReviewState.REVIEW_REQUIRED,
+        candidates=[],
+        platform=SourcePlatform.YOUTUBE,
+    )
+
+    assert state == ReviewState.AUTO_APPROVED
+    assert metadata.cover_url == "https://coverartarchive.org/release/rel-1/front-500.jpg"
+    assert candidates[0].provider == "acoustid"
+    assert downloaded_path == job.downloaded_path
+    assert FakeCoverArtProvider.calls == ["rel-1"]
 
 
 def test_worker_skips_audio_recognition_for_soundcloud(tmp_path: Path) -> None:

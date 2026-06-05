@@ -6,6 +6,7 @@ from ytdj.metadata.normalize import (
     merge_metadata,
     parse_artist_title,
 )
+from ytdj.metadata.cover_art import CoverArtConfig, CoverArtProvider
 from ytdj.metadata.hints import MetadataHint, build_hint_candidates, extract_metadata_hints
 from ytdj.metadata.fingerprint import AcoustIDConfig, AcoustIDProvider, AudioFingerprint, FpcalcFingerprinter
 from ytdj.metadata.musicbrainz import MusicBrainzConfig, MusicBrainzProvider
@@ -23,6 +24,8 @@ __all__ = [
     "AcoustIDConfig",
     "AcoustIDProvider",
     "AudioFingerprint",
+    "CoverArtConfig",
+    "CoverArtProvider",
     "FpcalcFingerprinter",
     "MusicBrainzConfig",
     "MetadataHint",

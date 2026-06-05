@@ -41,6 +41,28 @@ class FakeYTMusicProvider:
         return TrackMetadata(title="YT Title", artist="YT Artist")
 
 
+class FakeYTMusicWithCoverProvider:
+    def lookup(self, url: str) -> TrackMetadata:
+        return TrackMetadata(title="YT Title", artist="YT Artist", cover_url="https://img.youtube.com/yt-thumb.jpg")
+
+
+class FakeReleaseMusicBrainzProvider:
+    def lookup(self, reference: TrackMetadata, *, duration_ms: int | None = None) -> list[MetadataCandidate]:
+        return [
+            MetadataCandidate(
+                provider="musicbrainz",
+                score=0.97,
+                matched_fields=("title", "artist"),
+                metadata=TrackMetadata(
+                    title="Canonical Title",
+                    artist="Canonical Artist",
+                    album="Official Release",
+                    musicbrainz_release_id="rel-1",
+                ),
+            )
+        ]
+
+
 def test_soundcloud_resolver_trusts_native_metadata_and_downgrades_external() -> None:
     resolver = MetadataResolver(
         ytmusic_provider_factory=lambda auth_path: FailingYTMusicProvider(),
@@ -88,6 +110,83 @@ def test_youtube_resolver_still_uses_ytmusic_and_musicbrainz() -> None:
     assert resolution.metadata.title == "Canonical Title"
     assert resolution.metadata.artist == "Canonical Artist"
     assert resolution.state == ReviewState.AUTO_APPROVED
+
+
+def test_youtube_resolver_prefers_cover_art_archive_over_platform_thumbnail() -> None:
+    calls: list[str] = []
+
+    class FakeCoverArtProvider:
+        def lookup(self, release_id: str) -> str:
+            calls.append(release_id)
+            return "https://coverartarchive.org/release/rel-1/front-500.jpg"
+
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=lambda auth_path: FakeYTMusicWithCoverProvider(),
+        musicbrainz_provider_factory=FakeReleaseMusicBrainzProvider,
+        cover_art_provider_factory=FakeCoverArtProvider,
+    )
+
+    resolution = resolver.resolve(
+        url="https://music.youtube.com/watch?v=abc",
+        info={
+            "extractor_key": "Youtube",
+            "title": "Fallback",
+            "uploader": "Uploader",
+            "thumbnail": "https://img.youtube.com/fallback.jpg",
+        },
+    )
+
+    assert resolution.metadata.cover_url == "https://coverartarchive.org/release/rel-1/front-500.jpg"
+    assert calls == ["rel-1"]
+
+
+def test_youtube_resolver_falls_back_to_platform_thumbnail_when_cover_art_missing() -> None:
+    class MissingCoverArtProvider:
+        def lookup(self, release_id: str) -> str:
+            return ""
+
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=lambda auth_path: FakeYTMusicWithCoverProvider(),
+        musicbrainz_provider_factory=FakeReleaseMusicBrainzProvider,
+        cover_art_provider_factory=MissingCoverArtProvider,
+    )
+
+    resolution = resolver.resolve(
+        url="https://music.youtube.com/watch?v=abc",
+        info={
+            "extractor_key": "Youtube",
+            "title": "Fallback",
+            "uploader": "Uploader",
+            "thumbnail": "https://img.youtube.com/fallback.jpg",
+        },
+    )
+
+    assert resolution.metadata.cover_url == "https://img.youtube.com/yt-thumb.jpg"
+
+
+def test_soundcloud_resolver_keeps_native_artwork_even_with_release_match() -> None:
+    class FailingCoverArtProvider:
+        def lookup(self, release_id: str) -> str:
+            raise AssertionError("SoundCloud native artwork should be kept")
+
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=lambda auth_path: FailingYTMusicProvider(),
+        musicbrainz_provider_factory=FakeReleaseMusicBrainzProvider,
+        cover_art_provider_factory=FailingCoverArtProvider,
+    )
+
+    resolution = resolver.resolve(
+        url="https://soundcloud.com/dj/anime-song-bootleg",
+        info={
+            "extractor_key": "Soundcloud",
+            "title": "DJ Name - Anime Song (Bootleg Remix) [Free DL]",
+            "uploader": "DJ Name",
+            "thumbnail": "https://i1.sndcdn.com/artworks-native.jpg",
+            "webpage_url": "https://soundcloud.com/dj/anime-song-bootleg",
+        },
+    )
+
+    assert resolution.metadata.cover_url == "https://i1.sndcdn.com/artworks-native.jpg"
 
 
 def test_youtube_resolver_uses_description_theme_hints_before_fallback() -> None:

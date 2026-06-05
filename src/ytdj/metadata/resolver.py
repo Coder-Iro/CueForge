@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
+from ytdj.metadata.cover_art import CoverArtProvider
 from ytdj.metadata.hints import build_hint_candidates
 from ytdj.metadata.normalize import build_safe_fallback, merge_metadata
 from ytdj.metadata.soundcloud import as_reference_candidate, build_soundcloud_native_candidate
@@ -25,6 +26,7 @@ class MetadataResolution:
 
 YTMusicProviderFactory = Callable[[Path | None], Any]
 MusicBrainzProviderFactory = Callable[[], Any]
+CoverArtProviderFactory = Callable[[], Any]
 
 
 class MetadataResolver:
@@ -33,9 +35,11 @@ class MetadataResolver:
         *,
         ytmusic_provider_factory: YTMusicProviderFactory | None = None,
         musicbrainz_provider_factory: MusicBrainzProviderFactory | None = None,
+        cover_art_provider_factory: CoverArtProviderFactory | None = None,
     ) -> None:
         self._ytmusic_provider_factory = ytmusic_provider_factory or (lambda auth_path: YouTubeMusicProvider(auth_path=auth_path))
         self._musicbrainz_provider_factory = musicbrainz_provider_factory or MusicBrainzProvider
+        self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
 
     def resolve(
         self,
@@ -63,6 +67,7 @@ class MetadataResolver:
             reference_candidates = [as_reference_candidate(candidate) for candidate in reference_candidates]
         candidates.extend(reference_candidates)
         metadata, state = merge_metadata(youtube=reference, candidates=candidates, fallback=fallback)
+        metadata = self.enrich_cover_art(metadata, platform=platform, fallback_cover_url=reference.cover_url or fallback.cover_url, log=log)
         return MetadataResolution(metadata=metadata, state=state, candidates=candidates, platform=platform)
 
     def _resolve_soundcloud(
@@ -75,6 +80,7 @@ class MetadataResolver:
     ) -> MetadataResolution:
         native_candidate = build_soundcloud_native_candidate(info, url)
         metadata = native_candidate.metadata.with_defaults_from(fallback)
+        metadata = self.enrich_cover_art(metadata, platform=SourcePlatform.SOUNDCLOUD, fallback_cover_url=fallback.cover_url, log=log)
         state = ReviewState.AUTO_APPROVED if metadata.is_minimum_viable() else ReviewState.REVIEW_REQUIRED
         reference_candidates = [
             as_reference_candidate(candidate)
@@ -86,6 +92,36 @@ class MetadataResolver:
             candidates=[native_candidate, *reference_candidates],
             platform=SourcePlatform.SOUNDCLOUD,
         )
+
+    def enrich_cover_art(
+        self,
+        metadata: TrackMetadata,
+        *,
+        platform: SourcePlatform,
+        fallback_cover_url: str = "",
+        log: Callable[[str], None] | None = None,
+    ) -> TrackMetadata:
+        if platform == SourcePlatform.SOUNDCLOUD and metadata.cover_url:
+            _log(log, "cover art: SoundCloud native artwork")
+            return metadata
+
+        if metadata.musicbrainz_release_id:
+            try:
+                cover_url = self._cover_art_provider_factory().lookup(metadata.musicbrainz_release_id)
+            except Exception as exc:
+                _log(log, f"cover art lookup skipped: {exc}")
+            else:
+                if cover_url:
+                    _log(log, "cover art: Cover Art Archive 500px")
+                    return replace(metadata, cover_url=cover_url)
+
+        fallback = fallback_cover_url or metadata.cover_url
+        if fallback:
+            _log(log, "cover art fallback: platform thumbnail")
+            return replace(metadata, cover_url=fallback)
+
+        _log(log, "cover art unavailable")
+        return metadata
 
     def _musicbrainz_candidates(
         self,
@@ -140,3 +176,8 @@ def _duration_ms(info: dict[str, Any]) -> int | None:
         return int(float(duration) * 1000)
     except (TypeError, ValueError):
         return None
+
+
+def _log(log: Callable[[str], None] | None, message: str) -> None:
+    if log:
+        log(message)

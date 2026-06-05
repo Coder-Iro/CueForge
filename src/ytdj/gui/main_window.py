@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from ytdj.download import CookieBrowser, DownloadConfig, DownloadProgress, YTDLPDownloader
-from ytdj.metadata import AcoustIDConfig, AcoustIDProvider, MetadataResolver
+from ytdj.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, MetadataResolver
 from ytdj.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from ytdj.metadata.normalize import merge_metadata
 from ytdj.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
@@ -45,6 +45,7 @@ from ytdj.tags import RekordboxTagWriter, safe_track_filename
 DownloaderFactory = Callable[[DownloadConfig, Any], YTDLPDownloader]
 ResolverFactory = Callable[[], MetadataResolver]
 AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
+CoverArtProviderFactory = Callable[[], Any]
 TagWriterFactory = Callable[[], Any]
 
 
@@ -68,6 +69,7 @@ class JobWorker(QThread):
         downloader_factory: DownloaderFactory | None = None,
         resolver_factory: ResolverFactory | None = None,
         acoustid_provider_factory: AcoustIDProviderFactory | None = None,
+        cover_art_provider_factory: CoverArtProviderFactory | None = None,
         tag_writer_factory: TagWriterFactory | None = None,
     ) -> None:
         super().__init__()
@@ -79,8 +81,9 @@ class JobWorker(QThread):
         self.audio_recognition_enabled = audio_recognition_enabled
         self.approved_metadata = approved_metadata
         self._downloader_factory = downloader_factory or _create_downloader
-        self._resolver_factory = resolver_factory or MetadataResolver
+        self._resolver_factory = resolver_factory
         self._acoustid_provider_factory = acoustid_provider_factory or AcoustIDProvider
+        self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
         self._tag_writer_factory = tag_writer_factory or RekordboxTagWriter
 
     def run(self) -> None:
@@ -127,10 +130,15 @@ class JobWorker(QThread):
             self._on_progress,
         )
 
+    def _new_resolver(self) -> MetadataResolver:
+        if self._resolver_factory:
+            return self._resolver_factory()
+        return MetadataResolver(cover_art_provider_factory=self._cover_art_provider_factory)
+
     def _resolve_metadata(self, downloader: YTDLPDownloader) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate], SourcePlatform]:
         self.progress_changed.emit(self.job.id, 0.0, DownloadStatus.METADATA.value)
         info = downloader.fetch_info(self.job.url)
-        resolution = self._resolver_factory().resolve(
+        resolution = self._new_resolver().resolve(
             url=self.job.url,
             info=info,
             ytmusic_auth_path=self.ytmusic_auth_path,
@@ -182,6 +190,12 @@ class JobWorker(QThread):
             state=state,
             candidates=candidates,
             fingerprint_candidates=fingerprint_candidates,
+        )
+        merged_metadata = self._new_resolver().enrich_cover_art(
+            merged_metadata,
+            platform=platform,
+            fallback_cover_url=metadata.cover_url,
+            log=lambda message: self.log_message.emit(self.job.id, message),
         )
         best = fingerprint_candidates[0]
         self.log_message.emit(self.job.id, f"AcoustID best match: {best.metadata.artist} - {best.metadata.title} ({best.score:.2f})")

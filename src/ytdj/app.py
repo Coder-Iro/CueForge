@@ -27,18 +27,14 @@ def main() -> int:
                 "diagnostics": format_diagnostics(),
             }
         output = json.dumps(payload, ensure_ascii=False, indent=2)
-        if diagnose_file:
-            diagnose_file.write_text(output + "\n", encoding="utf-8")
-        print(output)
+        _write_cli_output(output, diagnose_file)
         return exit_code
     if "--diagnose" in sys.argv or diagnose_file:
         diagnostics = format_diagnostics()
         if "--smoke-gui" in sys.argv:
             _smoke_gui()
             diagnostics += "\ngui: ok"
-        if diagnose_file:
-            diagnose_file.write_text(diagnostics + "\n", encoding="utf-8")
-        print(diagnostics)
+        _write_cli_output(diagnostics, diagnose_file)
         return 0
     if "--smoke-gui" in sys.argv:
         _smoke_gui()
@@ -55,6 +51,14 @@ def run() -> None:
         sys.stderr.flush()
         os._exit(exit_code)
     raise SystemExit(exit_code)
+
+
+def _write_cli_output(text: str, diagnose_file: object | None) -> None:
+    if diagnose_file is not None:
+        diagnose_file.write_text(text + "\n", encoding="utf-8")
+    if getattr(sys, "frozen", False):
+        return
+    print(text)
 
 
 def _is_cli_utility_mode(argv: list[str]) -> bool:

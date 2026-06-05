@@ -1,7 +1,7 @@
 import sys
 
 from ytdj import app as ytdj_app
-from ytdj.app import _is_cli_utility_mode, _smoke_metadata
+from ytdj.app import _is_cli_utility_mode, _smoke_metadata, _write_cli_output
 from ytdj.download import DownloadConfig
 from ytdj.metadata.resolver import MetadataResolution
 from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
@@ -85,3 +85,13 @@ def test_cli_utility_modes_force_entrypoint_exit() -> None:
     assert _is_cli_utility_mode(["ytdj", "--smoke-gui"])
     assert _is_cli_utility_mode(["ytdj", "--smoke-metadata-url", "https://youtu.be/abc"])
     assert not _is_cli_utility_mode(["ytdj"])
+
+
+def test_frozen_cli_output_writes_file_without_printing(tmp_path, monkeypatch, capsys) -> None:
+    output = tmp_path / "diagnostics.txt"
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    _write_cli_output("diagnostics", output)
+
+    assert output.read_text(encoding="utf-8") == "diagnostics\n"
+    assert capsys.readouterr().out == ""

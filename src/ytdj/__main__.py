@@ -1,6 +1,6 @@
 """Run YT-DJ as a Python module."""
 
-from ytdj.app import main
+from ytdj.app import run
 
 
-raise SystemExit(main())
+run()

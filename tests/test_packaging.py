@@ -61,6 +61,14 @@ def test_pyinstaller_spec_bundles_ytmusicapi_locales() -> None:
     assert "locales/**/*" in spec
 
 
+def test_packaging_script_times_out_packaged_diagnostics() -> None:
+    script = (ROOT / "scripts" / "package_windows.ps1").read_text(encoding="utf-8")
+
+    assert "function Invoke-PackagedDiagnostics" in script
+    assert "Wait-Process" in script
+    assert "Packaged diagnostics timed out" in script
+
+
 def test_resolver_selects_latest_stable_x64_zip(monkeypatch: pytest.MonkeyPatch) -> None:
     resolver = _load_resolver()
 

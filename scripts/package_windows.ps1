@@ -53,6 +53,25 @@ function Invoke-Native {
     }
 }
 
+function Invoke-PackagedDiagnostics {
+    param(
+        [string]$Executable,
+        [string]$DiagnosticsPath,
+        [int]$TimeoutSeconds = 60
+    )
+
+    $process = Start-Process -FilePath $Executable -ArgumentList @("--diagnose-file", $DiagnosticsPath, "--smoke-gui") -PassThru
+    Wait-Process -Id $process.Id -Timeout $TimeoutSeconds -ErrorAction SilentlyContinue
+    $runningProcess = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
+    if ($runningProcess) {
+        Stop-Process -Id $process.Id -Force
+        throw "Packaged diagnostics timed out after $TimeoutSeconds seconds"
+    }
+    if ($process.ExitCode -ne 0) {
+        throw "Packaged diagnostics failed with exit code $($process.ExitCode)"
+    }
+}
+
 Push-Location $Root
 try {
     if (-not $SkipTests) {
@@ -72,10 +91,7 @@ try {
         throw "Expected PyInstaller executable was not produced: $packagedExe"
     }
     $diagnosticsPath = Join-Path $Root "build\packaged-diagnostics.txt"
-    $diagnosticsProcess = Start-Process -FilePath $packagedExe -ArgumentList @("--diagnose-file", $diagnosticsPath, "--smoke-gui") -PassThru -Wait
-    if ($diagnosticsProcess.ExitCode -ne 0) {
-        throw "Packaged diagnostics failed with exit code $($diagnosticsProcess.ExitCode)"
-    }
+    Invoke-PackagedDiagnostics -Executable $packagedExe -DiagnosticsPath $diagnosticsPath
     if (-not (Test-Path -LiteralPath $diagnosticsPath)) {
         throw "Packaged diagnostics file was not produced: $diagnosticsPath"
     }

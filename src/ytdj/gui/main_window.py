@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -213,6 +214,11 @@ class MainWindow(QMainWindow):
         self.cookie_combo.addItem("Firefox", CookieBrowser.FIREFOX)
         self.auth_path_input = QLineEdit()
         self.ffmpeg_path_input = QLineEdit()
+        self.audio_recognition_checkbox = QCheckBox("Use AcoustID when metadata confidence is low")
+        self.audio_recognition_checkbox.setChecked(True)
+        self.acoustid_key_input = QLineEdit()
+        self.acoustid_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.fpcalc_path_input = QLineEdit()
 
         self.table = QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
@@ -315,8 +321,8 @@ class MainWindow(QMainWindow):
     def _settings_tab(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
-        group = QGroupBox("Paths and authentication")
-        form = QFormLayout(group)
+        paths_group = QGroupBox("Paths and authentication")
+        form = QFormLayout(paths_group)
 
         output_row = QWidget()
         output_layout = QGridLayout(output_row)
@@ -331,7 +337,15 @@ class MainWindow(QMainWindow):
         form.addRow("Browser cookies", self.cookie_combo)
         form.addRow("YTMusic auth JSON", self._path_row(self.auth_path_input, self._browse_auth_file))
         form.addRow("ffmpeg path", self._path_row(self.ffmpeg_path_input, self._browse_ffmpeg))
-        layout.addWidget(group)
+
+        recognition_group = QGroupBox("Audio recognition")
+        recognition_form = QFormLayout(recognition_group)
+        recognition_form.addRow(self.audio_recognition_checkbox)
+        recognition_form.addRow("AcoustID client key", self.acoustid_key_input)
+        recognition_form.addRow("fpcalc path", self._path_row(self.fpcalc_path_input, self._browse_fpcalc))
+
+        layout.addWidget(paths_group)
+        layout.addWidget(recognition_group)
         layout.addStretch()
         return root
 
@@ -379,6 +393,11 @@ class MainWindow(QMainWindow):
             cookie_browser=self.cookie_combo.currentData(),
             ytmusic_auth_path=_optional_path(self.auth_path_input.text()),
             ffmpeg_location=_optional_path(self.ffmpeg_path_input.text()),
+            acoustid_config=AcoustIDConfig(
+                client_key=self.acoustid_key_input.text().strip(),
+                fpcalc_path=_optional_path(self.fpcalc_path_input.text()),
+            ),
+            audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
             approved_metadata=approved_metadata,
         )
         self.worker.progress_changed.connect(self._on_progress)
@@ -534,6 +553,11 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "ffmpeg executable", "", "Executables (*.exe);;All files (*)")
         if path:
             self.ffmpeg_path_input.setText(path)
+
+    def _browse_fpcalc(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "fpcalc executable", "", "Executables (*.exe);;All files (*)")
+        if path:
+            self.fpcalc_path_input.setText(path)
 
 
 def run_app() -> int:

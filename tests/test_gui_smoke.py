@@ -38,3 +38,18 @@ def test_main_window_marks_soundcloud_source() -> None:
     finally:
         window.close()
         app.processEvents()
+
+
+def test_main_window_has_audio_recognition_settings() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        assert window.audio_recognition_checkbox.isChecked() is True
+        window.acoustid_key_input.setText("client-key")
+        window.fpcalc_path_input.setText("C:\\tools\\fpcalc.exe")
+
+        assert window.acoustid_key_input.text() == "client-key"
+        assert window.fpcalc_path_input.text() == "C:\\tools\\fpcalc.exe"
+    finally:
+        window.close()
+        app.processEvents()

@@ -33,8 +33,9 @@ from PySide6.QtWidgets import (
 )
 
 from ytdj.download import CookieBrowser, DownloadConfig, DownloadProgress, YTDLPDownloader
-from ytdj.metadata import MusicBrainzProvider, YouTubeMusicProvider, build_safe_fallback, merge_metadata
+from ytdj.metadata import MetadataResolver
 from ytdj.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TrackMetadata
+from ytdj.sources import detect_source_platform, trust_policy_for
 from ytdj.tags import RekordboxTagWriter, safe_track_filename
 
 
@@ -91,16 +92,17 @@ class JobWorker(QThread):
     def _resolve_metadata(self, downloader: YTDLPDownloader) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate]]:
         self.progress_changed.emit(self.job.id, 0.0, DownloadStatus.METADATA.value)
         info = downloader.fetch_info(self.job.url)
-        fallback = build_safe_fallback(info, self.job.url)
-        youtube = YouTubeMusicProvider(auth_path=self.ytmusic_auth_path).lookup(self.job.url)
-        reference = youtube.with_defaults_from(fallback).normalized()
-        candidates: list[MetadataCandidate] = []
-        try:
-            duration_ms = _duration_ms(info)
-            candidates = MusicBrainzProvider().lookup(reference, duration_ms=duration_ms)
-        except Exception as exc:
-            self.log_message.emit(self.job.id, f"MusicBrainz lookup skipped: {exc}")
-        return merge_metadata(youtube=reference, candidates=candidates, fallback=fallback) + (candidates,)
+        resolution = MetadataResolver().resolve(
+            url=self.job.url,
+            info=info,
+            ytmusic_auth_path=self.ytmusic_auth_path,
+            log=lambda message: self.log_message.emit(self.job.id, message),
+        )
+        self.log_message.emit(
+            self.job.id,
+            f"source: {resolution.platform.display_name}; {trust_policy_for(resolution.platform).note}",
+        )
+        return resolution.metadata, resolution.state, resolution.candidates
 
     def _on_progress(self, progress: DownloadProgress) -> None:
         percent = progress.percent if progress.percent is not None else 0.0
@@ -109,7 +111,7 @@ class JobWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    COLUMNS = ("Status", "Progress", "URL", "Title", "Artist", "Output")
+    COLUMNS = ("Status", "Progress", "Source", "URL", "Title", "Artist", "Output")
 
     def __init__(self) -> None:
         super().__init__()
@@ -120,7 +122,7 @@ class MainWindow(QMainWindow):
         self.worker: JobWorker | None = None
 
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://music.youtube.com/watch?v=...")
+        self.url_input.setPlaceholderText("YouTube / YouTube Music / SoundCloud URL")
         self.output_dir_input = QLineEdit(str(Path.cwd() / "downloads"))
         self.cookie_combo = QComboBox()
         self.cookie_combo.addItem("No browser cookies", None)
@@ -132,8 +134,8 @@ class MainWindow(QMainWindow):
 
         self.table = QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._load_selected_job)
@@ -380,10 +382,16 @@ class MainWindow(QMainWindow):
 
     def _load_job_for_review(self, job: DownloadJob) -> None:
         metadata = job.selected_metadata
-        self.review_state_label.setText(f"{job.status.value}: {job.url}")
+        platform = detect_source_platform(job.url)
+        self.review_state_label.setText(f"{job.status.value}: {platform.display_name}: {job.url}")
         if job.candidates:
             best = job.candidates[0]
-            self.candidate_label.setText(f"Best candidate: {best.provider} {best.score:.2f} ({', '.join(best.matched_fields)})")
+            trust_note = ""
+            if best.provider == "soundcloud" and best.raw.get("trusted_native"):
+                trust_note = " - SoundCloud metadata trusted"
+            self.candidate_label.setText(
+                f"Best candidate: {best.provider} {best.score:.2f} ({', '.join(best.matched_fields)}){trust_note}"
+            )
         else:
             self.candidate_label.setText("No external candidate")
         for key, field in self.review_fields.items():
@@ -411,6 +419,7 @@ class MainWindow(QMainWindow):
         values = (
             job.status.value,
             f"{job.progress:.0f}%",
+            detect_source_platform(job.url).display_name,
             job.url,
             job.selected_metadata.title,
             job.selected_metadata.artist,
@@ -450,14 +459,6 @@ def run_app() -> int:
     window = MainWindow()
     window.show()
     return app.exec()
-
-
-def _duration_ms(info: dict[str, Any]) -> int | None:
-    duration = info.get("duration")
-    try:
-        return int(float(duration) * 1000)
-    except (TypeError, ValueError):
-        return None
 
 
 def _optional_path(value: str) -> Path | None:

@@ -1,7 +1,7 @@
 import sys
 
 from ytdj import app as ytdj_app
-from ytdj.app import _is_cli_utility_mode, _smoke_metadata, _write_cli_output
+from ytdj.app import _finish_cli, _is_cli_utility_mode, _smoke_metadata, _write_cli_output
 from ytdj.download import DownloadConfig
 from ytdj.metadata.resolver import MetadataResolution
 from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
@@ -95,3 +95,9 @@ def test_frozen_cli_output_writes_file_without_printing(tmp_path, monkeypatch, c
 
     assert output.read_text(encoding="utf-8") == "diagnostics\n"
     assert capsys.readouterr().out == ""
+
+
+def test_finish_cli_returns_code_when_not_frozen(monkeypatch) -> None:
+    monkeypatch.delattr(sys, "frozen", raising=False)
+
+    assert _finish_cli(7) == 7

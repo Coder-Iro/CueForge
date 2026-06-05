@@ -28,17 +28,17 @@ def main() -> int:
             }
         output = json.dumps(payload, ensure_ascii=False, indent=2)
         _write_cli_output(output, diagnose_file)
-        return exit_code
+        return _finish_cli(exit_code)
     if "--diagnose" in sys.argv or diagnose_file:
         diagnostics = format_diagnostics()
         if "--smoke-gui" in sys.argv:
             _smoke_gui()
             diagnostics += "\ngui: ok"
         _write_cli_output(diagnostics, diagnose_file)
-        return 0
+        return _finish_cli(0)
     if "--smoke-gui" in sys.argv:
         _smoke_gui()
-        return 0
+        return _finish_cli(0)
     from ytdj.gui.main_window import run_app
 
     return run_app()
@@ -47,10 +47,20 @@ def main() -> int:
 def run() -> None:
     exit_code = main()
     if _is_cli_utility_mode(sys.argv):
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(exit_code)
+        _force_process_exit(exit_code)
     raise SystemExit(exit_code)
+
+
+def _finish_cli(exit_code: int) -> int:
+    if getattr(sys, "frozen", False):
+        _force_process_exit(exit_code)
+    return exit_code
+
+
+def _force_process_exit(exit_code: int) -> None:
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)
 
 
 def _write_cli_output(text: str, diagnose_file: object | None) -> None:

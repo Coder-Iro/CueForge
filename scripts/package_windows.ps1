@@ -55,12 +55,6 @@ function Invoke-Native {
 
 Push-Location $Root
 try {
-    $dependencyLock = Get-Content -Raw -Path "packaging\dependencies.windows-x64.json" | ConvertFrom-Json
-    Write-Host "Packaging dependencies locked for $($dependencyLock.platform):"
-    foreach ($dependency in $dependencyLock.dependencies) {
-        Write-Host " - $($dependency.name) $($dependency.version) $($dependency.sha256)"
-    }
-
     if (-not $SkipTests) {
         Invoke-Native $Python @("-m", "pytest")
     }
@@ -88,8 +82,28 @@ try {
     Write-Host "Packaged diagnostics: $diagnosticsPath"
 
     if (-not $SkipInstaller) {
+        $resolvedDependencyJson = Join-Path $Root "build\dependencies.windows-x64.resolved.json"
+        $resolvedDependencyInno = Join-Path $Root "build\dependencies.windows-x64.iss"
+        Invoke-Native $Python @(
+            "scripts\resolve_winget_dependencies.py",
+            "--config",
+            "packaging\dependencies.windows-x64.json",
+            "--json-out",
+            $resolvedDependencyJson,
+            "--inno-out",
+            $resolvedDependencyInno
+        )
+
+        $dependencyReport = Join-Path $Root "release\YT-DJ-$Version-windows-x64-dependencies.json"
+
         $iscc = Resolve-InnoCompiler
-        Invoke-Native $iscc @("packaging\ytdj-online.iss", "/DAppVersion=$Version", "/DOutputDir=..\release", "/DDistDir=..\dist\YT-DJ")
+        Invoke-Native $iscc @(
+            "packaging\ytdj-online.iss",
+            "/DAppVersion=$Version",
+            "/DOutputDir=..\release",
+            "/DDistDir=..\dist\YT-DJ",
+            "/DDependencyInclude=..\build\dependencies.windows-x64.iss"
+        )
 
         $installer = Join-Path $Root "release\YT-DJ-$Version-windows-x64-online-setup.exe"
         if (-not (Test-Path -LiteralPath $installer)) {
@@ -99,8 +113,10 @@ try {
         $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $installer
         $checksumPath = "$installer.sha256"
         "$($hash.Hash.ToLowerInvariant())  $(Split-Path -Leaf $installer)" | Set-Content -Path $checksumPath -Encoding ascii
+        Copy-Item -LiteralPath $resolvedDependencyJson -Destination $dependencyReport -Force
         Write-Host "Installer: $installer"
         Write-Host "SHA256: $($hash.Hash.ToLowerInvariant())"
+        Write-Host "Dependencies: $dependencyReport"
     }
 }
 finally {

@@ -8,6 +8,9 @@
 #ifndef OutputDir
 #define OutputDir "..\release"
 #endif
+#ifndef DependencyInclude
+#define DependencyInclude "..\build\dependencies.windows-x64.iss"
+#endif
 
 [Setup]
 AppId={{9BC88C57-9EE1-4D07-9182-5373F61014AB}
@@ -102,25 +105,13 @@ begin
   end;
 end;
 
+#include DependencyInclude
+
 function DownloadAndExtractDependencies: Boolean;
 begin
   Result := True;
   DownloadPage.Clear;
-  DownloadPage.Add(
-    'https://github.com/denoland/deno/releases/download/v2.8.2/deno-x86_64-pc-windows-msvc.zip',
-    'deno-x86_64-pc-windows-msvc-2.8.2.zip',
-    '6fe073b11cabeba2f2726d8a3d1592b198aec5f23dab3473d0dc8d5ec7aee1c9'
-  );
-  DownloadPage.Add(
-    'https://github.com/acoustid/chromaprint/releases/download/v1.6.0/chromaprint-fpcalc-1.6.0-windows-x86_64.zip',
-    'chromaprint-fpcalc-1.6.0-windows-x86_64.zip',
-    '30179d3d0dc4cc92f1a0995c1a2e523fb4867724c2ee6a6ceae474f8e4d6937a'
-  );
-  DownloadPage.Add(
-    'https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-full_build-shared.zip',
-    'ffmpeg-8.1.1-full_build-shared.zip',
-    '4296b396bdfd5fbc3dfc75ab4c8703354a56963232d65c4182993543df2d2f45'
-  );
+  AddDependencyDownloads;
 
   DownloadPage.Show;
   try
@@ -137,10 +128,7 @@ begin
   if not Result then
     exit;
 
-  Result :=
-    ExtractDependencyArchive('Deno', 'deno-x86_64-pc-windows-msvc-2.8.2.zip', 'deno') and
-    ExtractDependencyArchive('Chromaprint fpcalc', 'chromaprint-fpcalc-1.6.0-windows-x86_64.zip', 'chromaprint') and
-    ExtractDependencyArchive('FFmpeg', 'ffmpeg-8.1.1-full_build-shared.zip', 'ffmpeg');
+  Result := ExtractAllDependencies;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;

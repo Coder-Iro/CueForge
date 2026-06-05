@@ -29,12 +29,12 @@ The app expects `ffmpeg` and Deno to be available on PATH during development. De
 
 ## Windows Packaging
 
-The release flow builds a PyInstaller app and an Inno Setup online installer. The installer downloads locked Windows builds of Deno, Chromaprint `fpcalc`, and ffmpeg during setup, verifies each archive by SHA-256, and installs them under the app's `bin` directory so end users do not need to install those tools manually.
+The release flow builds a PyInstaller app and an Inno Setup online installer. At build time, the package script resolves the latest x64 ZIP manifests for Deno, Chromaprint `fpcalc`, and ffmpeg from `microsoft/winget-pkgs`. The installer then downloads those resolved URLs directly, verifies each archive by SHA-256, and installs them under the app's `bin` directory so end users do not need to install those tools manually.
 
 ```powershell
 .\scripts\package_windows.ps1
 ```
 
-Use `-SkipInstaller` to build only the PyInstaller app. External dependency versions and hashes are pinned in `packaging/dependencies.windows-x64.json`; update `THIRD_PARTY_NOTICES.md` when changing that lock file.
+Use `-SkipInstaller` to build only the PyInstaller app. External dependency package IDs are configured in `packaging/dependencies.windows-x64.json`; resolved versions and hashes are written to the release dependency report during packaging.
 
 See [docs/development.md](docs/development.md) for commit, authentication, and packaging notes.

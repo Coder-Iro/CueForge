@@ -13,18 +13,15 @@ YT-DJ depends on Python packages and external command-line tools. This file is a
 
 ## Online Installer Dependencies
 
-The Windows online installer downloads these archives during setup and verifies SHA256 before extraction:
+The Windows online installer downloads external command-line tools during setup and verifies SHA256 before extraction. Exact versions, URLs, and hashes are resolved from `microsoft/winget-pkgs` at release build time and recorded in the generated release dependency report.
 
-- Deno 2.8.2
-  - URL: https://github.com/denoland/deno/releases/download/v2.8.2/deno-x86_64-pc-windows-msvc.zip
+- Deno (`DenoLand.Deno`)
   - License: MIT
   - Purpose: JavaScript runtime for yt-dlp YouTube challenge solving.
-- Chromaprint fpcalc 1.6.0
-  - URL: https://github.com/acoustid/chromaprint/releases/download/v1.6.0/chromaprint-fpcalc-1.6.0-windows-x86_64.zip
+- Chromaprint fpcalc (`AcoustID.Chromaprint`)
   - License: LGPL-2.1-or-later
   - Purpose: Acoustic fingerprint extraction for AcoustID lookup.
-- FFmpeg 8.1.1 full shared build by Gyan
-  - URL: https://github.com/GyanD/codexffmpeg/releases/download/8.1.1/ffmpeg-8.1.1-full_build-shared.zip
+- FFmpeg full shared build by Gyan (`Gyan.FFmpeg.Shared`)
   - License: GPL-3.0 for this selected build
   - Purpose: Audio extraction and MP3 conversion through yt-dlp.
 

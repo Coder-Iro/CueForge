@@ -53,6 +53,14 @@ def test_online_installer_uses_generated_dependency_include() -> None:
     assert "github.com/GyanD/codexffmpeg/releases" not in script
 
 
+def test_pyinstaller_spec_bundles_ytmusicapi_locales() -> None:
+    spec = (ROOT / "packaging" / "ytdj.spec").read_text(encoding="utf-8")
+
+    assert "collect_data_files" in spec
+    assert '"ytmusicapi"' in spec
+    assert "locales/**/*" in spec
+
+
 def test_resolver_selects_latest_stable_x64_zip(monkeypatch: pytest.MonkeyPatch) -> None:
     resolver = _load_resolver()
 

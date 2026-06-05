@@ -2,9 +2,11 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files
+
 
 ROOT = Path(SPECPATH).parent
-datas = []
+datas = collect_data_files("ytmusicapi", includes=["locales/**/*"])
 binaries = []
 hiddenimports = [
     "PySide6.QtCore",

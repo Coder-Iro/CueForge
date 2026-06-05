@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ytdj"
+version = "0.1.0"
+description = "Desktop downloader and metadata tagger for rekordbox-friendly YouTube Music files"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+license = "MIT"
+authors = [{ name = "YT-DJ Contributors" }]
+dependencies = [
+  "mutagen>=1.47",
+  "platformdirs>=4.3",
+  "PySide6>=6.10",
+  "requests>=2.32",
+  "yt-dlp>=2026.1.1",
+  "ytmusicapi>=1.12",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4",
+]
+packaging = [
+  "pyinstaller>=6.10",
+]
+
+[project.scripts]
+ytdj = "ytdj.app:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ytdj"]
+

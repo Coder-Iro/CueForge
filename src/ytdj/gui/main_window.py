@@ -527,13 +527,11 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self._refresh_actions()
             return
-        review_job = self._next_review_job()
-        if review_job:
-            self._load_job_for_review(review_job)
-            self._focus_review_tab()
-            self._append_log(review_job.id, "queue paused for metadata review")
-            self._refresh_actions()
-            return
+        for job_id in self.row_job_ids:
+            job = self.jobs[job_id]
+            if job.status == DownloadStatus.APPROVED:
+                self._run_worker(job, approved_metadata=job.selected_metadata)
+                return
         for job_id in self.row_job_ids:
             job = self.jobs[job_id]
             if job.status == DownloadStatus.PENDING:
@@ -589,8 +587,9 @@ class MainWindow(QMainWindow):
             job.status = DownloadStatus.DOWNLOADING
         else:
             job.status = DownloadStatus.REVIEW_REQUIRED
-            self._load_job_for_review(job)
-            self._focus_review_tab()
+            active_review = self._active_review_job()
+            if not active_review or active_review.status != DownloadStatus.REVIEW_REQUIRED:
+                self._load_job_for_review(job, select_row=False)
         self._update_row(job)
         if review_state == ReviewState.AUTO_APPROVED:
             self._append_log(job_id, "metadata auto-approved")
@@ -621,9 +620,6 @@ class MainWindow(QMainWindow):
         self._start_next()
 
     def _approve_selected(self) -> None:
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "Queue running", "Wait for the current job to finish before approving another track.")
-            return
         job = self._active_review_job()
         if not job:
             self.log.appendPlainText("[review] approve skipped: no track loaded for review")
@@ -631,6 +627,13 @@ class MainWindow(QMainWindow):
             return
         metadata = self._metadata_from_review_fields(job.selected_metadata)
         job.selected_metadata = metadata
+        if self.worker and self.worker.isRunning():
+            job.status = DownloadStatus.APPROVED
+            self._update_row(job)
+            self._load_job_for_review(job, select_row=False)
+            self._append_log(job.id, "metadata approved; queued for download")
+            self._refresh_actions()
+            return
         self._run_worker(job, approved_metadata=metadata)
 
     def _remove_selected(self) -> None:
@@ -656,15 +659,18 @@ class MainWindow(QMainWindow):
             self._load_job_for_review(job)
             self._refresh_actions()
 
-    def _load_job_for_review(self, job: DownloadJob) -> None:
+    def _load_job_for_review(self, job: DownloadJob, *, select_row: bool = True) -> None:
         self.active_review_job_id = job.id
-        self._select_job_row(job)
+        if select_row:
+            self._select_job_row(job)
         metadata = job.selected_metadata
         platform = detect_source_platform(job.url)
         self._loading_review = True
         self.review_state_label.setText(f"{job.status.value}: {platform.display_name}: {job.url}")
         if job.status == DownloadStatus.REVIEW_REQUIRED:
-            self.review_hint_label.setText("Review the tags below, then approve to download and tag this track.")
+            self.review_hint_label.setText("Review the tags below. Approval queues this track without stopping the rest of the queue.")
+        elif job.status == DownloadStatus.APPROVED:
+            self.review_hint_label.setText("Approved. This track is queued for download and tagging.")
         elif job.status == DownloadStatus.DONE:
             self.review_hint_label.setText("This track is already downloaded and tagged.")
         elif job.status == DownloadStatus.FAILED:
@@ -853,24 +859,14 @@ class MainWindow(QMainWindow):
         self.table.selectRow(row)
         self.table.blockSignals(False)
 
-    def _next_review_job(self) -> DownloadJob | None:
-        for job_id in self.row_job_ids:
-            job = self.jobs[job_id]
-            if job.status == DownloadStatus.REVIEW_REQUIRED:
-                return job
-        return None
-
-    def _focus_review_tab(self) -> None:
-        if self.tabs:
-            self.tabs.setCurrentIndex(self.review_tab_index)
-
     def _refresh_actions(self) -> None:
         running = bool(self.worker and self.worker.isRunning())
         pending_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.PENDING)
+        approved_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.APPROVED)
         review_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.REVIEW_REQUIRED)
         active_review = self._active_review_job()
-        can_process = bool(self.jobs) and not running and review_count == 0 and pending_count > 0
-        can_approve = bool(active_review and active_review.status == DownloadStatus.REVIEW_REQUIRED and not running)
+        can_process = bool(self.jobs) and not running and (approved_count > 0 or pending_count > 0)
+        can_approve = bool(active_review and active_review.status == DownloadStatus.REVIEW_REQUIRED)
 
         if self.start_action:
             self.start_action.setEnabled(can_process)
@@ -878,11 +874,19 @@ class MainWindow(QMainWindow):
             self.start_queue_button.setEnabled(can_process)
         if self.approve_button:
             self.approve_button.setEnabled(can_approve)
+        if self.tabs:
+            self.tabs.setTabText(self.review_tab_index, f"Review ({review_count})" if review_count else "Review")
 
-        if running:
-            text = "Processing the current track. The queue will pause if metadata needs review."
+        if running and review_count:
+            text = f"Processing continues. {review_count} track(s) need metadata review."
+        elif running:
+            text = "Processing the current track."
+        elif approved_count:
+            text = f"{approved_count} approved track(s) ready to download."
+        elif review_count and pending_count:
+            text = f"{review_count} track(s) need review; {pending_count} still ready to process."
         elif review_count:
-            text = f"Queue paused: {review_count} track(s) need metadata review."
+            text = f"{review_count} track(s) need metadata review."
         elif pending_count:
             text = f"{pending_count} track(s) ready. Process the queue to analyze metadata and download."
         elif self.jobs:

@@ -13,6 +13,7 @@ class DownloadStatus(str, Enum):
     PENDING = "pending"
     METADATA = "metadata"
     REVIEW_REQUIRED = "review_required"
+    APPROVED = "approved"
     DOWNLOADING = "downloading"
     TAGGING = "tagging"
     DONE = "done"

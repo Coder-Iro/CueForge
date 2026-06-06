@@ -198,7 +198,7 @@ def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkey
         app.processEvents()
 
 
-def test_review_required_pauses_queue_and_focuses_review_tab(tmp_path, monkeypatch) -> None:
+def test_review_required_does_not_block_pending_queue_items(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -209,25 +209,28 @@ def test_review_required_pauses_queue_and_focuses_review_tab(tmp_path, monkeypat
         first.status = DownloadStatus.METADATA
 
         started = []
-        monkeypatch.setattr(window, "_run_worker", lambda job, approved_metadata=None: started.append(job))
+
+        def fake_run_worker(job, approved_metadata=None):
+            started.append((job, approved_metadata))
+            job.status = DownloadStatus.DOWNLOADING
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
 
         window._on_metadata_ready(first.id, TrackMetadata(title="Song", artist="Artist"), "review_required", [])
         window._worker_finished()
 
         assert first.status == DownloadStatus.REVIEW_REQUIRED
-        assert second.status == DownloadStatus.PENDING
-        assert started == []
-        assert window.tabs.currentIndex() == window.review_tab_index
-        assert window.table.currentRow() == 0
-        assert window.start_queue_button.isEnabled() is False
+        assert second.status == DownloadStatus.DOWNLOADING
+        assert started == [(second, None)]
+        assert window.tabs.currentIndex() == window.queue_tab_index
         assert window.approve_button.isEnabled() is True
-        assert "Queue paused" in window.queue_status_label.text()
+        assert window.tabs.tabText(window.review_tab_index) == "Review (1)"
     finally:
         window.close()
         app.processEvents()
 
 
-def test_queue_continues_after_review_approval_finishes(tmp_path, monkeypatch) -> None:
+def test_approve_while_queue_running_queues_reviewed_job_first(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -247,14 +250,45 @@ def test_queue_continues_after_review_approval_finishes(tmp_path, monkeypatch) -
 
         monkeypatch.setattr(window, "_run_worker", fake_run_worker)
 
+        class RunningWorker:
+            def isRunning(self):
+                return True
+
+        window.worker = RunningWorker()
         window._approve_selected()
-        first.status = DownloadStatus.DONE
+
+        assert first.status == DownloadStatus.APPROVED
+        assert started == []
+
         window._worker_finished()
 
         assert started[0][0] is first
         assert started[0][1].title == "Song"
-        assert started[1][0] is second
-        assert started[1][1] is None
+        assert second.status == DownloadStatus.PENDING
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_new_review_item_does_not_replace_active_review_form(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        for url in ("https://youtu.be/first", "https://youtu.be/second"):
+            window.url_input.setText(url)
+            window._add_url()
+        first, second = window.jobs[window.row_job_ids[0]], window.jobs[window.row_job_ids[1]]
+        first.status = DownloadStatus.REVIEW_REQUIRED
+        first.selected_metadata = TrackMetadata(title="First", artist="Artist A")
+        second.status = DownloadStatus.METADATA
+        window._load_job_for_review(first)
+
+        window._on_metadata_ready(second.id, TrackMetadata(title="Second", artist="Artist B"), "review_required", [])
+
+        assert window.active_review_job_id == first.id
+        assert window.review_fields["title"].text() == "First"
+        assert second.status == DownloadStatus.REVIEW_REQUIRED
+        assert window.tabs.tabText(window.review_tab_index) == "Review (2)"
     finally:
         window.close()
         app.processEvents()

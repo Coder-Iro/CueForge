@@ -262,6 +262,12 @@ class MainWindow(QMainWindow):
         self.row_job_ids: list[str] = []
         self.worker: JobWorker | None = None
         self.active_review_job_id: str | None = None
+        self.tabs: QTabWidget | None = None
+        self.queue_tab_index = 0
+        self.review_tab_index = 1
+        self.start_action: QAction | None = None
+        self.start_queue_button: QPushButton | None = None
+        self.approve_button: QPushButton | None = None
         self._loading_review = False
         self._cover_preview_workers: list[CoverPreviewWorker] = []
 
@@ -303,6 +309,8 @@ class MainWindow(QMainWindow):
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
 
+        self.queue_status_label = QLabel("Add URLs, then process the queue.")
+        self.queue_status_label.setWordWrap(True)
         self.review_fields = {
             "title": QLineEdit(),
             "artist": QLineEdit(),
@@ -315,6 +323,8 @@ class MainWindow(QMainWindow):
             "cover_url": QLineEdit(),
         }
         self.review_state_label = QLabel("No track selected")
+        self.review_hint_label = QLabel("Tracks that need metadata review will appear here.")
+        self.review_hint_label.setWordWrap(True)
         self.candidate_label = QLabel("")
         self.cover_source_label = QLabel("Cover source: none")
         self.cover_preview_label = QLabel("No cover")
@@ -330,21 +340,22 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Actions")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
-        add_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder), "Add", self)
+        add_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder), "Add URL", self)
         add_action.triggered.connect(self._add_url)
-        start_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay), "Start Queue", self)
-        start_action.triggered.connect(self._start_next)
+        self.start_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay), "Process Queue", self)
+        self.start_action.triggered.connect(self._start_next)
         remove_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), "Remove", self)
         remove_action.triggered.connect(self._remove_selected)
         toolbar.addAction(add_action)
-        toolbar.addAction(start_action)
+        toolbar.addAction(self.start_action)
         toolbar.addAction(remove_action)
 
-        tabs = QTabWidget()
-        tabs.addTab(self._queue_tab(), "Queue")
-        tabs.addTab(self._review_tab(), "Review")
-        tabs.addTab(self._settings_tab(), "Settings")
-        self.setCentralWidget(tabs)
+        self.tabs = QTabWidget()
+        self.queue_tab_index = self.tabs.addTab(self._queue_tab(), "Queue")
+        self.review_tab_index = self.tabs.addTab(self._review_tab(), "Review")
+        self.tabs.addTab(self._settings_tab(), "Settings")
+        self.setCentralWidget(self.tabs)
+        self._refresh_actions()
 
     def _queue_tab(self) -> QWidget:
         root = QWidget()
@@ -357,7 +368,12 @@ class MainWindow(QMainWindow):
         add_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
         add_button.clicked.connect(self._add_url)
         url_row.addWidget(add_button, 0, 2)
+        self.start_queue_button = QPushButton("Process Queue")
+        self.start_queue_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.start_queue_button.clicked.connect(self._start_next)
+        url_row.addWidget(self.start_queue_button, 0, 3)
         layout.addLayout(url_row)
+        layout.addWidget(self.queue_status_label)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.table)
@@ -371,6 +387,7 @@ class MainWindow(QMainWindow):
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.addWidget(self.review_state_label)
+        layout.addWidget(self.review_hint_label)
         layout.addWidget(self.candidate_label)
         layout.addWidget(self.candidate_table)
 
@@ -398,10 +415,10 @@ class MainWindow(QMainWindow):
         cover_layout.setColumnStretch(1, 1)
         layout.addWidget(cover_row)
 
-        approve_button = QPushButton("Approve && Download")
-        approve_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
-        approve_button.clicked.connect(self._approve_selected)
-        layout.addWidget(approve_button)
+        self.approve_button = QPushButton("Approve && Download")
+        self.approve_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.approve_button.clicked.connect(self._approve_selected)
+        layout.addWidget(self.approve_button)
         layout.addStretch()
         return root
 
@@ -503,15 +520,26 @@ class MainWindow(QMainWindow):
         self._update_row(job)
         self.url_input.clear()
         self._append_log(job.id, "queued")
+        self.table.selectRow(row)
+        self._refresh_actions()
 
     def _start_next(self) -> None:
         if self.worker and self.worker.isRunning():
+            self._refresh_actions()
+            return
+        review_job = self._next_review_job()
+        if review_job:
+            self._load_job_for_review(review_job)
+            self._focus_review_tab()
+            self._append_log(review_job.id, "queue paused for metadata review")
+            self._refresh_actions()
             return
         for job_id in self.row_job_ids:
             job = self.jobs[job_id]
             if job.status == DownloadStatus.PENDING:
                 self._run_worker(job)
                 return
+        self._refresh_actions()
 
     def _run_worker(self, job: DownloadJob, approved_metadata: TrackMetadata | None = None) -> None:
         self.save_settings()
@@ -537,6 +565,7 @@ class MainWindow(QMainWindow):
         self.worker.log_message.connect(self._append_log)
         self.worker.finished.connect(self._worker_finished)
         self.worker.start()
+        self._refresh_actions()
 
     def _on_progress(self, job_id: str, percent: float, status: str) -> None:
         job = self.jobs[job_id]
@@ -556,13 +585,18 @@ class MainWindow(QMainWindow):
         job = self.jobs[job_id]
         job.selected_metadata = metadata
         job.candidates = candidates
-        job.status = DownloadStatus.DOWNLOADING if review_state == ReviewState.AUTO_APPROVED else DownloadStatus.REVIEW_REQUIRED
+        if review_state == ReviewState.AUTO_APPROVED:
+            job.status = DownloadStatus.DOWNLOADING
+        else:
+            job.status = DownloadStatus.REVIEW_REQUIRED
+            self._load_job_for_review(job)
+            self._focus_review_tab()
         self._update_row(job)
-        self._load_job_for_review(job)
         if review_state == ReviewState.AUTO_APPROVED:
             self._append_log(job_id, "metadata auto-approved")
         else:
             self._append_log(job_id, f"metadata requires review: {review_state.value}")
+        self._refresh_actions()
 
     def _on_job_done(self, job_id: str, final_path: str) -> None:
         job = self.jobs[job_id]
@@ -571,6 +605,7 @@ class MainWindow(QMainWindow):
         job.final_path = Path(final_path)
         self._update_row(job)
         self._append_log(job_id, f"done: {final_path}")
+        self._refresh_actions()
 
     def _on_job_failed(self, job_id: str, error: str) -> None:
         job = self.jobs[job_id]
@@ -578,9 +613,11 @@ class MainWindow(QMainWindow):
         job.error = error
         self._update_row(job)
         self._append_log(job_id, f"failed: {error}")
+        self._refresh_actions()
 
     def _worker_finished(self) -> None:
         self.worker = None
+        self._refresh_actions()
         self._start_next()
 
     def _approve_selected(self) -> None:
@@ -608,18 +645,32 @@ class MainWindow(QMainWindow):
         self.table.removeRow(row)
         self.row_job_ids.pop(row)
         del self.jobs[job_id]
+        if self.active_review_job_id == job_id:
+            self.active_review_job_id = None
+            self._clear_review_panel()
+        self._refresh_actions()
 
     def _load_selected_job(self) -> None:
         job = self._selected_job()
         if job:
             self._load_job_for_review(job)
+            self._refresh_actions()
 
     def _load_job_for_review(self, job: DownloadJob) -> None:
         self.active_review_job_id = job.id
+        self._select_job_row(job)
         metadata = job.selected_metadata
         platform = detect_source_platform(job.url)
         self._loading_review = True
         self.review_state_label.setText(f"{job.status.value}: {platform.display_name}: {job.url}")
+        if job.status == DownloadStatus.REVIEW_REQUIRED:
+            self.review_hint_label.setText("Review the tags below, then approve to download and tag this track.")
+        elif job.status == DownloadStatus.DONE:
+            self.review_hint_label.setText("This track is already downloaded and tagged.")
+        elif job.status == DownloadStatus.FAILED:
+            self.review_hint_label.setText(job.error or "This track failed. Edit tags and retry if needed.")
+        else:
+            self.review_hint_label.setText("Metadata preview for the selected queue item.")
         if job.candidates:
             best = job.candidates[0]
             self._set_candidate_summary(best)
@@ -629,6 +680,17 @@ class MainWindow(QMainWindow):
         self._set_review_fields(metadata)
         self._loading_review = False
         self._refresh_cover_preview(job, metadata)
+        self._refresh_actions()
+
+    def _clear_review_panel(self) -> None:
+        self.review_state_label.setText("No track selected")
+        self.review_hint_label.setText("Tracks that need metadata review will appear here.")
+        self.candidate_label.setText("")
+        self.candidate_table.setRowCount(0)
+        self._set_review_fields(TrackMetadata())
+        self.cover_preview_label.setPixmap(QPixmap())
+        self.cover_preview_label.setText("No cover")
+        self.cover_source_label.setText("Cover source: none")
 
     def _set_candidate_summary(self, candidate: MetadataCandidate) -> None:
         trust_note = ""
@@ -779,6 +841,55 @@ class MainWindow(QMainWindow):
         if self.active_review_job_id:
             return self.jobs.get(self.active_review_job_id)
         return self._selected_job()
+
+    def _select_job_row(self, job: DownloadJob) -> None:
+        try:
+            row = self.row_job_ids.index(job.id)
+        except ValueError:
+            return
+        if self.table.currentRow() == row:
+            return
+        self.table.blockSignals(True)
+        self.table.selectRow(row)
+        self.table.blockSignals(False)
+
+    def _next_review_job(self) -> DownloadJob | None:
+        for job_id in self.row_job_ids:
+            job = self.jobs[job_id]
+            if job.status == DownloadStatus.REVIEW_REQUIRED:
+                return job
+        return None
+
+    def _focus_review_tab(self) -> None:
+        if self.tabs:
+            self.tabs.setCurrentIndex(self.review_tab_index)
+
+    def _refresh_actions(self) -> None:
+        running = bool(self.worker and self.worker.isRunning())
+        pending_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.PENDING)
+        review_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.REVIEW_REQUIRED)
+        active_review = self._active_review_job()
+        can_process = bool(self.jobs) and not running and review_count == 0 and pending_count > 0
+        can_approve = bool(active_review and active_review.status == DownloadStatus.REVIEW_REQUIRED and not running)
+
+        if self.start_action:
+            self.start_action.setEnabled(can_process)
+        if self.start_queue_button:
+            self.start_queue_button.setEnabled(can_process)
+        if self.approve_button:
+            self.approve_button.setEnabled(can_approve)
+
+        if running:
+            text = "Processing the current track. The queue will pause if metadata needs review."
+        elif review_count:
+            text = f"Queue paused: {review_count} track(s) need metadata review."
+        elif pending_count:
+            text = f"{pending_count} track(s) ready. Process the queue to analyze metadata and download."
+        elif self.jobs:
+            text = "No pending tracks."
+        else:
+            text = "Add URLs, then process the queue."
+        self.queue_status_label.setText(text)
 
     def _append_log(self, job_id: str, message: str) -> None:
         short_id = job_id[:8]

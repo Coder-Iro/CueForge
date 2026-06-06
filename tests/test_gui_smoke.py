@@ -179,7 +179,7 @@ def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkey
         job.status = DownloadStatus.REVIEW_REQUIRED
         job.selected_metadata = TrackMetadata(title="Review Title", artist="Review Artist")
         window._load_job_for_review(job)
-        assert window.table.currentRow() < 0
+        assert window.active_review_job_id == job.id
 
         started = []
 
@@ -193,6 +193,68 @@ def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkey
         assert started[0][0] is job
         assert started[0][1].title == "Review Title"
         assert started[0][1].artist == "Review Artist"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_review_required_pauses_queue_and_focuses_review_tab(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        for url in ("https://youtu.be/needs-review", "https://youtu.be/next"):
+            window.url_input.setText(url)
+            window._add_url()
+        first, second = window.jobs[window.row_job_ids[0]], window.jobs[window.row_job_ids[1]]
+        first.status = DownloadStatus.METADATA
+
+        started = []
+        monkeypatch.setattr(window, "_run_worker", lambda job, approved_metadata=None: started.append(job))
+
+        window._on_metadata_ready(first.id, TrackMetadata(title="Song", artist="Artist"), "review_required", [])
+        window._worker_finished()
+
+        assert first.status == DownloadStatus.REVIEW_REQUIRED
+        assert second.status == DownloadStatus.PENDING
+        assert started == []
+        assert window.tabs.currentIndex() == window.review_tab_index
+        assert window.table.currentRow() == 0
+        assert window.start_queue_button.isEnabled() is False
+        assert window.approve_button.isEnabled() is True
+        assert "Queue paused" in window.queue_status_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_queue_continues_after_review_approval_finishes(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        for url in ("https://youtu.be/needs-review", "https://youtu.be/next"):
+            window.url_input.setText(url)
+            window._add_url()
+        first, second = window.jobs[window.row_job_ids[0]], window.jobs[window.row_job_ids[1]]
+        first.status = DownloadStatus.REVIEW_REQUIRED
+        first.selected_metadata = TrackMetadata(title="Song", artist="Artist")
+        window._load_job_for_review(first)
+
+        started = []
+
+        def fake_run_worker(job, approved_metadata=None):
+            started.append((job, approved_metadata))
+            job.status = DownloadStatus.DOWNLOADING
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+
+        window._approve_selected()
+        first.status = DownloadStatus.DONE
+        window._worker_finished()
+
+        assert started[0][0] is first
+        assert started[0][1].title == "Song"
+        assert started[1][0] is second
+        assert started[1][1] is None
     finally:
         window.close()
         app.processEvents()

@@ -32,6 +32,8 @@ Before each commit, run the most relevant test command and check `git status --s
 
 The app can run without browser cookies for public URLs. For account-scoped access, select a browser in Settings so yt-dlp can use `cookiesfrombrowser`.
 
+If Chrome or Edge cookies fail with a locked cookie database error, enable "Use Chrome/Edge cookie unlock if the browser database is locked" in Settings. This is an opt-in Windows-only fallback based on `seproDev/yt-dlp-ChromeCookieUnlock`; it asks Windows Restart Manager to release the lock and may close the browser process holding that cookie database.
+
 For YouTube Music metadata calls, create a `ytmusicapi` browser auth JSON outside git and select it in Settings. Do not commit auth JSON or copied request headers.
 
 ## Audio Recognition
@@ -59,7 +61,7 @@ The review tab shows a review queue, candidate metadata rows, matched fields, ca
 
 ## Beta Diagnostics
 
-The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, browser cookies, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, cover source, and written/skipped tag fields.
+The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, browser cookies, cookie unlock state, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, cover source, and written/skipped tag fields.
 
 For packaged or local metadata smoke checks without audio download:
 

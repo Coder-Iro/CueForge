@@ -110,6 +110,23 @@ def test_worker_downloads_temp_audio_for_low_confidence_youtube(tmp_path: Path) 
     assert FakeDownloader.downloads == [downloaded_path]
 
 
+def test_worker_passes_cookie_unlock_setting_to_downloader(tmp_path: Path) -> None:
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    worker = JobWorker(
+        job,
+        cookie_browser="chrome",
+        unlock_browser_cookie_database=True,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+    )
+
+    downloader = worker._new_downloader(tmp_path)
+
+    assert downloader.config.cookie_browser == "chrome"
+    assert downloader.config.unlock_browser_cookie_database is True
+
+
 def test_worker_skips_auto_approved_audio_recognition_by_default(tmp_path: Path) -> None:
     FakeDownloader.downloads.clear()
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)

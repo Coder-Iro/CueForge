@@ -11,6 +11,12 @@ YT-DJ depends on Python packages and external command-line tools. This file is a
 - ytmusicapi: MIT, used for YouTube Music metadata.
 - platformdirs: MIT, used for cache path resolution.
 
+## Vendored / Adapted Code
+
+- seproDev/yt-dlp-ChromeCookieUnlock: MIT, adapted as an opt-in Windows-only Chromium cookie database unlock fallback for yt-dlp browser-cookie extraction.
+  - Repository: https://github.com/seproDev/yt-dlp-ChromeCookieUnlock
+  - The unlock routine is based on Charles Machalow's MIT-licensed Windows Restart Manager approach referenced by that project.
+
 ## Online Installer Dependencies
 
 The Windows online installer downloads external command-line tools during setup and verifies SHA256 before extraction. Exact versions, URLs, and hashes are resolved from `microsoft/winget-pkgs` at release build time and recorded in the generated release dependency report.

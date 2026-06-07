@@ -75,6 +75,42 @@ def test_fetch_info_accepts_cookie_browser_string_from_qt(tmp_path: Path) -> Non
     assert FakeYDL.calls[-1]["cookiesfrombrowser"] == ("chrome",)
 
 
+def test_chromium_cookie_unlock_can_be_enabled_for_chrome(tmp_path: Path, monkeypatch) -> None:
+    FakeYDL.calls.clear()
+    unlock_calls: list[bool] = []
+    monkeypatch.setattr("ytdj.download.set_chromium_cookie_unlock_enabled", unlock_calls.append)
+    downloader = YTDLPDownloader(
+        DownloadConfig(
+            output_dir=tmp_path,
+            cookie_browser=CookieBrowser.CHROME,
+            unlock_browser_cookie_database=True,
+        ),
+        ydl_factory=FakeYDL,
+    )
+
+    downloader.fetch_info("https://music.youtube.com/watch?v=abc")
+
+    assert unlock_calls == [True]
+    assert FakeYDL.calls[-1]["cookiesfrombrowser"] == ("chrome",)
+
+
+def test_cookie_unlock_is_not_enabled_for_firefox(tmp_path: Path, monkeypatch) -> None:
+    unlock_calls: list[bool] = []
+    monkeypatch.setattr("ytdj.download.set_chromium_cookie_unlock_enabled", unlock_calls.append)
+    downloader = YTDLPDownloader(
+        DownloadConfig(
+            output_dir=tmp_path,
+            cookie_browser=CookieBrowser.FIREFOX,
+            unlock_browser_cookie_database=True,
+        ),
+        ydl_factory=FakeYDL,
+    )
+
+    downloader.fetch_info("https://music.youtube.com/watch?v=abc")
+
+    assert unlock_calls == [False]
+
+
 def test_fetch_info_retries_without_browser_cookies_when_cookie_copy_fails(tmp_path: Path) -> None:
     CookieCopyFailingYDL.calls.clear()
     downloader = YTDLPDownloader(

@@ -67,6 +67,7 @@ class JobWorker(QThread):
         job: DownloadJob,
         *,
         cookie_browser: CookieBrowser | None,
+        unlock_browser_cookie_database: bool = False,
         ytmusic_auth_path: Path | None,
         ffmpeg_location: Path | None,
         acoustid_config: AcoustIDConfig | None = None,
@@ -83,6 +84,7 @@ class JobWorker(QThread):
         super().__init__()
         self.job = job
         self.cookie_browser = cookie_browser
+        self.unlock_browser_cookie_database = unlock_browser_cookie_database
         self.ytmusic_auth_path = ytmusic_auth_path
         self.ffmpeg_location = ffmpeg_location
         self.acoustid_config = acoustid_config or AcoustIDConfig()
@@ -139,6 +141,7 @@ class JobWorker(QThread):
             DownloadConfig(
                 output_dir=output_dir,
                 cookie_browser=self.cookie_browser,
+                unlock_browser_cookie_database=self.unlock_browser_cookie_database,
                 ffmpeg_location=self.ffmpeg_location,
             ),
             self._on_progress,
@@ -307,6 +310,7 @@ class MainWindow(QMainWindow):
         self.cookie_combo.addItem("Chrome", CookieBrowser.CHROME)
         self.cookie_combo.addItem("Edge", CookieBrowser.EDGE)
         self.cookie_combo.addItem("Firefox", CookieBrowser.FIREFOX)
+        self.cookie_unlock_checkbox = QCheckBox("Use Chrome/Edge cookie unlock if the browser database is locked")
         self.auth_path_input = QLineEdit()
         self.ffmpeg_path_input = QLineEdit()
         self.audio_recognition_checkbox = QCheckBox("Use AcoustID when metadata confidence is low")
@@ -581,6 +585,7 @@ class MainWindow(QMainWindow):
         form.addRow("Output folder", output_row)
 
         form.addRow("Browser cookies", self.cookie_combo)
+        form.addRow(self.cookie_unlock_checkbox)
         form.addRow("YTMusic auth JSON", self._path_row(self.auth_path_input, self._browse_auth_file))
         form.addRow("ffmpeg path", self._path_row(self.ffmpeg_path_input, self._browse_ffmpeg))
 
@@ -622,6 +627,9 @@ class MainWindow(QMainWindow):
             _settings_bool(self._settings.value("acoustid/verify_auto_approved", False), default=False)
         )
         self._set_cookie_browser(str(self._settings.value("auth/cookie_browser", "")))
+        self.cookie_unlock_checkbox.setChecked(
+            _settings_bool(self._settings.value("auth/unlock_browser_cookie_database", False), default=False)
+        )
 
     def save_settings(self) -> None:
         self._settings.setValue("paths/output_dir", self.output_dir_input.text().strip())
@@ -633,6 +641,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue("acoustid/verify_auto_approved", self.verify_auto_approved_checkbox.isChecked())
         cookie_browser = self.cookie_combo.currentData()
         self._settings.setValue("auth/cookie_browser", _cookie_browser_value(cookie_browser))
+        self._settings.setValue("auth/unlock_browser_cookie_database", self.cookie_unlock_checkbox.isChecked())
         self._settings.sync()
         if hasattr(self, "dependency_status_label"):
             self.dependency_status_label.setText(self._settings_status_text())
@@ -650,11 +659,13 @@ class MainWindow(QMainWindow):
         fpcalc = find_executable("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))
         acoustid = "configured" if self.acoustid_key_input.text().strip() else "missing"
         cookies = _cookie_browser_value(self.cookie_combo.currentData()) or "none"
+        cookie_unlock = "on" if self.cookie_unlock_checkbox.isChecked() else "off"
         ytmusic_auth = "configured" if self.auth_path_input.text().strip() else "missing"
         return (
             f"Settings: ffmpeg {ffmpeg.source if ffmpeg.available else 'missing'}; "
             f"fpcalc {fpcalc.source if fpcalc.available else 'missing'}; "
-            f"AcoustID {acoustid}; browser cookies {cookies}; YTMusic auth {ytmusic_auth}."
+            f"AcoustID {acoustid}; browser cookies {cookies}; cookie unlock {cookie_unlock}; "
+            f"YTMusic auth {ytmusic_auth}."
         )
 
     def closeEvent(self, event: Any) -> None:
@@ -740,6 +751,7 @@ class MainWindow(QMainWindow):
         self.worker = JobWorker(
             job,
             cookie_browser=self.cookie_combo.currentData(),
+            unlock_browser_cookie_database=self.cookie_unlock_checkbox.isChecked(),
             ytmusic_auth_path=_optional_path(self.auth_path_input.text()),
             ffmpeg_location=_optional_path(self.ffmpeg_path_input.text()),
             acoustid_config=AcoustIDConfig(

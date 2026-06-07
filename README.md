@@ -29,6 +29,7 @@ python -m venv .venv
 ```
 
 The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings.
+For account-scoped YouTube access, select Chrome or Edge browser cookies in Settings. If yt-dlp cannot copy the locked Chromium cookie database, the optional Chrome/Edge cookie unlock setting applies bundled logic adapted from `seproDev/yt-dlp-ChromeCookieUnlock`; keep it off unless that specific cookie-copy failure occurs because it may close the browser process holding the database lock.
 Use `python -m ytdj --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
 
 ## Windows Packaging

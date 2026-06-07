@@ -162,6 +162,7 @@ def test_main_window_has_audio_recognition_settings(tmp_path) -> None:
     try:
         assert window.audio_recognition_checkbox.isChecked() is True
         assert window.verify_auto_approved_checkbox.isChecked() is False
+        assert window.cookie_unlock_checkbox.isChecked() is False
         window.acoustid_key_input.setText("client-key")
         window.fpcalc_path_input.setText("C:\\tools\\fpcalc.exe")
 
@@ -179,6 +180,7 @@ def test_main_window_persists_beta_settings(tmp_path) -> None:
     try:
         window.output_dir_input.setText("D:\\Music")
         window.cookie_combo.setCurrentIndex(1)
+        window.cookie_unlock_checkbox.setChecked(True)
         window.verify_auto_approved_checkbox.setChecked(True)
         window.acoustid_key_input.setText("client-key")
         window.save_settings()
@@ -190,6 +192,7 @@ def test_main_window_persists_beta_settings(tmp_path) -> None:
     try:
         assert restored.output_dir_input.text() == "D:\\Music"
         assert restored.cookie_combo.currentData() == "chrome"
+        assert restored.cookie_unlock_checkbox.isChecked() is True
         assert restored.verify_auto_approved_checkbox.isChecked() is True
         assert restored.acoustid_key_input.text() == "client-key"
     finally:

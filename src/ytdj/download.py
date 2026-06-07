@@ -8,6 +8,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
+from ytdj.chrome_cookie_unlock import set_chromium_cookie_unlock_enabled
+
 
 class CookieBrowser(str, Enum):
     CHROME = "chrome"
@@ -24,6 +26,7 @@ class DownloadConfig:
     audio_bitrate_kbps: int = 320
     keep_original: bool = False
     allow_remote_js_components: bool = True
+    unlock_browser_cookie_database: bool = False
     quiet: bool = True
 
 
@@ -121,6 +124,9 @@ class YTDLPDownloader:
         if self.config.ffmpeg_location:
             options["ffmpeg_location"] = str(self.config.ffmpeg_location)
         cookie_browser = _cookie_browser_value(self.config.cookie_browser)
+        set_chromium_cookie_unlock_enabled(
+            bool(cookie_browser and self.config.unlock_browser_cookie_database and _is_chromium_cookie_browser(cookie_browser))
+        )
         if cookie_browser:
             options["cookiesfrombrowser"] = (cookie_browser,)
         if self.config.allow_remote_js_components:
@@ -171,6 +177,10 @@ def _cookie_browser_value(cookie_browser: CookieBrowser | str | None) -> str:
     if isinstance(cookie_browser, str):
         return cookie_browser.strip()
     return ""
+
+
+def _is_chromium_cookie_browser(cookie_browser: str) -> bool:
+    return cookie_browser.casefold() in {"chrome", "edge", "chromium", "brave", "vivaldi", "opera"}
 
 
 def _should_retry_without_browser_cookies(exc: Exception, options: dict[str, Any]) -> bool:

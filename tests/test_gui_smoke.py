@@ -117,6 +117,30 @@ def test_review_tab_gives_queue_and_provider_tables_room(tmp_path) -> None:
         app.processEvents()
 
 
+def test_tag_editor_places_cover_preview_beside_fields(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.resize(1000, 900)
+        window.tabs.setCurrentIndex(window.review_tab_index)
+        window.show()
+        app.processEvents()
+
+        assert window.review_splitter is not None
+        window.review_splitter.setSizes([90, 110, 700])
+        app.processEvents()
+
+        title_field = window.review_fields["title"]
+        title_rect = QRect(title_field.mapTo(window, QPoint(0, 0)), title_field.size())
+        cover_rect = QRect(window.cover_preview_label.mapTo(window, QPoint(0, 0)), window.cover_preview_label.size())
+
+        assert cover_rect.left() > title_rect.right()
+        assert cover_rect.top() <= title_rect.top() + 40
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_main_window_marks_soundcloud_source(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))

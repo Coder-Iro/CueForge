@@ -373,6 +373,7 @@ class MainWindow(QMainWindow):
         self.confidence_detail_label = QLabel("")
         self.confidence_detail_label.setWordWrap(True)
         self.cover_source_label = QLabel("Cover source: none")
+        self.cover_source_label.setWordWrap(True)
         self.cover_preview_label = QLabel("No cover")
         self.cover_preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cover_preview_label.setFixedSize(180, 180)
@@ -521,15 +522,23 @@ class MainWindow(QMainWindow):
         }
         for key, label in labels.items():
             form.addRow(label, self.review_fields[key])
-        tag_editor_layout.addLayout(form)
 
-        cover_row = QWidget()
-        cover_layout = QGridLayout(cover_row)
+        cover_panel = QWidget()
+        cover_layout = QVBoxLayout(cover_panel)
         cover_layout.setContentsMargins(0, 0, 0, 0)
-        cover_layout.addWidget(self.cover_preview_label, 0, 0, 2, 1)
-        cover_layout.addWidget(self.cover_source_label, 0, 1)
-        cover_layout.setColumnStretch(1, 1)
-        tag_editor_layout.addWidget(cover_row)
+        cover_layout.addWidget(self.cover_preview_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        cover_layout.addWidget(self.cover_source_label)
+        cover_layout.addStretch(1)
+        cover_panel.setFixedWidth(220)
+
+        editor_body = QWidget()
+        editor_body_layout = QGridLayout(editor_body)
+        editor_body_layout.setContentsMargins(0, 0, 0, 0)
+        editor_body_layout.addLayout(form, 0, 0)
+        editor_body_layout.addWidget(cover_panel, 0, 1, Qt.AlignmentFlag.AlignTop)
+        editor_body_layout.setColumnStretch(0, 1)
+        editor_body_layout.setColumnStretch(1, 0)
+        tag_editor_layout.addWidget(editor_body)
 
         review_action_row = QHBoxLayout()
         review_action_row.addStretch(1)

@@ -51,7 +51,7 @@ def test_main_window_can_queue_multiple_pasted_urls(tmp_path) -> None:
         assert window.table.item(1, 3).text() == "https://youtu.be/7B4yU08Bs5A?si=JTpGDd5Z71F-Bysg"
         assert window.table.item(2, 3).text() == "https://soundcloud.com/artist/track"
         assert window.table.item(3, 3).text() == "https://music.youtube.com/watch?v=abc"
-        assert window.queue_status_label.text().startswith("4 track(s) ready")
+        assert window.queue_status_label.text().startswith("4개 트랙")
     finally:
         window.close()
         app.processEvents()
@@ -297,11 +297,11 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
 
         assert window.review_queue_table.rowCount() == 1
         assert window.review_queue_table.item(0, 0).text() == "Fallback"
-        assert window.review_queue_table.item(0, 2).text() == "review"
-        assert "score 0.70" in window.confidence_detail_label.text()
-        assert "needs review" in window.confidence_detail_label.text()
+        assert window.review_queue_table.item(0, 2).text() == "검수"
+        assert "점수 0.70" in window.confidence_detail_label.text()
+        assert "검수 필요" in window.confidence_detail_label.text()
         assert window.candidate_table.item(0, 3).text() == "140 (GetSongBPM 0.70)"
-        assert "BPM source: GetSongBPM" in window.confidence_detail_label.text()
+        assert "BPM 출처: GetSongBPM" in window.confidence_detail_label.text()
     finally:
         window.close()
         app.processEvents()
@@ -309,8 +309,8 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
 
 def test_cover_source_infers_known_artwork_hosts() -> None:
     assert _cover_source_from_url("https://coverartarchive.org/release/rel/front-500.jpg") == "Cover Art Archive"
-    assert _cover_source_from_url("https://i1.sndcdn.com/artworks-test.jpg") == "SoundCloud native"
-    assert _cover_source_from_url("https://i.ytimg.com/vi/abc/maxresdefault.jpg") == "YouTube fallback"
+    assert _cover_source_from_url("https://i1.sndcdn.com/artworks-test.jpg") == "SoundCloud 기본 커버"
+    assert _cover_source_from_url("https://i.ytimg.com/vi/abc/maxresdefault.jpg") == "YouTube 대체 썸네일"
 
 
 def test_extract_urls_handles_pasted_text_and_de_duplicates() -> None:
@@ -332,7 +332,7 @@ def test_copy_diagnostics_puts_report_on_clipboard(tmp_path, monkeypatch) -> Non
         window._copy_diagnostics()
 
         assert QApplication.clipboard().text() == "diagnostics report"
-        assert "diagnostics copied" in window.log.toPlainText()
+        assert "진단 정보가 클립보드에 복사됨" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
@@ -354,7 +354,7 @@ def test_metadata_ready_accepts_review_state_string(tmp_path) -> None:
         )
 
         assert job.status == DownloadStatus.REVIEW_REQUIRED
-        assert "metadata requires review: review_required" in window.log.toPlainText()
+        assert "메타데이터 검수 필요: 검수 필요" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
@@ -377,7 +377,7 @@ def test_auto_approved_metadata_waits_for_download_approved(tmp_path) -> None:
 
         assert job.status == DownloadStatus.APPROVED
         assert window.download_approved_button.isEnabled() is True
-        assert "ready to download" in window.log.toPlainText()
+        assert "다운로드 준비 완료" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
@@ -401,7 +401,7 @@ def test_approved_selected_track_can_move_back_to_review_queue(tmp_path) -> None
         window._move_selected_to_review_queue()
 
         assert job.status == DownloadStatus.REVIEW_REQUIRED
-        assert window.table.item(0, 0).text() == DownloadStatus.REVIEW_REQUIRED.value
+        assert window.table.item(0, 0).text() == "검수 필요"
         assert window.review_queue_table.rowCount() == 1
         assert window.review_queue_table.item(0, 0).text() == "Approved Song"
         assert window.active_review_job_id == job.id
@@ -575,7 +575,7 @@ def test_review_required_does_not_block_pending_queue_items(tmp_path, monkeypatc
         assert started == [(second, None, True)]
         assert window.tabs.currentIndex() == window.queue_tab_index
         assert window.approve_button.isEnabled() is True
-        assert window.tabs.tabText(window.review_tab_index) == "Review (1)"
+        assert window.tabs.tabText(window.review_tab_index) == "검수 (1)"
     finally:
         window.close()
         app.processEvents()
@@ -674,7 +674,7 @@ def test_new_review_item_does_not_replace_active_review_form(tmp_path) -> None:
         assert window.active_review_job_id == first.id
         assert window.review_fields["title"].text() == "First"
         assert second.status == DownloadStatus.REVIEW_REQUIRED
-        assert window.tabs.tabText(window.review_tab_index) == "Review (2)"
+        assert window.tabs.tabText(window.review_tab_index) == "검수 (2)"
     finally:
         window.close()
         app.processEvents()

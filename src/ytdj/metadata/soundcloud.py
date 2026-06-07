@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from ytdj.metadata.normalize import clean_metadata, parse_artist_title, squash_spaces
@@ -36,6 +37,7 @@ def build_soundcloud_metadata(info: dict[str, Any], source_url: str = "") -> Tra
     description = squash_spaces(str(info.get("description") or ""))
     comment_parts = [part for part in (url, _description_excerpt(description)) if part]
     cover_url = squash_spaces(str(info.get("thumbnail") or ""))
+    bpm = _bpm_value(info)
 
     metadata = TrackMetadata(
         title=title,
@@ -44,6 +46,9 @@ def build_soundcloud_metadata(info: dict[str, Any], source_url: str = "") -> Tra
         album_artist=artist,
         genre=_soundcloud_genre(info),
         release_date=str(info.get("release_date") or info.get("upload_date") or ""),
+        bpm=bpm,
+        bpm_source="native:soundcloud" if bpm else "",
+        bpm_confidence=1.0 if bpm else None,
         cover_url=cover_url,
         cover_source="SoundCloud native" if cover_url else "",
         source_url=url,
@@ -59,6 +64,9 @@ def build_soundcloud_metadata(info: dict[str, Any], source_url: str = "") -> Tra
         release_date=cleaned.release_date,
         track_number=cleaned.track_number,
         disc_number=cleaned.disc_number,
+        bpm=cleaned.bpm,
+        bpm_source=cleaned.bpm_source,
+        bpm_confidence=cleaned.bpm_confidence,
         label=cleaned.label,
         isrc=cleaned.isrc,
         cover_url=cleaned.cover_url,
@@ -75,6 +83,8 @@ def build_soundcloud_native_candidate(info: dict[str, Any], source_url: str = ""
     matched = ["native_metadata", "title", "artist", "source_url"]
     if metadata.genre:
         matched.append("genre")
+    if metadata.bpm:
+        matched.append("bpm")
     if metadata.cover_url:
         matched.append("cover")
     if _looks_like_remix(metadata.title):
@@ -140,3 +150,20 @@ def _first(value: Any) -> str:
     if isinstance(value, list | tuple) and value:
         return str(value[0])
     return ""
+
+
+def _bpm_value(info: dict[str, Any]) -> int | None:
+    values = [info.get("bpm"), info.get("tempo")]
+    track = info.get("track")
+    if isinstance(track, dict):
+        values.extend([track.get("bpm"), track.get("tempo")])
+    for value in values:
+        if value in (None, ""):
+            continue
+        try:
+            bpm = math.floor(float(value) + 0.5)
+        except (TypeError, ValueError):
+            continue
+        if bpm > 0:
+            return bpm
+    return None

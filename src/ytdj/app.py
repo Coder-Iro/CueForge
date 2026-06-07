@@ -153,6 +153,9 @@ def _smoke_metadata(
                 "artist": candidate.metadata.artist,
                 "album": candidate.metadata.album,
                 "release_date": candidate.metadata.release_date,
+                "bpm": candidate.metadata.bpm,
+                "bpm_source": candidate.metadata.bpm_source,
+                "bpm_confidence": candidate.metadata.bpm_confidence,
                 "isrc": candidate.metadata.isrc,
                 "musicbrainz_release_id": candidate.metadata.musicbrainz_release_id,
             }

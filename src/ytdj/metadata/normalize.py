@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable
 from typing import Any
@@ -81,6 +82,7 @@ def _clean_date(value: str) -> str:
 
 
 def clean_metadata(metadata: TrackMetadata) -> TrackMetadata:
+    bpm = _to_bpm_int(metadata.bpm)
     return TrackMetadata(
         title=clean_title(metadata.title),
         artist=clean_artist(metadata.artist),
@@ -90,6 +92,9 @@ def clean_metadata(metadata: TrackMetadata) -> TrackMetadata:
         release_date=_clean_date(metadata.release_date),
         track_number=metadata.track_number,
         disc_number=metadata.disc_number,
+        bpm=bpm,
+        bpm_source=squash_spaces(metadata.bpm_source) if bpm else "",
+        bpm_confidence=_clean_confidence(metadata.bpm_confidence) if bpm else None,
         label=squash_spaces(metadata.label),
         isrc=squash_spaces(metadata.isrc).upper(),
         cover_url=squash_spaces(metadata.cover_url),
@@ -122,6 +127,9 @@ def build_safe_fallback(info: dict[str, Any], source_url: str = "") -> TrackMeta
             release_date=str(info.get("release_date") or info.get("upload_date") or ""),
             track_number=_to_int(info.get("track_number")),
             disc_number=_to_int(info.get("disc_number")),
+            bpm=_native_bpm(info),
+            bpm_source=_native_bpm_source(info),
+            bpm_confidence=1.0 if _native_bpm(info) else None,
             cover_url=str(info.get("thumbnail") or ""),
             cover_source="platform thumbnail" if info.get("thumbnail") else "",
             source_url=source_url or str(info.get("webpage_url") or ""),
@@ -173,3 +181,52 @@ def _to_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _to_bpm_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        bpm = math.floor(float(value) + 0.5)
+    except (TypeError, ValueError):
+        return None
+    return bpm if bpm > 0 else None
+
+
+def _clean_confidence(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(confidence, 1.0))
+
+
+def _native_bpm(info: dict[str, Any]) -> int | None:
+    for value in _native_bpm_values(info):
+        bpm = _to_bpm_int(value)
+        if bpm:
+            return bpm
+    return None
+
+
+def _native_bpm_source(info: dict[str, Any]) -> str:
+    return _native_bpm_platform(info) if _native_bpm(info) else ""
+
+
+def _native_bpm_platform(info: dict[str, Any]) -> str:
+    extractor = str(info.get("extractor_key") or info.get("extractor") or "").casefold()
+    if "soundcloud" in extractor:
+        return "native:soundcloud"
+    if "youtube" in extractor:
+        return "native:youtube"
+    return "native:source"
+
+
+def _native_bpm_values(info: dict[str, Any]) -> list[Any]:
+    values = [info.get("bpm"), info.get("tempo")]
+    track = info.get("track")
+    if isinstance(track, dict):
+        values.extend([track.get("bpm"), track.get("tempo")])
+    return values

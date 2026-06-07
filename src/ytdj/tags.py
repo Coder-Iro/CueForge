@@ -12,6 +12,7 @@ from mutagen.id3 import (
     COMM,
     ID3,
     TALB,
+    TBPM,
     TCON,
     TDRC,
     TIT2,
@@ -57,6 +58,12 @@ class RekordboxTagWriter:
         _set_text(tags, TPUB, "label", metadata.label, written, skipped)
         _set_text(tags, TSRC, "isrc", metadata.isrc, written, skipped)
 
+        if metadata.bpm:
+            tags.setall("TBPM", [TBPM(encoding=3, text=[str(metadata.bpm)])])
+            written.append("bpm")
+        else:
+            skipped.append("bpm")
+
         if metadata.track_number:
             tags.setall("TRCK", [TRCK(encoding=3, text=[str(metadata.track_number)])])
             written.append("track_number")
@@ -84,6 +91,12 @@ class RekordboxTagWriter:
 
         _set_txxx(tags, "MusicBrainz Recording Id", metadata.musicbrainz_recording_id, "musicbrainz_recording_id", written, skipped)
         _set_txxx(tags, "MusicBrainz Album Id", metadata.musicbrainz_release_id, "musicbrainz_release_id", written, skipped)
+        if metadata.bpm:
+            _set_txxx(tags, "BPM Source", metadata.bpm_source, "bpm_source", written, skipped)
+            bpm_confidence = "" if metadata.bpm_confidence is None else f"{metadata.bpm_confidence:.3f}"
+            _set_txxx(tags, "BPM Confidence", bpm_confidence, "bpm_confidence", written, skipped)
+        else:
+            skipped.extend(["bpm_source", "bpm_confidence"])
 
         if metadata.cover_url:
             try:

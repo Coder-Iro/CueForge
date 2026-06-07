@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from ytdj.download import CookieBrowser, DownloadConfig, DownloadProgress, YTDLPDownloader
-from ytdj.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, MetadataResolver
+from ytdj.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, GetSongBpmConfig, MetadataResolver
 from ytdj.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from ytdj.metadata.matching import text_similarity
 from ytdj.metadata.normalize import merge_metadata
@@ -71,6 +71,7 @@ class JobWorker(QThread):
         ytmusic_auth_path: Path | None,
         ffmpeg_location: Path | None,
         acoustid_config: AcoustIDConfig | None = None,
+        getsongbpm_api_key: str = "",
         audio_recognition_enabled: bool = True,
         verify_auto_approved_metadata: bool = False,
         approved_metadata: TrackMetadata | None = None,
@@ -88,6 +89,7 @@ class JobWorker(QThread):
         self.ytmusic_auth_path = ytmusic_auth_path
         self.ffmpeg_location = ffmpeg_location
         self.acoustid_config = acoustid_config or AcoustIDConfig()
+        self.getsongbpm_api_key = getsongbpm_api_key
         self.audio_recognition_enabled = audio_recognition_enabled
         self.verify_auto_approved_metadata = verify_auto_approved_metadata
         self.approved_metadata = approved_metadata
@@ -150,7 +152,10 @@ class JobWorker(QThread):
     def _new_resolver(self) -> MetadataResolver:
         if self._resolver_factory:
             return self._resolver_factory()
-        return MetadataResolver(cover_art_provider_factory=self._cover_art_provider_factory)
+        return MetadataResolver(
+            cover_art_provider_factory=self._cover_art_provider_factory,
+            bpm_config=GetSongBpmConfig(client_key=self.getsongbpm_api_key),
+        )
 
     def _resolve_metadata(self, downloader: YTDLPDownloader) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate], SourcePlatform]:
         self.progress_changed.emit(self.job.id, 0.0, DownloadStatus.METADATA.value)
@@ -170,6 +175,11 @@ class JobWorker(QThread):
             matched = ", ".join(best.matched_fields) or "no matched fields"
             self.log_message.emit(self.job.id, f"best metadata candidate: {best.provider} {best.score:.2f} ({matched})")
         self.log_message.emit(self.job.id, f"selected metadata: {resolution.metadata.artist} - {resolution.metadata.title}")
+        if resolution.metadata.bpm:
+            self.log_message.emit(
+                self.job.id,
+                f"selected BPM: {resolution.metadata.bpm} ({resolution.metadata.bpm_source or 'metadata'})",
+            )
         if resolution.metadata.cover_url:
             cover_source = resolution.metadata.cover_source or _cover_source_from_url(resolution.metadata.cover_url)
             self.log_message.emit(self.job.id, f"cover source: {cover_source}")
@@ -270,7 +280,7 @@ class UrlInput(QPlainTextEdit):
 class MainWindow(QMainWindow):
     COLUMNS = ("Status", "Progress", "Source", "URL", "Title", "Artist", "Output")
     REVIEW_QUEUE_COLUMNS = ("Title", "Artist", "Confidence", "URL")
-    CANDIDATE_COLUMNS = ("Provider", "Score", "Confidence", "Matched", "Title", "Artist", "Album", "Date", "ISRC", "Cover")
+    CANDIDATE_COLUMNS = ("Provider", "Score", "Confidence", "BPM", "Matched", "Title", "Artist", "Album", "Date", "ISRC", "Cover")
 
     def __init__(self, *, settings: QSettings | None = None) -> None:
         super().__init__()
@@ -318,6 +328,8 @@ class MainWindow(QMainWindow):
         self.verify_auto_approved_checkbox = QCheckBox("Verify YouTube auto-approved metadata with AcoustID")
         self.acoustid_key_input = QLineEdit()
         self.acoustid_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.getsongbpm_key_input = QLineEdit()
+        self.getsongbpm_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.fpcalc_path_input = QLineEdit()
 
         self.table = QTableWidget(0, len(self.COLUMNS))
@@ -342,8 +354,8 @@ class MainWindow(QMainWindow):
 
         self.candidate_table = QTableWidget(0, len(self.CANDIDATE_COLUMNS))
         self.candidate_table.setHorizontalHeaderLabels(self.CANDIDATE_COLUMNS)
-        self.candidate_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self.candidate_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.candidate_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         self.candidate_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.candidate_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.candidate_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -366,6 +378,7 @@ class MainWindow(QMainWindow):
             "album_artist": QLineEdit(),
             "genre": QLineEdit(),
             "release_date": QLineEdit(),
+            "bpm": QLineEdit(),
             "label": QLineEdit(),
             "isrc": QLineEdit(),
             "cover_url": QLineEdit(),
@@ -520,6 +533,7 @@ class MainWindow(QMainWindow):
             "album_artist": "Album Artist",
             "genre": "Genre",
             "release_date": "Date",
+            "bpm": "BPM",
             "label": "Label",
             "isrc": "ISRC",
             "cover_url": "Cover URL",
@@ -595,12 +609,17 @@ class MainWindow(QMainWindow):
         recognition_form.addRow(self.verify_auto_approved_checkbox)
         recognition_form.addRow("AcoustID client key", self.acoustid_key_input)
         recognition_form.addRow("fpcalc path", self._path_row(self.fpcalc_path_input, self._browse_fpcalc))
+
+        bpm_group = QGroupBox("External BPM")
+        bpm_form = QFormLayout(bpm_group)
+        bpm_form.addRow("GetSongBPM API key", self.getsongbpm_key_input)
         diagnostics_button = QPushButton("Copy Diagnostics")
         diagnostics_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
         diagnostics_button.clicked.connect(self._copy_diagnostics)
 
         layout.addWidget(paths_group)
         layout.addWidget(recognition_group)
+        layout.addWidget(bpm_group)
         layout.addWidget(diagnostics_button)
         layout.addStretch()
         return root
@@ -622,6 +641,7 @@ class MainWindow(QMainWindow):
         self.ffmpeg_path_input.setText(str(self._settings.value("paths/ffmpeg", "")))
         self.fpcalc_path_input.setText(str(self._settings.value("paths/fpcalc", "")))
         self.acoustid_key_input.setText(str(self._settings.value("acoustid/client_key", "")))
+        self.getsongbpm_key_input.setText(str(self._settings.value("bpm/getsongbpm_api_key", "")))
         self.audio_recognition_checkbox.setChecked(_settings_bool(self._settings.value("acoustid/enabled", True), default=True))
         self.verify_auto_approved_checkbox.setChecked(
             _settings_bool(self._settings.value("acoustid/verify_auto_approved", False), default=False)
@@ -637,6 +657,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue("paths/ffmpeg", self.ffmpeg_path_input.text().strip())
         self._settings.setValue("paths/fpcalc", self.fpcalc_path_input.text().strip())
         self._settings.setValue("acoustid/client_key", self.acoustid_key_input.text().strip())
+        self._settings.setValue("bpm/getsongbpm_api_key", self.getsongbpm_key_input.text().strip())
         self._settings.setValue("acoustid/enabled", self.audio_recognition_checkbox.isChecked())
         self._settings.setValue("acoustid/verify_auto_approved", self.verify_auto_approved_checkbox.isChecked())
         cookie_browser = self.cookie_combo.currentData()
@@ -658,13 +679,14 @@ class MainWindow(QMainWindow):
         ffmpeg = find_executable("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text()))
         fpcalc = find_executable("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))
         acoustid = "configured" if self.acoustid_key_input.text().strip() else "missing"
+        getsongbpm = "configured" if self.getsongbpm_key_input.text().strip() else "missing"
         cookies = _cookie_browser_value(self.cookie_combo.currentData()) or "none"
         cookie_unlock = "on" if self.cookie_unlock_checkbox.isChecked() else "off"
         ytmusic_auth = "configured" if self.auth_path_input.text().strip() else "missing"
         return (
             f"Settings: ffmpeg {ffmpeg.source if ffmpeg.available else 'missing'}; "
             f"fpcalc {fpcalc.source if fpcalc.available else 'missing'}; "
-            f"AcoustID {acoustid}; browser cookies {cookies}; cookie unlock {cookie_unlock}; "
+            f"AcoustID {acoustid}; GetSongBPM {getsongbpm}; browser cookies {cookies}; cookie unlock {cookie_unlock}; "
             f"YTMusic auth {ytmusic_auth}."
         )
 
@@ -758,6 +780,7 @@ class MainWindow(QMainWindow):
                 client_key=self.acoustid_key_input.text().strip(),
                 fpcalc_path=_optional_path(self.fpcalc_path_input.text()),
             ),
+            getsongbpm_api_key=self.getsongbpm_key_input.text().strip(),
             audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
             verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
             approved_metadata=approved_metadata,
@@ -968,7 +991,10 @@ class MainWindow(QMainWindow):
             trust_note = " - SoundCloud metadata trusted"
         matched = ", ".join(candidate.matched_fields) or "no matched fields"
         bucket = _confidence_bucket(candidate)
-        self.candidate_label.setText(f"Best candidate: {candidate.provider} {candidate.score:.2f} - {bucket} ({matched}){trust_note}")
+        bpm_note = ""
+        if candidate.metadata.bpm:
+            bpm_note = f"; BPM {candidate.metadata.bpm} from {candidate.metadata.bpm_source or candidate.provider}"
+        self.candidate_label.setText(f"Best candidate: {candidate.provider} {candidate.score:.2f} - {bucket} ({matched}){trust_note}{bpm_note}")
         self.confidence_detail_label.setText(_confidence_explanation(candidate, reference=reference))
 
     def _populate_candidate_table(self, job: DownloadJob) -> None:
@@ -978,6 +1004,7 @@ class MainWindow(QMainWindow):
                 candidate.provider,
                 f"{candidate.score:.3f}",
                 _confidence_bucket(candidate),
+                _bpm_display(candidate.metadata),
                 ", ".join(candidate.matched_fields),
                 candidate.metadata.title,
                 candidate.metadata.artist,
@@ -1073,6 +1100,12 @@ class MainWindow(QMainWindow):
     def _metadata_from_review_fields(self, base: TrackMetadata) -> TrackMetadata:
         cover_url = self.review_fields["cover_url"].text().strip()
         cover_source = "manual" if cover_url and cover_url != base.cover_url else base.cover_source
+        bpm = _optional_bpm(self.review_fields["bpm"].text())
+        bpm_source = base.bpm_source
+        bpm_confidence = base.bpm_confidence
+        if bpm != base.bpm:
+            bpm_source = "manual" if bpm else ""
+            bpm_confidence = 1.0 if bpm else None
         return TrackMetadata(
             title=self.review_fields["title"].text().strip(),
             artist=self.review_fields["artist"].text().strip(),
@@ -1080,6 +1113,9 @@ class MainWindow(QMainWindow):
             album_artist=self.review_fields["album_artist"].text().strip(),
             genre=self.review_fields["genre"].text().strip(),
             release_date=self.review_fields["release_date"].text().strip(),
+            bpm=bpm,
+            bpm_source=bpm_source,
+            bpm_confidence=bpm_confidence,
             label=self.review_fields["label"].text().strip(),
             isrc=self.review_fields["isrc"].text().strip(),
             cover_url=cover_url,
@@ -1367,6 +1403,26 @@ def _cover_source_from_url(url: str) -> str:
     return "manual" if url else ""
 
 
+def _bpm_display(metadata: TrackMetadata) -> str:
+    if not metadata.bpm:
+        return ""
+    source = metadata.bpm_source or "metadata"
+    if metadata.bpm_confidence is None:
+        return f"{metadata.bpm} ({source})"
+    return f"{metadata.bpm} ({source} {metadata.bpm_confidence:.2f})"
+
+
+def _optional_bpm(value: str) -> int | None:
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        bpm = int(float(stripped) + 0.5)
+    except ValueError:
+        return None
+    return bpm if bpm > 0 else None
+
+
 def _confidence_bucket(candidate: MetadataCandidate | None) -> str:
     if not candidate:
         return "manual"
@@ -1392,6 +1448,14 @@ def _confidence_explanation(candidate: MetadataCandidate, *, reference: TrackMet
         conflicts = _metadata_conflict_fields(reference, candidate.metadata)
         if conflicts:
             parts.append(f"Conflicts with current fields: {', '.join(conflicts)}.")
+    if candidate.metadata.bpm:
+        bpm_source = candidate.metadata.bpm_source or candidate.provider
+        if candidate.metadata.bpm_confidence is None:
+            parts.append(f"BPM source: {bpm_source}; BPM: {candidate.metadata.bpm}.")
+        else:
+            parts.append(
+                f"BPM source: {bpm_source}; BPM confidence: {candidate.metadata.bpm_confidence:.2f}; BPM: {candidate.metadata.bpm}."
+            )
     return " ".join(parts)
 
 

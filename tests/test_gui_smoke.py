@@ -164,9 +164,11 @@ def test_main_window_has_audio_recognition_settings(tmp_path) -> None:
         assert window.verify_auto_approved_checkbox.isChecked() is False
         assert window.cookie_unlock_checkbox.isChecked() is False
         window.acoustid_key_input.setText("client-key")
+        window.getsongbpm_key_input.setText("bpm-key")
         window.fpcalc_path_input.setText("C:\\tools\\fpcalc.exe")
 
         assert window.acoustid_key_input.text() == "client-key"
+        assert window.getsongbpm_key_input.text() == "bpm-key"
         assert window.fpcalc_path_input.text() == "C:\\tools\\fpcalc.exe"
     finally:
         window.close()
@@ -183,6 +185,7 @@ def test_main_window_persists_beta_settings(tmp_path) -> None:
         window.cookie_unlock_checkbox.setChecked(True)
         window.verify_auto_approved_checkbox.setChecked(True)
         window.acoustid_key_input.setText("client-key")
+        window.getsongbpm_key_input.setText("bpm-key")
         window.save_settings()
     finally:
         window.close()
@@ -195,6 +198,7 @@ def test_main_window_persists_beta_settings(tmp_path) -> None:
         assert restored.cookie_unlock_checkbox.isChecked() is True
         assert restored.verify_auto_approved_checkbox.isChecked() is True
         assert restored.acoustid_key_input.text() == "client-key"
+        assert restored.getsongbpm_key_input.text() == "bpm-key"
     finally:
         restored.close()
         app.processEvents()
@@ -241,6 +245,36 @@ def test_review_candidate_table_applies_selected_candidate(tmp_path) -> None:
         app.processEvents()
 
 
+def test_tag_editor_bpm_field_manual_value_wins(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.REVIEW_REQUIRED
+        job.selected_metadata = TrackMetadata(
+            title="Song",
+            artist="Artist",
+            bpm=128,
+            bpm_source="GetSongBPM",
+            bpm_confidence=0.91,
+        )
+
+        window._load_job_for_review(job)
+        assert window.review_fields["bpm"].text() == "128"
+
+        window.review_fields["bpm"].setText("220")
+        metadata = window._metadata_from_review_fields(job.selected_metadata)
+
+        assert metadata.bpm == 220
+        assert metadata.bpm_source == "manual"
+        assert metadata.bpm_confidence == 1.0
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
@@ -255,7 +289,7 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
                 provider="musicbrainz",
                 score=0.70,
                 matched_fields=("title",),
-                metadata=TrackMetadata(title="Candidate A", artist="Artist A"),
+                metadata=TrackMetadata(title="Candidate A", artist="Artist A", bpm=140, bpm_source="GetSongBPM", bpm_confidence=0.70),
             )
         ]
 
@@ -266,6 +300,8 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
         assert window.review_queue_table.item(0, 2).text() == "review"
         assert "score 0.70" in window.confidence_detail_label.text()
         assert "needs review" in window.confidence_detail_label.text()
+        assert window.candidate_table.item(0, 3).text() == "140 (GetSongBPM 0.70)"
+        assert "BPM source: GetSongBPM" in window.confidence_detail_label.text()
     finally:
         window.close()
         app.processEvents()

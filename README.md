@@ -12,6 +12,7 @@ YT-DJ is a Windows-first desktop app for downloading authorized YouTube/YouTube 
 - YouTube description/YTMusic metadata first, MusicBrainz enrichment second
 - Cover Art Archive release artwork preferred over YouTube thumbnails when MusicBrainz release metadata is available
 - AcoustID/Chromaprint audio recognition for low-confidence YouTube metadata
+- External BPM tagging from native source metadata first, then GetSongBPM strict matches when an API key is configured
 - Separate metadata analysis, review approval, and approved download/tagging steps
 - Low-confidence metadata review queue before final tagging
 
@@ -28,7 +29,7 @@ python -m venv .venv
 .\.venv\Scripts\python -m ytdj
 ```
 
-The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings.
+The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings. Optional BPM tagging can use a GetSongBPM API key in Settings; GetSongBPM requires a mandatory backlink in public releases or documentation.
 For account-scoped YouTube access, select Chrome or Edge browser cookies in Settings. If yt-dlp cannot copy the locked Chromium cookie database, the optional Chrome/Edge cookie unlock setting applies bundled logic adapted from `seproDev/yt-dlp-ChromeCookieUnlock`; keep it off unless that specific cookie-copy failure occurs because it may close the browser process holding the database lock.
 Use `python -m ytdj --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
 

@@ -12,6 +12,7 @@ python -m venv .venv
 `ffmpeg` must be on PATH or selected in the Settings tab.
 Install Deno on PATH for YouTube JavaScript challenge solving. The downloader enables yt-dlp's `ejs:github` remote component by default so Deno can run the current solver script.
 Optional audio recognition requires `fpcalc` from Chromaprint. Put `fpcalc` on PATH or select the executable in Settings.
+Optional external BPM tagging requires a GetSongBPM API key in Settings. BPM is never calculated locally.
 Use `python -m ytdj --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
 
 ## Git Workflow
@@ -44,6 +45,14 @@ For beta metadata validation, enable "Verify YouTube auto-approved metadata with
 
 Configure an AcoustID application client key in Settings. Do not commit keys or user credentials. The free AcoustID web service is intended for non-commercial use and rate-limits clients, so this app uses it only as a fallback recognition layer.
 
+## External BPM
+
+BPM source priority is manual Tag Editor input, then native yt-dlp metadata such as SoundCloud BPM/tempo, then GetSongBPM. Missing BPM is not a job failure; the app simply omits the `TBPM` tag.
+
+GetSongBPM is queried only when an API key is configured. The resolver sends `type=both`, `lookup=song:<title> artist:<artist>`, and `limit=5` to `https://api.getsong.co/search/` with the key in the `X-API-KEY` header. Only strict title/artist-centered matches scoring 0.85 or higher are applied. Values are written as integer ID3 `TBPM` frames after decimal rounding, with no half/double tempo correction, so values like 64, 174, and 220 pass through.
+
+GetSongBPM requires a mandatory backlink; include it in release notes, project docs, or the public distribution page when shipping builds. Spotify Audio Features/Audio Analysis is intentionally excluded from v1 because access for new Spotify apps is restricted.
+
 ## SoundCloud Metadata
 
 SoundCloud is primarily supported for DJ-focused remix, bootleg, edit, mashup, and free download workflows. The app trusts SoundCloud native metadata by default and preserves the original title instead of normalizing it against canonical release databases.
@@ -61,7 +70,7 @@ The review tab shows a review queue, candidate metadata rows, matched fields, ca
 
 ## Beta Diagnostics
 
-The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, browser cookies, cookie unlock state, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, cover source, and written/skipped tag fields.
+The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, GetSongBPM, browser cookies, cookie unlock state, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, BPM resolution/skips, cover source, and written/skipped tag fields.
 
 For packaged or local metadata smoke checks without audio download:
 

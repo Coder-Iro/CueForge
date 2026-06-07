@@ -41,6 +41,27 @@ def test_safe_fallback_prefers_track_fields() -> None:
     assert metadata.release_date == "2026-05-01"
 
 
+def test_safe_fallback_reads_native_bpm_without_range_normalization() -> None:
+    metadata = build_safe_fallback(
+        {
+            "title": "Song Title",
+            "artist": "Song Artist",
+            "extractor_key": "Soundcloud",
+            "bpm": 220,
+        }
+    )
+
+    assert metadata.bpm == 220
+    assert metadata.bpm_source == "native:soundcloud"
+    assert metadata.bpm_confidence == 1.0
+
+
+def test_metadata_bpm_rounds_decimal_only() -> None:
+    metadata = TrackMetadata(title="Song", artist="Artist", bpm=128.6, bpm_source="source").normalized()
+
+    assert metadata.bpm == 129
+
+
 def test_safe_fallback_prefers_parsed_artist_before_uploader() -> None:
     metadata = build_safe_fallback(
         {

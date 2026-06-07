@@ -255,7 +255,10 @@ def test_youtube_music_provider_falls_back_when_browser_cookie_auth_fails() -> N
     provider.lookup("abc")
 
     assert calls == [None]
-    assert logs == ["YTMusic 브라우저 쿠키 인증 생략: no sapisid"]
+    assert "YouTube Music 조회 시작: abc" in logs
+    assert "YTMusic 인증: chrome 브라우저 쿠키 읽는 중" in logs
+    assert "YTMusic 브라우저 쿠키 인증 생략: no sapisid" in logs
+    assert "YouTube Music 조회 완료" in logs
 
 
 def test_musicbrainz_provider_scores_and_caches(tmp_path: Path) -> None:

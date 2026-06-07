@@ -66,12 +66,17 @@ class MetadataResolver:
 
         youtube = TrackMetadata()
         if policy.use_youtube_music:
+            _log(log, "YouTube Music 메타데이터 조회 준비")
             youtube = self._new_ytmusic_provider(
                 auth_path=ytmusic_auth_path,
                 cookie_browser=ytmusic_cookie_browser,
                 unlock_browser_cookie_database=unlock_browser_cookie_database,
                 log=log,
             ).lookup(url)
+            if youtube.title or youtube.artist:
+                _log(log, f"YouTube Music 메타데이터 수신: {youtube.artist} - {youtube.title}")
+            else:
+                _log(log, "YouTube Music 메타데이터 비어 있음")
         reference = youtube.with_defaults_from(fallback).normalized()
         hint_candidates = build_hint_candidates(info)
         candidates = self._enriched_hint_candidates(hint_candidates, info, log=log)

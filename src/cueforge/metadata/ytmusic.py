@@ -47,9 +47,13 @@ class YouTubeMusicProvider:
         if not video_id:
             return TrackMetadata(source_url=url_or_video_id)
 
+        self._emit(f"YouTube Music 조회 시작: {video_id}")
         client = self._client or self._create_client()
+        self._emit("YouTube Music get_song 호출")
         song = self._safe_call(lambda: client.get_song(video_id)) or {}
+        self._emit("YouTube Music watch playlist 호출")
         watch = self._safe_call(lambda: client.get_watch_playlist(videoId=video_id, limit=1)) or {}
+        self._emit("YouTube Music 조회 완료")
         return clean_metadata(_metadata_from_ytmusic(video_id, song, watch, url_or_video_id))
 
     def _create_client(self) -> YTMusicLike:
@@ -68,10 +72,12 @@ class YouTubeMusicProvider:
             return str(self.auth_path)
 
         if not self.cookie_browser:
+            self._emit("YTMusic 인증: 브라우저 쿠키 미설정, 무인증 조회 사용")
             return None
 
         builder = self._browser_auth_builder or self._build_browser_auth
         try:
+            self._emit(f"YTMusic 인증: {self.cookie_browser} 브라우저 쿠키 읽는 중")
             auth = builder()
         except YTMusicBrowserAuthError as exc:
             self._emit(f"YTMusic 브라우저 쿠키 인증 생략: {exc}")

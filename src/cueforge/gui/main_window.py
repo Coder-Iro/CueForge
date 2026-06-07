@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -192,7 +193,12 @@ class JobWorker(QThread):
 
     def _resolve_metadata(self, downloader: YTDLPDownloader) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate], SourcePlatform]:
         self.progress_changed.emit(self.job.id, 0.0, DownloadStatus.METADATA.value)
+        started_at = time.monotonic()
+        self.log_message.emit(self.job.id, "yt-dlp 정보 조회 시작")
         info = downloader.fetch_info(self.job.url)
+        self.log_message.emit(self.job.id, f"yt-dlp 정보 조회 완료 ({_elapsed(started_at)}): {_info_summary(info)}")
+        started_at = time.monotonic()
+        self.log_message.emit(self.job.id, "메타데이터 공급자 조회 시작")
         resolution = self._new_resolver().resolve(
             url=self.job.url,
             info=info,
@@ -201,6 +207,7 @@ class JobWorker(QThread):
             unlock_browser_cookie_database=self.unlock_browser_cookie_database,
             log=lambda message: self.log_message.emit(self.job.id, message),
         )
+        self.log_message.emit(self.job.id, f"메타데이터 공급자 조회 완료 ({_elapsed(started_at)})")
         self.log_message.emit(
             self.job.id,
             f"소스: {resolution.platform.display_name}; {_trust_note_ko(resolution.platform)}",
@@ -1627,6 +1634,22 @@ def run_app() -> int:
 def _optional_path(value: str) -> Path | None:
     stripped = value.strip()
     return Path(stripped) if stripped else None
+
+
+def _elapsed(started_at: float) -> str:
+    return f"{time.monotonic() - started_at:.1f}s"
+
+
+def _info_summary(info: dict[str, Any]) -> str:
+    extractor = str(info.get("extractor_key") or info.get("extractor") or "unknown")
+    title = str(info.get("title") or "").strip()
+    video_id = str(info.get("id") or "").strip()
+    parts = [extractor]
+    if video_id:
+        parts.append(video_id)
+    if title:
+        parts.append(title[:80])
+    return " / ".join(parts)
 
 
 def _create_downloader(config: DownloadConfig, progress_callback: Any) -> YTDLPDownloader:

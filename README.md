@@ -12,7 +12,6 @@ CueForge is a Windows-first desktop app for preparing authorized YouTube, YouTub
 - YouTube description/YTMusic metadata first, MusicBrainz enrichment second
 - Cover Art Archive release artwork preferred over YouTube thumbnails when MusicBrainz release metadata is available
 - AcoustID/Chromaprint audio recognition for low-confidence YouTube metadata
-- BPM tagging from manual review values or native source metadata when available
 - Separate metadata analysis, review approval, and approved download/tagging steps
 - Low-confidence metadata review queue before final tagging
 
@@ -29,7 +28,7 @@ python -m venv .venv
 .\.venv\Scripts\python -m cueforge
 ```
 
-The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings. BPM is written when the user enters it in review or when yt-dlp exposes native source BPM/tempo metadata.
+The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings.
 For account-scoped YouTube access, select Chrome or Edge browser cookies in Settings. The same browser cookie selection is reused for YouTube Music metadata when the browser has a valid `music.youtube.com` session cookie, so manual YTMusic auth JSON is only an advanced fallback. If yt-dlp cannot copy the locked Chromium cookie database, the optional Chrome/Edge cookie unlock setting applies bundled logic adapted from `seproDev/yt-dlp-ChromeCookieUnlock`; keep it off unless that specific cookie-copy failure occurs because it may close the browser process holding the database lock.
 Use `python -m cueforge --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
 

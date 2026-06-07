@@ -68,21 +68,6 @@ class EmptyMusicBrainzProvider:
         return []
 
 
-class FakeBpmProvider:
-    def __init__(self, candidates: list[MetadataCandidate]) -> None:
-        self.candidates = candidates
-
-    def lookup(
-        self,
-        reference: TrackMetadata,
-        *,
-        info: dict,
-        platform: SourcePlatform,
-        duration_ms: int | None = None,
-    ) -> list[MetadataCandidate]:
-        return self.candidates
-
-
 def test_soundcloud_resolver_trusts_native_metadata_and_downgrades_external() -> None:
     resolver = MetadataResolver(
         ytmusic_provider_factory=lambda auth_path: FailingYTMusicProvider(),
@@ -317,56 +302,3 @@ def test_youtube_resolver_uses_compact_title_pattern_for_user_uploads() -> None:
     assert resolution.metadata.release_date == "2014-04-27"
     assert resolution.state == ReviewState.REVIEW_REQUIRED
     assert resolution.candidates[0].provider == "title_artist_title"
-
-
-def test_resolver_applies_strict_external_bpm_without_changing_review_state() -> None:
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: FakeYTMusicProvider(),
-        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
-        bpm_provider_factory=lambda config: FakeBpmProvider(
-            [
-                MetadataCandidate(
-                    provider="external_bpm",
-                    score=0.85,
-                    matched_fields=("title", "artist"),
-                    metadata=TrackMetadata(bpm=174, bpm_source="External BPM", bpm_confidence=0.85),
-                )
-            ]
-        ),
-    )
-
-    resolution = resolver.resolve(
-        url="https://youtu.be/abc",
-        info={"extractor_key": "Youtube", "title": "Fallback", "uploader": "Uploader"},
-    )
-
-    assert resolution.metadata.bpm == 174
-    assert resolution.metadata.bpm_source == "External BPM"
-    assert resolution.state == ReviewState.REVIEW_REQUIRED
-    assert resolution.candidates[-1].provider == "external_bpm"
-
-
-def test_resolver_skips_low_confidence_external_bpm() -> None:
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: FakeYTMusicProvider(),
-        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
-        bpm_provider_factory=lambda config: FakeBpmProvider(
-            [
-                MetadataCandidate(
-                    provider="external_bpm",
-                    score=0.84,
-                    matched_fields=("title",),
-                    metadata=TrackMetadata(bpm=128, bpm_source="External BPM", bpm_confidence=0.84),
-                )
-            ]
-        ),
-    )
-
-    resolution = resolver.resolve(
-        url="https://youtu.be/abc",
-        info={"extractor_key": "Youtube", "title": "Fallback", "uploader": "Uploader"},
-    )
-
-    assert resolution.metadata.bpm is None
-    assert resolution.state == ReviewState.REVIEW_REQUIRED
-    assert resolution.candidates[-1].provider == "external_bpm"

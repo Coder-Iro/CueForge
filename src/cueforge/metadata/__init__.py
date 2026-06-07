@@ -6,7 +6,6 @@ from cueforge.metadata.normalize import (
     merge_metadata,
     parse_artist_title,
 )
-from cueforge.metadata.bpm import BpmProvider, BpmProviderConfig
 from cueforge.metadata.cover_art import CoverArtConfig, CoverArtProvider
 from cueforge.metadata.hints import MetadataHint, build_hint_candidates, extract_metadata_hints
 from cueforge.metadata.fingerprint import AcoustIDConfig, AcoustIDProvider, AudioFingerprint, FpcalcFingerprinter
@@ -29,8 +28,6 @@ __all__ = [
     "CoverArtConfig",
     "CoverArtProvider",
     "FpcalcFingerprinter",
-    "BpmProvider",
-    "BpmProviderConfig",
     "MusicBrainzConfig",
     "MetadataHint",
     "MusicBrainzProvider",

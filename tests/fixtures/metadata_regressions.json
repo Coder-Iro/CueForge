@@ -34,7 +34,6 @@
       "album": "明日の私に幸あれ",
       "release_date": "2025-02-19",
       "isrc": "JPU902500162",
-      "bpm": null,
       "cover_source": "",
       "review_state": "auto_approved",
       "top_candidate_provider": "musicbrainz_from_description_エンディングテーマ"
@@ -62,7 +61,6 @@
       "album": "Dear Mother Father",
       "release_date": "",
       "isrc": "",
-      "bpm": null,
       "cover_source": "",
       "review_state": "review_required",
       "top_candidate_provider": ""
@@ -86,7 +84,6 @@
       "album": "",
       "release_date": "2014-04-27",
       "isrc": "",
-      "bpm": null,
       "cover_source": "",
       "review_state": "review_required",
       "top_candidate_provider": "title_artist_title"
@@ -129,7 +126,6 @@
       "album": "フォニイ",
       "release_date": "2021-06-05",
       "isrc": "JPV752100001",
-      "bpm": null,
       "cover_source": "",
       "review_state": "auto_approved",
       "top_candidate_provider": "musicbrainz"
@@ -144,7 +140,6 @@
       "uploader": "DJ Name",
       "genre": "J-Core",
       "thumbnail": "https://i1.sndcdn.com/artworks-native.jpg",
-      "bpm": 174,
       "webpage_url": "https://soundcloud.com/dj/anime-song-bootleg",
       "duration": 180
     },
@@ -156,7 +151,6 @@
       "album": "",
       "release_date": "",
       "isrc": "",
-      "bpm": 174,
       "cover_source": "SoundCloud native",
       "review_state": "auto_approved",
       "top_candidate_provider": "soundcloud"
@@ -184,7 +178,6 @@
       "album": "",
       "release_date": "",
       "isrc": "",
-      "bpm": null,
       "cover_source": "YouTube Music thumbnail",
       "review_state": "review_required",
       "top_candidate_provider": ""
@@ -229,7 +222,6 @@
       "album": "Album",
       "release_date": "",
       "isrc": "",
-      "bpm": null,
       "cover_source": "Cover Art Archive",
       "review_state": "auto_approved",
       "top_candidate_provider": "musicbrainz"
@@ -274,86 +266,9 @@
       "album": "Album",
       "release_date": "",
       "isrc": "",
-      "bpm": null,
       "cover_source": "YouTube Music thumbnail",
       "review_state": "auto_approved",
       "top_candidate_provider": "musicbrainz"
-    }
-  },
-  {
-    "id": "external_bpm_strict_match",
-    "url": "https://music.youtube.com/watch?v=bpm-ok",
-    "info": {
-      "extractor_key": "Youtube",
-      "title": "Song",
-      "uploader": "Artist",
-      "duration": 180
-    },
-    "ytmusic": {
-      "title": "Song",
-      "artist": "Artist"
-    },
-    "musicbrainz": [],
-    "bpm": [
-      {
-        "provider": "external_bpm",
-        "score": 0.91,
-        "matched_fields": ["title", "artist"],
-        "metadata": {
-          "bpm": 128,
-          "bpm_source": "External BPM",
-          "bpm_confidence": 0.91
-        }
-      }
-    ],
-    "expected": {
-      "title": "Song",
-      "artist": "Artist",
-      "album": "",
-      "release_date": "",
-      "isrc": "",
-      "bpm": 128,
-      "cover_source": "",
-      "review_state": "review_required",
-      "top_candidate_provider": "external_bpm"
-    }
-  },
-  {
-    "id": "external_bpm_low_match",
-    "url": "https://music.youtube.com/watch?v=bpm-low",
-    "info": {
-      "extractor_key": "Youtube",
-      "title": "Song",
-      "uploader": "Artist",
-      "duration": 180
-    },
-    "ytmusic": {
-      "title": "Song",
-      "artist": "Artist"
-    },
-    "musicbrainz": [],
-    "bpm": [
-      {
-        "provider": "external_bpm",
-        "score": 0.84,
-        "matched_fields": ["title"],
-        "metadata": {
-          "bpm": 140,
-          "bpm_source": "External BPM",
-          "bpm_confidence": 0.84
-        }
-      }
-    ],
-    "expected": {
-      "title": "Song",
-      "artist": "Artist",
-      "album": "",
-      "release_date": "",
-      "isrc": "",
-      "bpm": null,
-      "cover_source": "",
-      "review_state": "review_required",
-      "top_candidate_provider": "external_bpm"
     }
   }
 ]

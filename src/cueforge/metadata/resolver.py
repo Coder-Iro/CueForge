@@ -6,7 +6,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from cueforge.metadata.bpm import BpmProvider, BpmProviderConfig
 from cueforge.metadata.cover_art import CoverArtProvider
 from cueforge.metadata.hints import build_hint_candidates
 from cueforge.metadata.normalize import build_safe_fallback, merge_metadata
@@ -28,7 +27,6 @@ class MetadataResolution:
 YTMusicProviderFactory = Callable[..., Any]
 MusicBrainzProviderFactory = Callable[[], Any]
 CoverArtProviderFactory = Callable[[], Any]
-BpmProviderFactory = Callable[[BpmProviderConfig], Any]
 
 
 class MetadataResolver:
@@ -38,14 +36,10 @@ class MetadataResolver:
         ytmusic_provider_factory: YTMusicProviderFactory | None = None,
         musicbrainz_provider_factory: MusicBrainzProviderFactory | None = None,
         cover_art_provider_factory: CoverArtProviderFactory | None = None,
-        bpm_config: BpmProviderConfig | None = None,
-        bpm_provider_factory: BpmProviderFactory | None = None,
     ) -> None:
         self._ytmusic_provider_factory = ytmusic_provider_factory or YouTubeMusicProvider
         self._musicbrainz_provider_factory = musicbrainz_provider_factory or MusicBrainzProvider
         self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
-        self._bpm_config = bpm_config or BpmProviderConfig()
-        self._bpm_provider_factory = bpm_provider_factory or BpmProvider
 
     def resolve(
         self,
@@ -86,8 +80,6 @@ class MetadataResolver:
         candidates.extend(reference_candidates)
         metadata, state = merge_metadata(youtube=reference, candidates=candidates, fallback=fallback)
         metadata = self.enrich_cover_art(metadata, platform=platform, fallback_cover_url=reference.cover_url or fallback.cover_url, log=log)
-        metadata, bpm_candidates = self.enrich_bpm(metadata, info=info, platform=platform, log=log)
-        candidates.extend(bpm_candidates)
         return MetadataResolution(metadata=metadata, state=state, candidates=candidates, platform=platform)
 
     def _new_ytmusic_provider(
@@ -119,7 +111,6 @@ class MetadataResolver:
         native_candidate = build_soundcloud_native_candidate(info, url)
         metadata = native_candidate.metadata.with_defaults_from(fallback)
         metadata = self.enrich_cover_art(metadata, platform=SourcePlatform.SOUNDCLOUD, fallback_cover_url=fallback.cover_url, log=log)
-        metadata, bpm_candidates = self.enrich_bpm(metadata, info=info, platform=SourcePlatform.SOUNDCLOUD, log=log)
         state = ReviewState.AUTO_APPROVED if metadata.is_minimum_viable() else ReviewState.REVIEW_REQUIRED
         reference_candidates = [
             as_reference_candidate(candidate)
@@ -128,7 +119,7 @@ class MetadataResolver:
         return MetadataResolution(
             metadata=metadata,
             state=state,
-            candidates=[native_candidate, *reference_candidates, *bpm_candidates],
+            candidates=[native_candidate, *reference_candidates],
             platform=SourcePlatform.SOUNDCLOUD,
         )
 
@@ -161,44 +152,6 @@ class MetadataResolver:
 
         _log(log, "cover art unavailable")
         return metadata
-
-    def enrich_bpm(
-        self,
-        metadata: TrackMetadata,
-        *,
-        info: dict[str, Any],
-        platform: SourcePlatform,
-        log: Callable[[str], None] | None = None,
-    ) -> tuple[TrackMetadata, list[MetadataCandidate]]:
-        try:
-            candidates = self._bpm_provider_factory(self._bpm_config).lookup(
-                metadata,
-                info=info,
-                platform=platform,
-                duration_ms=_duration_ms(info),
-            )
-        except Exception as exc:
-            _log(log, f"BPM lookup skipped: {exc}")
-            candidates = []
-
-        if metadata.bpm:
-            _log(log, f"bpm resolved: {metadata.bpm} from {metadata.bpm_source or 'metadata'}")
-            return metadata, candidates
-
-        best = max(candidates, key=lambda candidate: candidate.score, default=None)
-        if best and best.metadata.bpm and best.score >= 0.85:
-            enriched = metadata.overlay(
-                TrackMetadata(
-                    bpm=best.metadata.bpm,
-                    bpm_source=best.metadata.bpm_source,
-                    bpm_confidence=best.metadata.bpm_confidence,
-                )
-            ).normalized()
-            _log(log, f"bpm resolved: {enriched.bpm} from {enriched.bpm_source}")
-            return enriched, candidates
-
-        _log(log, "bpm skipped: no native BPM source available")
-        return metadata, candidates
 
     def _musicbrainz_candidates(
         self,

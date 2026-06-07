@@ -28,9 +28,6 @@ def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
             release_date="2026-05-01",
             track_number=7,
             disc_number=1,
-            bpm=128,
-            bpm_source="External BPM",
-            bpm_confidence=0.91,
             label="Label",
             isrc="USABC260001",
             cover_url="https://example.com/cover.jpg",
@@ -46,11 +43,8 @@ def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
     assert tags["TPE1"].text[0] == "Artist"
     assert tags["TALB"].text[0] == "Album"
     assert tags["TCON"].text[0] == "House"
-    assert tags["TBPM"].text[0] == "128"
     assert tags["TRCK"].text[0] == "7"
     assert tags["TSRC"].text[0] == "USABC260001"
-    assert tags["TXXX:BPM Source"].text[0] == "External BPM"
-    assert tags["TXXX:BPM Confidence"].text[0] == "0.910"
     pictures = tags.getall("APIC")
     assert len(pictures) == 1
     assert pictures[0].mime == "image/jpeg"
@@ -59,19 +53,6 @@ def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
     assert pictures[0].data == b"image-bytes"
     assert "cover" in result.written_fields
     assert not result.warnings
-
-
-def test_writer_omits_bpm_when_missing(tmp_path: Path) -> None:
-    target = tmp_path / "track.mp3"
-    target.write_bytes(b"")
-
-    RekordboxTagWriter().write(target, TrackMetadata(title="Song", artist="Artist", bpm_source="External BPM", bpm_confidence=0.9))
-
-    tags = ID3(target)
-    assert "TBPM" not in tags
-    assert "TXXX:BPM Source" not in tags
-    assert "TXXX:BPM Confidence" not in tags
-
 
 def test_writer_skips_non_image_cover_response(tmp_path: Path) -> None:
     target = tmp_path / "track.mp3"

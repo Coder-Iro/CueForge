@@ -37,9 +37,6 @@ class TrackMetadata:
     release_date: str = ""
     track_number: int | None = None
     disc_number: int | None = None
-    bpm: int | None = None
-    bpm_source: str = ""
-    bpm_confidence: float | None = None
     label: str = ""
     isrc: str = ""
     cover_url: str = ""

@@ -214,11 +214,6 @@ class JobWorker(QThread):
             matched = ", ".join(best.matched_fields) or "일치 항목 없음"
             self.log_message.emit(self.job.id, f"최상위 메타데이터 후보: {best.provider} {best.score:.2f} ({matched})")
         self.log_message.emit(self.job.id, f"선택된 메타데이터: {resolution.metadata.artist} - {resolution.metadata.title}")
-        if resolution.metadata.bpm:
-            self.log_message.emit(
-                self.job.id,
-                f"선택된 BPM: {resolution.metadata.bpm} ({resolution.metadata.bpm_source or 'metadata'})",
-            )
         if resolution.metadata.cover_url:
             cover_source = resolution.metadata.cover_source or _cover_source_from_url(resolution.metadata.cover_url)
             self.log_message.emit(self.job.id, f"커버 출처: {cover_source}")
@@ -278,13 +273,6 @@ class JobWorker(QThread):
             fallback_cover_url=metadata.cover_url,
             log=lambda message: self.log_message.emit(self.job.id, message),
         )
-        merged_metadata, bpm_candidates = resolver.enrich_bpm(
-            merged_metadata,
-            info=result.info,
-            platform=platform,
-            log=lambda message: self.log_message.emit(self.job.id, message),
-        )
-        merged_candidates.extend(bpm_candidates)
         self._check_canceled()
         best = fingerprint_candidates[0]
         self.log_message.emit(self.job.id, f"AcoustID 최상위 일치: {best.metadata.artist} - {best.metadata.title} ({best.score:.2f})")
@@ -383,7 +371,7 @@ class UrlInput(QPlainTextEdit):
 class MainWindow(QMainWindow):
     COLUMNS = ("상태", "진행률", "소스", "URL", "제목", "아티스트", "출력")
     REVIEW_QUEUE_COLUMNS = ("제목", "아티스트", "신뢰도", "URL")
-    CANDIDATE_COLUMNS = ("제공자", "점수", "신뢰도", "배지", "BPM", "일치 항목", "제목", "아티스트", "앨범", "날짜", "ISRC", "커버")
+    CANDIDATE_COLUMNS = ("제공자", "점수", "신뢰도", "배지", "일치 항목", "제목", "아티스트", "앨범", "날짜", "ISRC", "커버")
     CANDIDATE_PREVIEW_COLUMNS = ("필드", "현재 값", "후보 적용 값")
 
     def __init__(self, *, settings: QSettings | None = None) -> None:
@@ -466,8 +454,8 @@ class MainWindow(QMainWindow):
 
         self.candidate_table = QTableWidget(0, len(self.CANDIDATE_COLUMNS))
         self.candidate_table.setHorizontalHeaderLabels(self.CANDIDATE_COLUMNS)
+        self.candidate_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.candidate_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
-        self.candidate_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
         self.candidate_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.candidate_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.candidate_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -497,7 +485,6 @@ class MainWindow(QMainWindow):
             "album_artist": QLineEdit(),
             "genre": QLineEdit(),
             "release_date": QLineEdit(),
-            "bpm": QLineEdit(),
             "label": QLineEdit(),
             "isrc": QLineEdit(),
             "cover_url": QLineEdit(),
@@ -684,7 +671,6 @@ class MainWindow(QMainWindow):
             "album_artist": "앨범 아티스트",
             "genre": "장르",
             "release_date": "날짜",
-            "bpm": "BPM",
             "label": "레이블",
             "isrc": "ISRC",
             "cover_url": "커버 URL",
@@ -1253,10 +1239,7 @@ class MainWindow(QMainWindow):
             trust_note = " - SoundCloud 메타데이터 신뢰"
         matched = ", ".join(candidate.matched_fields) or "일치 항목 없음"
         bucket = _confidence_bucket(candidate)
-        bpm_note = ""
-        if candidate.metadata.bpm:
-            bpm_note = f"; BPM {candidate.metadata.bpm} 출처 {candidate.metadata.bpm_source or candidate.provider}"
-        self.candidate_label.setText(f"최상위 후보: {candidate.provider} {candidate.score:.2f} - {bucket} ({matched}){trust_note}{bpm_note}")
+        self.candidate_label.setText(f"최상위 후보: {candidate.provider} {candidate.score:.2f} - {bucket} ({matched}){trust_note}")
         self.confidence_detail_label.setText(_confidence_explanation(candidate, reference=reference))
 
     def _populate_candidate_table(self, job: DownloadJob) -> None:
@@ -1267,7 +1250,6 @@ class MainWindow(QMainWindow):
                 f"{candidate.score:.3f}",
                 _confidence_bucket(candidate),
                 _candidate_badges(candidate, job.selected_metadata),
-                _bpm_display(candidate.metadata),
                 ", ".join(candidate.matched_fields),
                 candidate.metadata.title,
                 candidate.metadata.artist,
@@ -1402,12 +1384,6 @@ class MainWindow(QMainWindow):
     def _metadata_from_review_fields(self, base: TrackMetadata) -> TrackMetadata:
         cover_url = self.review_fields["cover_url"].text().strip()
         cover_source = "manual" if cover_url and cover_url != base.cover_url else base.cover_source
-        bpm = _optional_bpm(self.review_fields["bpm"].text())
-        bpm_source = base.bpm_source
-        bpm_confidence = base.bpm_confidence
-        if bpm != base.bpm:
-            bpm_source = "manual" if bpm else ""
-            bpm_confidence = 1.0 if bpm else None
         return TrackMetadata(
             title=self.review_fields["title"].text().strip(),
             artist=self.review_fields["artist"].text().strip(),
@@ -1415,9 +1391,6 @@ class MainWindow(QMainWindow):
             album_artist=self.review_fields["album_artist"].text().strip(),
             genre=self.review_fields["genre"].text().strip(),
             release_date=self.review_fields["release_date"].text().strip(),
-            bpm=bpm,
-            bpm_source=bpm_source,
-            bpm_confidence=bpm_confidence,
             label=self.review_fields["label"].text().strip(),
             isrc=self.review_fields["isrc"].text().strip(),
             cover_url=cover_url,
@@ -1814,23 +1787,12 @@ def _trust_note_ko(platform: SourcePlatform) -> str:
     return "알 수 없는 소스는 태깅 전에 검수가 필요합니다."
 
 
-def _bpm_display(metadata: TrackMetadata) -> str:
-    if not metadata.bpm:
-        return ""
-    source = metadata.bpm_source or "메타데이터"
-    if metadata.bpm_confidence is None:
-        return f"{metadata.bpm} ({source})"
-    return f"{metadata.bpm} ({source} {metadata.bpm_confidence:.2f})"
-
-
 def _candidate_badges(candidate: MetadataCandidate, current: TrackMetadata) -> str:
     badges: list[str] = []
     if candidate.metadata.title and current.title and text_similarity(candidate.metadata.title, current.title) >= 0.9:
         badges.append("제목 일치")
     if candidate.metadata.artist and current.artist and text_similarity(candidate.metadata.artist, current.artist) < 0.65:
         badges.append("아티스트 충돌")
-    if candidate.metadata.bpm:
-        badges.append("BPM 있음")
     if candidate.metadata.cover_url:
         badges.append("커버 있음")
     if candidate.metadata.isrc:
@@ -1846,7 +1808,6 @@ def _candidate_preview_rows(current: TrackMetadata, applied: TrackMetadata) -> l
         ("album_artist", "앨범 아티스트"),
         ("genre", "장르"),
         ("release_date", "날짜"),
-        ("bpm", "BPM"),
         ("label", "레이블"),
         ("isrc", "ISRC"),
         ("cover_url", "커버 URL"),
@@ -1855,17 +1816,6 @@ def _candidate_preview_rows(current: TrackMetadata, applied: TrackMetadata) -> l
         (field, label, str(getattr(current, field) or ""), str(getattr(applied, field) or ""))
         for field, label in labels
     ]
-
-
-def _optional_bpm(value: str) -> int | None:
-    stripped = value.strip()
-    if not stripped:
-        return None
-    try:
-        bpm = int(float(stripped) + 0.5)
-    except ValueError:
-        return None
-    return bpm if bpm > 0 else None
 
 
 def _confidence_bucket(candidate: MetadataCandidate | None) -> str:
@@ -1893,14 +1843,6 @@ def _confidence_explanation(candidate: MetadataCandidate, *, reference: TrackMet
         conflicts = _metadata_conflict_fields(reference, candidate.metadata)
         if conflicts:
             parts.append(f"현재 필드와 충돌: {', '.join(conflicts)}.")
-    if candidate.metadata.bpm:
-        bpm_source = candidate.metadata.bpm_source or candidate.provider
-        if candidate.metadata.bpm_confidence is None:
-            parts.append(f"BPM 출처: {bpm_source}; BPM: {candidate.metadata.bpm}.")
-        else:
-            parts.append(
-                f"BPM 출처: {bpm_source}; BPM 신뢰도: {candidate.metadata.bpm_confidence:.2f}; BPM: {candidate.metadata.bpm}."
-            )
     return " ".join(parts)
 
 

@@ -319,36 +319,6 @@ def test_review_candidate_table_previews_then_applies_selected_candidate(tmp_pat
         app.processEvents()
 
 
-def test_tag_editor_bpm_field_manual_value_wins(tmp_path) -> None:
-    app = QApplication.instance() or QApplication([])
-    window = MainWindow(settings=_test_settings(tmp_path))
-    try:
-        window.url_input.setText("https://youtu.be/abc")
-        window._add_url()
-        job = next(iter(window.jobs.values()))
-        job.status = DownloadStatus.REVIEW_REQUIRED
-        job.selected_metadata = TrackMetadata(
-            title="Song",
-            artist="Artist",
-            bpm=128,
-            bpm_source="External BPM",
-            bpm_confidence=0.91,
-        )
-
-        window._load_job_for_review(job)
-        assert window.review_fields["bpm"].text() == "128"
-
-        window.review_fields["bpm"].setText("220")
-        metadata = window._metadata_from_review_fields(job.selected_metadata)
-
-        assert metadata.bpm == 220
-        assert metadata.bpm_source == "manual"
-        assert metadata.bpm_confidence == 1.0
-    finally:
-        window.close()
-        app.processEvents()
-
-
 def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
@@ -363,7 +333,7 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
                 provider="musicbrainz",
                 score=0.70,
                 matched_fields=("title",),
-                metadata=TrackMetadata(title="Candidate A", artist="Artist A", bpm=140, bpm_source="External BPM", bpm_confidence=0.70),
+                metadata=TrackMetadata(title="Candidate A", artist="Artist A"),
             )
         ]
 
@@ -375,9 +345,7 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
         assert "점수 0.70" in window.confidence_detail_label.text()
         assert "검수 필요" in window.confidence_detail_label.text()
         assert "아티스트 충돌" in window.candidate_table.item(0, 3).text()
-        assert "BPM 있음" in window.candidate_table.item(0, 3).text()
-        assert window.candidate_table.item(0, 4).text() == "140 (External BPM 0.70)"
-        assert "BPM 출처: External BPM" in window.confidence_detail_label.text()
+        assert window.candidate_table.item(0, 4).text() == "title"
     finally:
         window.close()
         app.processEvents()

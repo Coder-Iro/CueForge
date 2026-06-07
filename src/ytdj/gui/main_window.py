@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -249,6 +250,14 @@ class CoverPreviewWorker(QThread):
             self.cover_loaded.emit(self.job_id, self.url, b"", str(exc))
 
 
+class UrlInput(QPlainTextEdit):
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, value: str) -> None:
+        self.setPlainText(value)
+
+
 class MainWindow(QMainWindow):
     COLUMNS = ("Status", "Progress", "Source", "URL", "Title", "Artist", "Output")
     CANDIDATE_COLUMNS = ("Provider", "Score", "Matched", "Title", "Artist", "Album", "Date", "ISRC", "Cover")
@@ -271,8 +280,9 @@ class MainWindow(QMainWindow):
         self._loading_review = False
         self._cover_preview_workers: list[CoverPreviewWorker] = []
 
-        self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("YouTube / YouTube Music / SoundCloud URL")
+        self.url_input = UrlInput()
+        self.url_input.setPlaceholderText("Paste one or more YouTube / YouTube Music / SoundCloud URLs")
+        self.url_input.setFixedHeight(76)
         self.output_dir_input = QLineEdit(str(Path.cwd() / "downloads"))
         self.cookie_combo = QComboBox()
         self.cookie_combo.addItem("No browser cookies", None)
@@ -362,8 +372,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
 
         url_row = QGridLayout()
-        url_row.addWidget(QLabel("URL"), 0, 0)
-        url_row.addWidget(self.url_input, 0, 1)
+        url_row.addWidget(QLabel("URLs"), 0, 0)
+        url_row.addWidget(self.url_input, 0, 1, 2, 1)
         add_button = QPushButton("Add")
         add_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
         add_button.clicked.connect(self._add_url)
@@ -371,7 +381,8 @@ class MainWindow(QMainWindow):
         self.start_queue_button = QPushButton("Process Queue")
         self.start_queue_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.start_queue_button.clicked.connect(self._start_next)
-        url_row.addWidget(self.start_queue_button, 0, 3)
+        url_row.addWidget(self.start_queue_button, 1, 2)
+        url_row.setColumnStretch(1, 1)
         layout.addLayout(url_row)
         layout.addWidget(self.queue_status_label)
 
@@ -506,21 +517,25 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _add_url(self) -> None:
-        url = self.url_input.text().strip()
-        if not url:
+        urls = _extract_urls(self.url_input.text())
+        if not urls:
             return
         output_dir = Path(self.output_dir_input.text().strip() or "downloads")
-        job = DownloadJob(url=url, output_dir=output_dir)
-        self.jobs[job.id] = job
-        self.row_job_ids.append(job.id)
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        for col in range(len(self.COLUMNS)):
-            self.table.setItem(row, col, QTableWidgetItem(""))
-        self._update_row(job)
+        last_row = -1
+        for url in urls:
+            job = DownloadJob(url=url, output_dir=output_dir)
+            self.jobs[job.id] = job
+            self.row_job_ids.append(job.id)
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            for col in range(len(self.COLUMNS)):
+                self.table.setItem(row, col, QTableWidgetItem(""))
+            self._update_row(job)
+            self._append_log(job.id, "queued")
+            last_row = row
         self.url_input.clear()
-        self._append_log(job.id, "queued")
-        self.table.selectRow(row)
+        if last_row >= 0:
+            self.table.selectRow(last_row)
         self._refresh_actions()
 
     def _start_next(self) -> None:
@@ -1024,6 +1039,27 @@ def _cover_source_from_url(url: str) -> str:
     if "ytimg.com" in lowered or "youtube" in lowered:
         return "YouTube fallback"
     return "manual" if url else ""
+
+
+_URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+", flags=re.IGNORECASE)
+_ADJACENT_URL_SEPARATOR_PATTERN = re.compile(r"(?<=[^\s,;])[,;](?=https?://)", flags=re.IGNORECASE)
+
+
+def _extract_urls(value: str) -> list[str]:
+    normalized = _ADJACENT_URL_SEPARATOR_PATTERN.sub(" ", value.strip())
+    matches = _URL_PATTERN.findall(normalized)
+    candidates = matches if matches else re.split(r"[\s,;]+", normalized)
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        url = candidate.strip().strip("<>()[]{}\"'")
+        url = url.rstrip(".,;")
+        if not url or url in seen:
+            continue
+        urls.append(url)
+        seen.add(url)
+    return urls
 
 
 def _metadata_conflicts(left: TrackMetadata, right: TrackMetadata) -> bool:

@@ -5,7 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
-from ytdj.gui.main_window import MainWindow, _cover_source_from_url
+from ytdj.gui.main_window import MainWindow, _cover_source_from_url, _extract_urls
 from ytdj.models import DownloadStatus, MetadataCandidate, TrackMetadata
 
 
@@ -25,6 +25,33 @@ def test_main_window_can_queue_url(tmp_path) -> None:
         assert job.status == DownloadStatus.PENDING
         assert window.table.item(0, 2).text() == "YouTube Music"
         assert window.table.item(0, 3).text() == "https://music.youtube.com/watch?v=abc"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_can_queue_multiple_pasted_urls(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText(
+            "\n".join(
+                [
+                    "https://youtu.be/8k8aIaoOA40?si=MDMx7eVZ1-Dr949J",
+                    "https://youtu.be/7B4yU08Bs5A?si=JTpGDd5Z71F-Bysg",
+                    "https://soundcloud.com/artist/track, https://music.youtube.com/watch?v=abc.",
+                ]
+            )
+        )
+        window._add_url()
+
+        assert window.table.rowCount() == 4
+        assert [window.jobs[job_id].status for job_id in window.row_job_ids] == [DownloadStatus.PENDING] * 4
+        assert window.table.item(0, 3).text() == "https://youtu.be/8k8aIaoOA40?si=MDMx7eVZ1-Dr949J"
+        assert window.table.item(1, 3).text() == "https://youtu.be/7B4yU08Bs5A?si=JTpGDd5Z71F-Bysg"
+        assert window.table.item(2, 3).text() == "https://soundcloud.com/artist/track"
+        assert window.table.item(3, 3).text() == "https://music.youtube.com/watch?v=abc"
+        assert window.queue_status_label.text().startswith("4 track(s) ready")
     finally:
         window.close()
         app.processEvents()
@@ -131,6 +158,17 @@ def test_cover_source_infers_known_artwork_hosts() -> None:
     assert _cover_source_from_url("https://coverartarchive.org/release/rel/front-500.jpg") == "Cover Art Archive"
     assert _cover_source_from_url("https://i1.sndcdn.com/artworks-test.jpg") == "SoundCloud native"
     assert _cover_source_from_url("https://i.ytimg.com/vi/abc/maxresdefault.jpg") == "YouTube fallback"
+
+
+def test_extract_urls_handles_pasted_text_and_de_duplicates() -> None:
+    assert _extract_urls(
+        "first <https://youtu.be/a>,https://youtu.be/b.\n"
+        "https://youtu.be/a https://music.youtube.com/watch?v=c&si=d"
+    ) == [
+        "https://youtu.be/a",
+        "https://youtu.be/b",
+        "https://music.youtube.com/watch?v=c&si=d",
+    ]
 
 
 def test_copy_diagnostics_puts_report_on_clipboard(tmp_path, monkeypatch) -> None:

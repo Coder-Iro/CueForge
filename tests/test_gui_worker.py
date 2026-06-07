@@ -1,9 +1,11 @@
 import os
 from pathlib import Path
 
+import pytest
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from ytdj.download import DownloadConfig, DownloadResult
+from ytdj.download import DownloadCanceled, DownloadConfig, DownloadProgress, DownloadResult
 from ytdj.gui.main_window import JobWorker
 from ytdj.metadata import AcoustIDConfig
 from ytdj.models import DownloadJob, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
@@ -270,3 +272,45 @@ def test_worker_reuses_prepared_download_after_review_approval(tmp_path: Path) -
     assert FakeDownloader.downloads == []
     assert FakeTagWriter.writes == [final_path]
     assert done == [str(final_path)]
+
+
+def test_worker_cancellation_cleans_prepared_temp_download(tmp_path: Path) -> None:
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    prepared = tmp_path / ".ytdj-temp" / job.id / "abc.mp3"
+    prepared.parent.mkdir(parents=True)
+    prepared.write_bytes(b"fake mp3")
+    job.downloaded_path = prepared
+    canceled: list[str] = []
+    worker = JobWorker(
+        job,
+        cookie_browser=None,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        approved_metadata=TrackMetadata(title="Title", artist="Artist"),
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+        tag_writer_factory=FakeTagWriter,
+    )
+    worker.job_canceled.connect(canceled.append)
+
+    worker.cancel()
+    worker.run()
+
+    assert canceled == [job.id]
+    assert job.downloaded_path is None
+    assert not prepared.exists()
+
+
+def test_worker_progress_hook_raises_when_cancel_requested(tmp_path: Path) -> None:
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    worker = JobWorker(
+        job,
+        cookie_browser=None,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+    )
+
+    worker.cancel()
+
+    with pytest.raises(DownloadCanceled):
+        worker._on_progress(DownloadProgress(status="downloading", percent=12.0, filename=tmp_path / "abc.part"))

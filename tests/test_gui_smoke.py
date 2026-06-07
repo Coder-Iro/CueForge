@@ -70,7 +70,12 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
         assert window.start_queue_button is not None
         assert window.download_approved_button is not None
         assert window.review_selected_button is not None
+        assert window.analyze_selected_button is not None
+        assert window.download_selected_button is not None
+        assert window.retry_selected_button is not None
         assert window.retry_failed_button is not None
+        assert window.remove_selected_button is not None
+        assert window.cancel_current_button is not None
 
         button_rects = [
             QRect(button.mapTo(window, QPoint(0, 0)), button.size())
@@ -78,8 +83,13 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
                 window.add_url_button,
                 window.start_queue_button,
                 window.download_approved_button,
+                window.cancel_current_button,
+                window.analyze_selected_button,
+                window.download_selected_button,
+                window.retry_selected_button,
                 window.review_selected_button,
                 window.retry_failed_button,
+                window.remove_selected_button,
             )
         ]
 
@@ -531,6 +541,100 @@ def test_analyze_and_download_buttons_are_separate(tmp_path, monkeypatch) -> Non
         assert started[1][0] is approved
         assert started[1][1].title == "Ready"
         assert started[1][2] is False
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_selected_queue_actions_start_selected_jobs(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        for url in ("https://youtu.be/failed", "https://youtu.be/pending", "https://youtu.be/approved"):
+            window.url_input.setText(url)
+            window._add_url()
+        failed, pending, approved = [window.jobs[job_id] for job_id in window.row_job_ids]
+        failed.status = DownloadStatus.FAILED
+        failed.error = "old error"
+        approved.status = DownloadStatus.APPROVED
+        approved.selected_metadata = TrackMetadata(title="Ready", artist="Artist")
+
+        started = []
+
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, continue_queue=True):
+            started.append((job, approved_metadata, analyze_only, continue_queue))
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+
+        window.table.selectRow(1)
+        window._analyze_selected()
+        window.table.selectRow(2)
+        window._download_selected_approved()
+        window.table.selectRow(0)
+        window._retry_selected()
+
+        assert started[0] == (pending, None, True, False)
+        assert started[1][0] is approved
+        assert started[1][1].title == "Ready"
+        assert started[1][2:] == (False, False)
+        assert started[2] == (failed, None, True, False)
+        assert failed.status == DownloadStatus.PENDING
+        assert failed.error == ""
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_cancel_current_job_requests_worker_interruption(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/running")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+
+        class RunningWorker:
+            def __init__(self):
+                self.job = job
+                self.canceled = False
+
+            def isRunning(self):
+                return True
+
+            def cancel(self):
+                self.canceled = True
+
+        worker = RunningWorker()
+        window.worker = worker
+        window.cancel_requested = False
+
+        window._cancel_current_job()
+
+        assert worker.canceled is True
+        assert window.cancel_requested is True
+        assert window.cancel_current_button is not None
+        assert window.cancel_current_button.isEnabled() is False
+        assert "현재 작업 취소 요청됨" in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_job_canceled_updates_queue_status(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/cancel")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.DOWNLOADING
+        window._update_row(job)
+
+        window._on_job_canceled(job.id)
+
+        assert job.status == DownloadStatus.CANCELED
+        assert window.table.item(0, 0).text() == "취소됨"
+        assert "작업이 취소됨" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()

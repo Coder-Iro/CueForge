@@ -45,6 +45,10 @@ class DownloadResult:
     info: dict[str, Any]
 
 
+class DownloadCanceled(RuntimeError):
+    """Raised when the active download job is canceled by the user."""
+
+
 class YoutubeDLLike(Protocol):
     def __enter__(self) -> "YoutubeDLLike": ...
 

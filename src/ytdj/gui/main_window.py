@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ytdj.download import CookieBrowser, DownloadConfig, DownloadProgress, YTDLPDownloader
+from ytdj.download import CookieBrowser, DownloadCanceled, DownloadConfig, DownloadProgress, YTDLPDownloader
 from ytdj.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, GetSongBpmConfig, MetadataResolver
 from ytdj.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from ytdj.metadata.matching import text_similarity
@@ -54,6 +54,14 @@ ResolverFactory = Callable[[], MetadataResolver]
 AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
 CoverArtProviderFactory = Callable[[], Any]
 TagWriterFactory = Callable[[], Any]
+_ACTIVE_STATUSES = {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}
+_ANALYZABLE_STATUSES = {
+    DownloadStatus.PENDING,
+    DownloadStatus.REVIEW_REQUIRED,
+    DownloadStatus.APPROVED,
+    DownloadStatus.FAILED,
+    DownloadStatus.CANCELED,
+}
 
 
 class JobWorker(QThread):
@@ -61,6 +69,7 @@ class JobWorker(QThread):
     metadata_ready = Signal(str, object, object, object)
     job_done = Signal(str, str)
     job_failed = Signal(str, str)
+    job_canceled = Signal(str)
     log_message = Signal(str, str)
 
     def __init__(
@@ -100,14 +109,19 @@ class JobWorker(QThread):
         self._acoustid_provider_factory = acoustid_provider_factory or AcoustIDProvider
         self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
         self._tag_writer_factory = tag_writer_factory or RekordboxTagWriter
+        self._current_download_path: Path | None = None
+        self._cancel_requested = False
 
     def run(self) -> None:
         try:
+            self._check_canceled()
             downloader = self._new_downloader(self.job.output_dir)
             metadata = self.approved_metadata
             downloaded_path = self.job.downloaded_path
             if metadata is None:
+                self._check_canceled()
                 metadata, state, candidates, platform = self._resolve_metadata(downloader)
+                self._check_canceled()
                 if state != ReviewState.AUTO_APPROVED or self.verify_auto_approved_metadata:
                     metadata, state, candidates, downloaded_path = self._try_audio_recognition(
                         metadata=metadata,
@@ -115,19 +129,26 @@ class JobWorker(QThread):
                         candidates=candidates,
                         platform=platform,
                     )
+                self._check_canceled()
                 self.metadata_ready.emit(self.job.id, metadata, state, candidates)
                 if self.analyze_only or state != ReviewState.AUTO_APPROVED:
                     return
 
+            self._check_canceled()
             if downloaded_path and not downloaded_path.exists():
                 self.log_message.emit(self.job.id, f"준비된 다운로드 파일이 없어 다시 다운로드함: {downloaded_path}")
                 downloaded_path = None
 
             if downloaded_path is None:
-                result = downloader.download_audio(self.job.url)
+                self._check_canceled()
+                result = self._new_downloader(_temp_output_dir(self.job)).download_audio(self.job.url)
                 downloaded_path = result.path
+                self.job.downloaded_path = downloaded_path
+            self._check_canceled()
             self.progress_changed.emit(self.job.id, 100.0, DownloadStatus.TAGGING.value)
+            self._check_canceled()
             final_path = _move_to_final(downloaded_path, self.job.output_dir, metadata)
+            self.job.downloaded_path = None
             tag_result: TagWriteResult = self._tag_writer_factory().write(final_path, metadata)
             if tag_result.written_fields:
                 self.log_message.emit(self.job.id, f"기록된 태그: {', '.join(tag_result.written_fields)}")
@@ -136,8 +157,19 @@ class JobWorker(QThread):
             for warning in tag_result.warnings:
                 self.log_message.emit(self.job.id, warning)
             self.job_done.emit(self.job.id, str(final_path))
+        except DownloadCanceled:
+            _cleanup_temp_download(self.job, self._current_download_path)
+            self.job_canceled.emit(self.job.id)
         except Exception as exc:
             self.job_failed.emit(self.job.id, str(exc))
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+        self.requestInterruption()
+
+    def _check_canceled(self) -> None:
+        if self._cancel_requested or self.isInterruptionRequested():
+            raise DownloadCanceled("사용자가 작업을 취소했습니다.")
 
     def _new_downloader(self, output_dir: Path) -> YTDLPDownloader:
         return self._downloader_factory(
@@ -205,12 +237,14 @@ class JobWorker(QThread):
             self.log_message.emit(self.job.id, f"오디오 인식 생략: {reason}")
             return metadata, state, candidates, None
 
+        self._check_canceled()
         if state == ReviewState.AUTO_APPROVED:
             self.log_message.emit(self.job.id, "자동 승인 메타데이터를 AcoustID로 검증 중")
         else:
             self.log_message.emit(self.job.id, "메타데이터 신뢰도가 낮아 AcoustID 조회용 임시 오디오 다운로드 중")
         result = self._new_downloader(_temp_output_dir(self.job)).download_audio(self.job.url)
         self.job.downloaded_path = result.path
+        self._check_canceled()
 
         try:
             fingerprint_candidates = self._acoustid_provider_factory(self.acoustid_config).lookup(result.path)
@@ -237,11 +271,15 @@ class JobWorker(QThread):
             fallback_cover_url=metadata.cover_url,
             log=lambda message: self.log_message.emit(self.job.id, message),
         )
+        self._check_canceled()
         best = fingerprint_candidates[0]
         self.log_message.emit(self.job.id, f"AcoustID 최상위 일치: {best.metadata.artist} - {best.metadata.title} ({best.score:.2f})")
         return merged_metadata, merged_state, merged_candidates, result.path
 
     def _on_progress(self, progress: DownloadProgress) -> None:
+        if progress.filename:
+            self._current_download_path = progress.filename
+        self._check_canceled()
         percent = progress.percent if progress.percent is not None else 0.0
         status = DownloadStatus.DOWNLOADING.value if progress.status == "downloading" else progress.status
         self.progress_changed.emit(self.job.id, percent, status)
@@ -343,6 +381,7 @@ class MainWindow(QMainWindow):
         self.row_job_ids: list[str] = []
         self.worker: JobWorker | None = None
         self.worker_mode = ""
+        self.cancel_requested = False
         self.active_review_job_id: str | None = None
         self.tabs: QTabWidget | None = None
         self.queue_tab_index = 0
@@ -354,7 +393,12 @@ class MainWindow(QMainWindow):
         self.start_queue_button: QPushButton | None = None
         self.download_approved_button: QPushButton | None = None
         self.review_selected_button: QPushButton | None = None
+        self.analyze_selected_button: QPushButton | None = None
+        self.download_selected_button: QPushButton | None = None
+        self.retry_selected_button: QPushButton | None = None
         self.retry_failed_button: QPushButton | None = None
+        self.remove_selected_button: QPushButton | None = None
+        self.cancel_current_button: QPushButton | None = None
         self.approve_button: QPushButton | None = None
         self.reopen_review_button: QPushButton | None = None
         self.open_onboarding_button: QPushButton | None = None
@@ -517,14 +561,34 @@ class MainWindow(QMainWindow):
         self.download_approved_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.download_approved_button.clicked.connect(self._download_next_approved)
         action_row.addWidget(self.download_approved_button, 0, 2)
+        self.cancel_current_button = QPushButton("현재 작업 취소")
+        self.cancel_current_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
+        self.cancel_current_button.clicked.connect(self._cancel_current_job)
+        action_row.addWidget(self.cancel_current_button, 0, 3)
+        self.analyze_selected_button = QPushButton("선택 항목 분석")
+        self.analyze_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.analyze_selected_button.clicked.connect(self._analyze_selected)
+        action_row.addWidget(self.analyze_selected_button, 1, 1)
+        self.download_selected_button = QPushButton("선택 항목 다운로드")
+        self.download_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.download_selected_button.clicked.connect(self._download_selected_approved)
+        action_row.addWidget(self.download_selected_button, 1, 2)
+        self.retry_selected_button = QPushButton("선택 항목 재시도")
+        self.retry_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.retry_selected_button.clicked.connect(self._retry_selected)
+        action_row.addWidget(self.retry_selected_button, 1, 3)
         self.review_selected_button = QPushButton("선택 항목 검수로 이동")
         self.review_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.review_selected_button.clicked.connect(self._move_selected_to_review_queue)
-        action_row.addWidget(self.review_selected_button, 1, 1)
+        action_row.addWidget(self.review_selected_button, 2, 1)
         self.retry_failed_button = QPushButton("실패 재시도")
         self.retry_failed_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.retry_failed_button.clicked.connect(self._retry_failed)
-        action_row.addWidget(self.retry_failed_button, 1, 2)
+        action_row.addWidget(self.retry_failed_button, 2, 2)
+        self.remove_selected_button = QPushButton("선택 항목 삭제")
+        self.remove_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.remove_selected_button.clicked.connect(self._remove_selected)
+        action_row.addWidget(self.remove_selected_button, 2, 3)
         layout.addLayout(action_row)
         layout.addWidget(self.queue_status_label)
         layout.addWidget(self.dependency_status_label)
@@ -851,6 +915,17 @@ class MainWindow(QMainWindow):
                 return
         self._refresh_actions()
 
+    def _analyze_selected(self) -> None:
+        if self.worker and self.worker.isRunning():
+            self._refresh_actions()
+            return
+        job = self._selected_job()
+        if not job or job.status not in _ANALYZABLE_STATUSES:
+            self._refresh_actions()
+            return
+        self._prepare_job_retry(job, message="선택 항목 분석 시작")
+        self._run_worker(job, analyze_only=True, continue_queue=False)
+
     def _download_next_approved(self) -> None:
         if self.worker and self.worker.isRunning():
             self._refresh_actions()
@@ -861,6 +936,16 @@ class MainWindow(QMainWindow):
                 self._run_worker(job, approved_metadata=job.selected_metadata)
                 return
         self._refresh_actions()
+
+    def _download_selected_approved(self) -> None:
+        if self.worker and self.worker.isRunning():
+            self._refresh_actions()
+            return
+        job = self._selected_job()
+        if not job or job.status != DownloadStatus.APPROVED:
+            self._refresh_actions()
+            return
+        self._run_worker(job, approved_metadata=job.selected_metadata, continue_queue=False)
 
     def _retry_failed(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -880,17 +965,51 @@ class MainWindow(QMainWindow):
         if retried:
             self._analyze_next()
 
+    def _retry_selected(self) -> None:
+        if self.worker and self.worker.isRunning():
+            self._refresh_actions()
+            return
+        job = self._selected_job()
+        if not job or job.status not in {DownloadStatus.FAILED, DownloadStatus.CANCELED}:
+            self._refresh_actions()
+            return
+        self._prepare_job_retry(job, message="선택 항목 재시도 시작")
+        self._run_worker(job, analyze_only=True, continue_queue=False)
+
+    def _prepare_job_retry(self, job: DownloadJob, *, message: str) -> None:
+        _cleanup_temp_download(job)
+        job.status = DownloadStatus.PENDING
+        job.progress = 0.0
+        job.error = ""
+        self._update_row(job)
+        self._append_log(job.id, message)
+
+    def _cancel_current_job(self) -> None:
+        if not self.worker or not self.worker.isRunning():
+            self._refresh_actions()
+            return
+        self.cancel_requested = True
+        if hasattr(self.worker, "cancel"):
+            self.worker.cancel()
+        else:
+            self.worker.requestInterruption()
+        job_id = getattr(getattr(self.worker, "job", None), "id", "system")
+        self._append_log(job_id, "현재 작업 취소 요청됨")
+        self._refresh_actions()
+
     def _run_worker(
         self,
         job: DownloadJob,
         approved_metadata: TrackMetadata | None = None,
         *,
         analyze_only: bool = False,
+        continue_queue: bool = True,
     ) -> None:
         self.save_settings()
+        self.cancel_requested = False
         job.status = DownloadStatus.DOWNLOADING if approved_metadata else DownloadStatus.METADATA
         self._update_row(job)
-        self.worker_mode = "analysis" if analyze_only else "download"
+        self.worker_mode = ("analysis" if analyze_only else "download") if continue_queue else "single"
         self.worker = JobWorker(
             job,
             cookie_browser=self.cookie_combo.currentData(),
@@ -911,6 +1030,7 @@ class MainWindow(QMainWindow):
         self.worker.metadata_ready.connect(self._on_metadata_ready)
         self.worker.job_done.connect(self._on_job_done)
         self.worker.job_failed.connect(self._on_job_failed)
+        self.worker.job_canceled.connect(self._on_job_canceled)
         self.worker.log_message.connect(self._append_log)
         self.worker.finished.connect(self._worker_finished)
         self.worker.start()
@@ -965,10 +1085,21 @@ class MainWindow(QMainWindow):
         self._append_log(job_id, f"실패: {error}")
         self._refresh_actions()
 
+    def _on_job_canceled(self, job_id: str) -> None:
+        job = self.jobs[job_id]
+        job.status = DownloadStatus.CANCELED
+        job.progress = 0.0
+        job.error = ""
+        self.worker_mode = "canceled"
+        self._update_row(job)
+        self._append_log(job_id, "작업이 취소됨")
+        self._refresh_actions()
+
     def _worker_finished(self) -> None:
         mode = self.worker_mode
         self.worker = None
         self.worker_mode = ""
+        self.cancel_requested = False
         self._refresh_actions()
         if mode == "analysis":
             self._analyze_next()
@@ -1027,6 +1158,7 @@ class MainWindow(QMainWindow):
         if job.status in {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}:
             QMessageBox.warning(self, "삭제할 수 없음", "실행 중인 작업은 삭제할 수 없습니다.")
             return
+        _cleanup_temp_download(job)
         self.table.removeRow(row)
         self.row_job_ids.pop(row)
         del self.jobs[job_id]
@@ -1355,6 +1487,11 @@ class MainWindow(QMainWindow):
         can_approve = bool(active_review and active_review.status == DownloadStatus.REVIEW_REQUIRED)
         can_move_selected_to_review = bool(selected_job and selected_job.status == DownloadStatus.APPROVED and not running)
         can_move_active_to_review = bool(active_review and active_review.status == DownloadStatus.APPROVED and not running)
+        can_analyze_selected = bool(selected_job and selected_job.status in _ANALYZABLE_STATUSES and not running)
+        can_download_selected = bool(selected_job and selected_job.status == DownloadStatus.APPROVED and not running)
+        can_retry_selected = bool(selected_job and selected_job.status in {DownloadStatus.FAILED, DownloadStatus.CANCELED} and not running)
+        can_remove_selected = bool(selected_job and selected_job.status not in _ACTIVE_STATUSES)
+        can_cancel_current = running and not self.cancel_requested
         self._refresh_review_queue()
 
         if self.start_action:
@@ -1369,8 +1506,18 @@ class MainWindow(QMainWindow):
             self.download_approved_button.setEnabled(can_download)
         if self.review_selected_button:
             self.review_selected_button.setEnabled(can_move_selected_to_review)
+        if self.analyze_selected_button:
+            self.analyze_selected_button.setEnabled(can_analyze_selected)
+        if self.download_selected_button:
+            self.download_selected_button.setEnabled(can_download_selected)
+        if self.retry_selected_button:
+            self.retry_selected_button.setEnabled(can_retry_selected)
         if self.retry_failed_button:
             self.retry_failed_button.setEnabled(can_retry)
+        if self.remove_selected_button:
+            self.remove_selected_button.setEnabled(can_remove_selected)
+        if self.cancel_current_button:
+            self.cancel_current_button.setEnabled(can_cancel_current)
         if self.approve_button:
             self.approve_button.setEnabled(can_approve)
         if self.reopen_review_button:
@@ -1547,6 +1694,39 @@ def _merge_audio_recognition_candidates(
 
 def _temp_output_dir(job: DownloadJob) -> Path:
     return job.output_dir / ".ytdj-temp" / job.id
+
+
+def _cleanup_temp_download(job: DownloadJob, *extra_paths: Path | None) -> None:
+    temp_dir = _temp_output_dir(job)
+    paths = [job.downloaded_path, *extra_paths]
+    for path in paths:
+        if path:
+            _unlink_if_job_temp_file(path, temp_dir)
+    if temp_dir.exists():
+        for child in temp_dir.iterdir():
+            if child.is_file():
+                _unlink_if_job_temp_file(child, temp_dir)
+        try:
+            temp_dir.rmdir()
+        except OSError:
+            pass
+    job.downloaded_path = None
+
+
+def _unlink_if_job_temp_file(path: Path, temp_dir: Path) -> None:
+    try:
+        resolved_path = path.resolve()
+        resolved_temp_dir = temp_dir.resolve()
+    except OSError:
+        return
+    if resolved_path != resolved_temp_dir and resolved_temp_dir not in resolved_path.parents:
+        return
+    if not resolved_path.is_file():
+        return
+    try:
+        resolved_path.unlink()
+    except OSError:
+        pass
 
 
 def _move_to_final(downloaded: Path, output_dir: Path, metadata: TrackMetadata) -> Path:

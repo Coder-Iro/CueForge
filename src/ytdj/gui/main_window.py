@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QPixmap
+from PySide6.QtGui import QAction, QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -331,7 +331,8 @@ class UrlInput(QPlainTextEdit):
 class MainWindow(QMainWindow):
     COLUMNS = ("상태", "진행률", "소스", "URL", "제목", "아티스트", "출력")
     REVIEW_QUEUE_COLUMNS = ("제목", "아티스트", "신뢰도", "URL")
-    CANDIDATE_COLUMNS = ("제공자", "점수", "신뢰도", "BPM", "일치 항목", "제목", "아티스트", "앨범", "날짜", "ISRC", "커버")
+    CANDIDATE_COLUMNS = ("제공자", "점수", "신뢰도", "배지", "BPM", "일치 항목", "제목", "아티스트", "앨범", "날짜", "ISRC", "커버")
+    CANDIDATE_PREVIEW_COLUMNS = ("필드", "현재 값", "후보 적용 값")
 
     def __init__(self, *, settings: QSettings | None = None) -> None:
         super().__init__()
@@ -358,6 +359,8 @@ class MainWindow(QMainWindow):
         self.reopen_review_button: QPushButton | None = None
         self.open_onboarding_button: QPushButton | None = None
         self.onboarding_dialog: OnboardingDialog | None = None
+        self.apply_candidate_button: QPushButton | None = None
+        self.pending_candidate_index: int | None = None
         self.review_scroll_area: QScrollArea | None = None
         self.review_splitter: QSplitter | None = None
         self._loading_review = False
@@ -407,14 +410,21 @@ class MainWindow(QMainWindow):
 
         self.candidate_table = QTableWidget(0, len(self.CANDIDATE_COLUMNS))
         self.candidate_table.setHorizontalHeaderLabels(self.CANDIDATE_COLUMNS)
-        self.candidate_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.candidate_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.candidate_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
         self.candidate_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.candidate_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.candidate_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.candidate_table.setMinimumHeight(88)
         self.candidate_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.candidate_table.itemSelectionChanged.connect(self._apply_selected_candidate)
+        self.candidate_table.itemSelectionChanged.connect(self._preview_selected_candidate)
+        self.candidate_preview_table = QTableWidget(0, len(self.CANDIDATE_PREVIEW_COLUMNS))
+        self.candidate_preview_table.setHorizontalHeaderLabels(self.CANDIDATE_PREVIEW_COLUMNS)
+        self.candidate_preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.candidate_preview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.candidate_preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.candidate_preview_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.candidate_preview_table.setMinimumHeight(96)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -574,6 +584,16 @@ class MainWindow(QMainWindow):
         provider_layout.addWidget(self.candidate_label)
         provider_layout.addWidget(self.confidence_detail_label)
         provider_layout.addWidget(self.candidate_table)
+        provider_layout.addWidget(QLabel("후보 미리보기"))
+        provider_layout.addWidget(self.candidate_preview_table)
+        candidate_action_row = QHBoxLayout()
+        candidate_action_row.addStretch(1)
+        self.apply_candidate_button = QPushButton("후보 적용")
+        self.apply_candidate_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.apply_candidate_button.clicked.connect(self._apply_pending_candidate)
+        self.apply_candidate_button.setEnabled(False)
+        candidate_action_row.addWidget(self.apply_candidate_button)
+        provider_layout.addLayout(candidate_action_row)
 
         tag_editor_group = QGroupBox("태그 편집")
         tag_editor_group.setMinimumHeight(140)
@@ -1062,6 +1082,8 @@ class MainWindow(QMainWindow):
         else:
             self.candidate_label.setText("외부 후보 없음")
             self.confidence_detail_label.setText("사용 가능한 메타데이터 제공자 후보가 없습니다. 승인 전에 필드를 직접 수정하세요.")
+        self.pending_candidate_index = None
+        self._clear_candidate_preview()
         self._populate_candidate_table(job)
         self._set_review_fields(metadata)
         self._loading_review = False
@@ -1081,6 +1103,8 @@ class MainWindow(QMainWindow):
         self.candidate_label.setText("")
         self.confidence_detail_label.setText("")
         self.candidate_table.setRowCount(0)
+        self.pending_candidate_index = None
+        self._clear_candidate_preview()
         self._set_review_fields(TrackMetadata())
         self.cover_preview_label.setPixmap(QPixmap())
         self.cover_preview_label.setText("커버 없음")
@@ -1105,6 +1129,7 @@ class MainWindow(QMainWindow):
                 candidate.provider,
                 f"{candidate.score:.3f}",
                 _confidence_bucket(candidate),
+                _candidate_badges(candidate, job.selected_metadata),
                 _bpm_display(candidate.metadata),
                 ", ".join(candidate.matched_fields),
                 candidate.metadata.title,
@@ -1124,26 +1149,65 @@ class MainWindow(QMainWindow):
         for key, field in self.review_fields.items():
             field.setText(str(getattr(metadata, key) or ""))
 
-    def _apply_selected_candidate(self) -> None:
+    def _preview_selected_candidate(self) -> None:
         if self._loading_review:
             return
         job = self._active_review_job()
         row = self.candidate_table.currentRow()
         if not job or row < 0:
+            self.pending_candidate_index = None
+            self._clear_candidate_preview()
             return
         item = self.candidate_table.item(row, 0)
         if not item:
+            self.pending_candidate_index = None
+            self._clear_candidate_preview()
             return
         candidate_index = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(candidate_index, int) or candidate_index >= len(job.candidates):
+            self.pending_candidate_index = None
+            self._clear_candidate_preview()
+            return
+        candidate = job.candidates[candidate_index]
+        self.pending_candidate_index = candidate_index
+        self._set_candidate_summary(candidate, reference=job.selected_metadata)
+        self._populate_candidate_preview(job.selected_metadata, candidate.metadata.with_defaults_from(job.selected_metadata).normalized())
+        if self.apply_candidate_button:
+            self.apply_candidate_button.setEnabled(True)
+
+    def _apply_pending_candidate(self) -> None:
+        job = self._active_review_job()
+        candidate_index = self.pending_candidate_index
+        if not job or candidate_index is None or candidate_index >= len(job.candidates):
             return
         candidate = job.candidates[candidate_index]
         metadata = candidate.metadata.with_defaults_from(job.selected_metadata).normalized()
         job.selected_metadata = metadata
         self._set_candidate_summary(candidate, reference=metadata)
         self._set_review_fields(metadata)
+        self._populate_candidate_preview(metadata, metadata)
         self._update_row(job)
         self._refresh_cover_preview(job, metadata)
+
+    def _populate_candidate_preview(self, current: TrackMetadata, applied: TrackMetadata) -> None:
+        rows = _candidate_preview_rows(current, applied)
+        self.candidate_preview_table.setRowCount(len(rows))
+        conflict_fields = set(_metadata_conflict_fields(current, applied))
+        changed_color = QColor("#fff4cc")
+        conflict_color = QColor("#ffd6d6")
+        for row, (field_key, label, current_value, applied_value) in enumerate(rows):
+            values = (label, current_value, applied_value)
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(str(value or ""))
+                if current_value != applied_value:
+                    item.setBackground(conflict_color if field_key in conflict_fields else changed_color)
+                self.candidate_preview_table.setItem(row, col, item)
+        self.candidate_preview_table.resizeRowsToContents()
+
+    def _clear_candidate_preview(self) -> None:
+        self.candidate_preview_table.setRowCount(0)
+        if self.apply_candidate_button:
+            self.apply_candidate_button.setEnabled(False)
 
     def _cover_url_edited(self) -> None:
         if self._loading_review:
@@ -1556,6 +1620,40 @@ def _bpm_display(metadata: TrackMetadata) -> str:
     if metadata.bpm_confidence is None:
         return f"{metadata.bpm} ({source})"
     return f"{metadata.bpm} ({source} {metadata.bpm_confidence:.2f})"
+
+
+def _candidate_badges(candidate: MetadataCandidate, current: TrackMetadata) -> str:
+    badges: list[str] = []
+    if candidate.metadata.title and current.title and text_similarity(candidate.metadata.title, current.title) >= 0.9:
+        badges.append("제목 일치")
+    if candidate.metadata.artist and current.artist and text_similarity(candidate.metadata.artist, current.artist) < 0.65:
+        badges.append("아티스트 충돌")
+    if candidate.metadata.bpm:
+        badges.append("BPM 있음")
+    if candidate.metadata.cover_url:
+        badges.append("커버 있음")
+    if candidate.metadata.isrc:
+        badges.append("ISRC 있음")
+    return ", ".join(badges)
+
+
+def _candidate_preview_rows(current: TrackMetadata, applied: TrackMetadata) -> list[tuple[str, str, str, str]]:
+    labels = (
+        ("title", "제목"),
+        ("artist", "아티스트"),
+        ("album", "앨범"),
+        ("album_artist", "앨범 아티스트"),
+        ("genre", "장르"),
+        ("release_date", "날짜"),
+        ("bpm", "BPM"),
+        ("label", "레이블"),
+        ("isrc", "ISRC"),
+        ("cover_url", "커버 URL"),
+    )
+    return [
+        (field, label, str(getattr(current, field) or ""), str(getattr(applied, field) or ""))
+        for field, label in labels
+    ]
 
 
 def _optional_bpm(value: str) -> int | None:

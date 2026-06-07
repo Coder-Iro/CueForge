@@ -261,7 +261,7 @@ def test_onboarding_dependency_status_treats_path_tool_as_portable_fallback(monk
     assert "개발/portable fallback" in _dependency_setup_status("ffmpeg")
 
 
-def test_review_candidate_table_applies_selected_candidate(tmp_path) -> None:
+def test_review_candidate_table_previews_then_applies_selected_candidate(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -291,6 +291,17 @@ def test_review_candidate_table_applies_selected_candidate(tmp_path) -> None:
         assert window.candidate_table.item(1, 0).text() == "acoustid"
 
         window.candidate_table.selectRow(1)
+        app.processEvents()
+
+        assert window.review_fields["title"].text() == "Fallback"
+        assert window.review_fields["artist"].text() == "Uploader"
+        assert job.selected_metadata.title == "Fallback"
+        assert window.candidate_preview_table.rowCount() > 0
+        assert window.candidate_preview_table.item(0, 1).text() == "Fallback"
+        assert window.candidate_preview_table.item(0, 2).text() == "Candidate B"
+        assert window.apply_candidate_button.isEnabled() is True
+
+        window.apply_candidate_button.click()
         app.processEvents()
 
         assert window.review_fields["title"].text() == "Candidate B"
@@ -357,7 +368,9 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
         assert window.review_queue_table.item(0, 2).text() == "검수"
         assert "점수 0.70" in window.confidence_detail_label.text()
         assert "검수 필요" in window.confidence_detail_label.text()
-        assert window.candidate_table.item(0, 3).text() == "140 (GetSongBPM 0.70)"
+        assert "아티스트 충돌" in window.candidate_table.item(0, 3).text()
+        assert "BPM 있음" in window.candidate_table.item(0, 3).text()
+        assert window.candidate_table.item(0, 4).text() == "140 (GetSongBPM 0.70)"
         assert "BPM 출처: GetSongBPM" in window.confidence_detail_label.text()
     finally:
         window.close()

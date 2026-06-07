@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QPoint, QRect, QSettings
 from PySide6.QtWidgets import QApplication
 
 from ytdj.gui.main_window import MainWindow, _cover_source_from_url, _extract_urls
@@ -52,6 +52,37 @@ def test_main_window_can_queue_multiple_pasted_urls(tmp_path) -> None:
         assert window.table.item(2, 3).text() == "https://soundcloud.com/artist/track"
         assert window.table.item(3, 3).text() == "https://music.youtube.com/watch?v=abc"
         assert window.queue_status_label.text().startswith("4 track(s) ready")
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.resize(520, 480)
+        window.show()
+        app.processEvents()
+
+        assert window.add_url_button is not None
+        assert window.start_queue_button is not None
+        assert window.download_approved_button is not None
+        assert window.retry_failed_button is not None
+
+        button_rects = [
+            QRect(button.mapTo(window, QPoint(0, 0)), button.size())
+            for button in (
+                window.add_url_button,
+                window.start_queue_button,
+                window.download_approved_button,
+                window.retry_failed_button,
+            )
+        ]
+
+        for index, rect in enumerate(button_rects):
+            for other in button_rects[index + 1 :]:
+                assert not rect.intersects(other)
     finally:
         window.close()
         app.processEvents()

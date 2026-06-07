@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHeaderView,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -281,6 +282,7 @@ class MainWindow(QMainWindow):
         self.start_action: QAction | None = None
         self.download_action: QAction | None = None
         self.retry_action: QAction | None = None
+        self.add_url_button: QPushButton | None = None
         self.start_queue_button: QPushButton | None = None
         self.download_approved_button: QPushButton | None = None
         self.retry_failed_button: QPushButton | None = None
@@ -403,25 +405,29 @@ class MainWindow(QMainWindow):
 
         url_row = QGridLayout()
         url_row.addWidget(QLabel("URLs"), 0, 0)
-        url_row.addWidget(self.url_input, 0, 1, 2, 1)
-        add_button = QPushButton("Add")
-        add_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
-        add_button.clicked.connect(self._add_url)
-        url_row.addWidget(add_button, 0, 2)
+        url_row.addWidget(self.url_input, 0, 1)
+        self.add_url_button = QPushButton("Add")
+        self.add_url_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
+        self.add_url_button.clicked.connect(self._add_url)
+        url_row.addWidget(self.add_url_button, 0, 2)
+        url_row.setColumnStretch(1, 1)
+        layout.addLayout(url_row)
+
+        action_row = QHBoxLayout()
+        action_row.addStretch(1)
         self.start_queue_button = QPushButton("Analyze Metadata")
         self.start_queue_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.start_queue_button.clicked.connect(self._analyze_next)
-        url_row.addWidget(self.start_queue_button, 0, 2)
+        action_row.addWidget(self.start_queue_button)
         self.download_approved_button = QPushButton("Download Approved")
         self.download_approved_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.download_approved_button.clicked.connect(self._download_next_approved)
-        url_row.addWidget(self.download_approved_button, 1, 2)
+        action_row.addWidget(self.download_approved_button)
         self.retry_failed_button = QPushButton("Retry Failed")
         self.retry_failed_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.retry_failed_button.clicked.connect(self._retry_failed)
-        url_row.addWidget(self.retry_failed_button, 0, 3, 2, 1)
-        url_row.setColumnStretch(1, 1)
-        layout.addLayout(url_row)
+        action_row.addWidget(self.retry_failed_button)
+        layout.addLayout(action_row)
         layout.addWidget(self.queue_status_label)
         layout.addWidget(self.dependency_status_label)
 

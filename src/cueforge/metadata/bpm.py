@@ -51,15 +51,14 @@ class GetSongBpmProvider:
         if not self.config.client_key.strip() or not reference.title.strip() or not reference.artist.strip():
             return []
 
-        response = self._session.get(
-            self.config.endpoint,
-            params={
-                "type": "both",
-                "lookup": f"song:{reference.title} artist:{reference.artist}",
-                "limit": "5",
-            },
-            timeout=self.config.timeout_seconds,
-        )
+        params = _search_params(reference)
+        response = self._session.get(self.config.endpoint, params=params, timeout=self.config.timeout_seconds)
+        if _is_getsongbpm_auth_failure(response):
+            response = self._session.get(
+                self.config.endpoint,
+                params={**params, "api_key": self.config.client_key.strip()},
+                timeout=self.config.timeout_seconds,
+            )
         _raise_for_getsongbpm_status(response)
         payload = response.json()
         candidates = [
@@ -229,11 +228,22 @@ def _requests_session() -> Any:
     return requests.Session()
 
 
+def _search_params(reference: TrackMetadata) -> dict[str, str]:
+    return {
+        "type": "both",
+        "lookup": f"song:{reference.title} artist:{reference.artist}",
+        "limit": "5",
+    }
+
+
+def _is_getsongbpm_auth_failure(response: Any) -> bool:
+    return getattr(response, "status_code", None) in {401, 403}
+
+
 def _raise_for_getsongbpm_status(response: Any) -> None:
-    status_code = getattr(response, "status_code", None)
-    if status_code in {401, 403}:
+    if _is_getsongbpm_auth_failure(response):
         raise GetSongBpmAuthenticationError(
             "GetSongBPM API 인증 실패: Settings의 API 키가 잘못됐거나 아직 활성화되지 않았거나, "
-            "필수 백링크 조건으로 키가 정지됐을 수 있습니다."
+            "필수 백링크 조건으로 키가 정지됐을 수 있습니다. 헤더 인증과 api_key 파라미터 인증을 모두 시도했습니다."
         )
     response.raise_for_status()

@@ -52,6 +52,27 @@ class FakeStatusSession(FakeSession):
         return FakeStatusResponse(self.status_code)
 
 
+class FakeRetrySession(FakeSession):
+    def __init__(self) -> None:
+        super().__init__(
+            {
+                "search": [
+                    {
+                        "song_title": "Song",
+                        "artist": "Artist",
+                        "tempo": 128,
+                    }
+                ]
+            }
+        )
+
+    def get(self, url: str, *, params: dict[str, str], timeout: int) -> FakeResponse:
+        self.calls.append((url, params, timeout))
+        if len(self.calls) == 1:
+            return FakeStatusResponse(401)
+        return FakeResponse(self.payload)
+
+
 def test_parse_bpm_passthrough_and_decimal_rounding() -> None:
     assert parse_bpm(64) == 64
     assert parse_bpm(220) == 220
@@ -124,10 +145,25 @@ def test_getsongbpm_missing_key_does_not_request() -> None:
 
 
 def test_getsongbpm_auth_failure_has_actionable_error() -> None:
-    provider = GetSongBpmProvider(GetSongBpmConfig(client_key="bad-key"), session=FakeStatusSession(401))
+    session = FakeStatusSession(401)
+    provider = GetSongBpmProvider(GetSongBpmConfig(client_key="bad-key"), session=session)
 
     with pytest.raises(GetSongBpmAuthenticationError, match="API 키"):
         provider.lookup(TrackMetadata(title="Song", artist="Artist"), info={}, platform=SourcePlatform.YOUTUBE)
+
+    assert "api_key" not in session.calls[0][1]
+    assert session.calls[1][1]["api_key"] == "bad-key"
+
+
+def test_getsongbpm_retries_with_api_key_param_when_header_is_rejected() -> None:
+    session = FakeRetrySession()
+    provider = GetSongBpmProvider(GetSongBpmConfig(client_key="api-key"), session=session)
+
+    candidates = provider.lookup(TrackMetadata(title="Song", artist="Artist"), info={}, platform=SourcePlatform.YOUTUBE)
+
+    assert "api_key" not in session.calls[0][1]
+    assert session.calls[1][1]["api_key"] == "api-key"
+    assert candidates[0].metadata.bpm == 128
 
 
 def test_native_bpm_wins_over_getsongbpm() -> None:

@@ -53,7 +53,7 @@ GetSongBPM is queried only when an API key is configured. The resolver sends `ty
 
 GetSongBPM requires a mandatory backlink; include it in release notes, project docs, or the public distribution page when shipping builds. CueForge's public README links to https://getsongbpm.com/ for this requirement. Spotify Audio Features/Audio Analysis is intentionally excluded from v1 because access for new Spotify apps is restricted.
 
-If GetSongBPM returns 401 or 403, the request format is usually not the problem: the API accepts either `api_key` query params or the `X-API-KEY` header used by CueForge. Check that the key was copied correctly, the registration email was activated, and the backlink URL submitted to GetSongBPM points to the public CueForge README or release page.
+CueForge first sends GetSongBPM credentials through the documented `X-API-KEY` header. If the server rejects that with 401 or 403, CueForge retries once with the documented `api_key` query parameter because some deployments may not preserve custom auth headers. If both forms fail, check that the key was copied correctly, the registration email was activated, and the backlink URL submitted to GetSongBPM points to the public CueForge README or release page.
 
 ## SoundCloud Metadata
 

@@ -20,6 +20,7 @@ class DownloadConfig:
     output_dir: Path
     ffmpeg_location: Path | None = None
     cookie_browser: CookieBrowser | str | None = None
+    allow_playlists: bool = False
     audio_bitrate_kbps: int = 320
     keep_original: bool = False
     allow_remote_js_components: bool = True
@@ -68,8 +69,15 @@ class YTDLPDownloader:
         self._progress_callback = progress_callback
 
     def fetch_info(self, url: str) -> dict[str, Any]:
-        with self._ydl_factory(self._base_options()) as ydl:
-            return ydl.extract_info(url, download=False)
+        options = self._base_options()
+        try:
+            with self._ydl_factory(options) as ydl:
+                return ydl.extract_info(url, download=False)
+        except Exception as exc:
+            if not _should_retry_without_browser_cookies(exc, options):
+                raise
+            with self._ydl_factory(_without_browser_cookies(options)) as ydl:
+                return ydl.extract_info(url, download=False)
 
     def download_audio(self, url: str) -> DownloadResult:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -90,6 +98,14 @@ class YTDLPDownloader:
             }
         )
 
+        try:
+            return self._download_with_options(url, options)
+        except Exception as exc:
+            if not _should_retry_without_browser_cookies(exc, options):
+                raise
+            return self._download_with_options(url, _without_browser_cookies(options))
+
+    def _download_with_options(self, url: str, options: dict[str, Any]) -> DownloadResult:
         with self._ydl_factory(options) as ydl:
             info = ydl.extract_info(url, download=True)
             final_path = self._resolve_output_path(ydl, info)
@@ -100,7 +116,7 @@ class YTDLPDownloader:
             "quiet": self.config.quiet,
             "no_warnings": self.config.quiet,
             "windowsfilenames": True,
-            "noplaylist": False,
+            "noplaylist": not self.config.allow_playlists,
         }
         if self.config.ffmpeg_location:
             options["ffmpeg_location"] = str(self.config.ffmpeg_location)
@@ -155,3 +171,16 @@ def _cookie_browser_value(cookie_browser: CookieBrowser | str | None) -> str:
     if isinstance(cookie_browser, str):
         return cookie_browser.strip()
     return ""
+
+
+def _should_retry_without_browser_cookies(exc: Exception, options: dict[str, Any]) -> bool:
+    if not options.get("cookiesfrombrowser"):
+        return False
+    message = str(exc).casefold()
+    return "could not copy" in message and "cookie" in message and "database" in message
+
+
+def _without_browser_cookies(options: dict[str, Any]) -> dict[str, Any]:
+    fallback = dict(options)
+    fallback.pop("cookiesfrombrowser", None)
+    return fallback

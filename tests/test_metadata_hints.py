@@ -92,6 +92,22 @@ def test_extracts_official_mv_quoted_song_from_title() -> None:
     assert candidates[0].metadata.release_date == "2022-11-24"
 
 
+def test_extracts_title_first_quoted_song_from_user_upload_title() -> None:
+    candidates = build_hint_candidates(
+        {
+            "title": "「コネクト」ClariS Full",
+            "uploader": "雪絵今関",
+            "upload_date": "20170105",
+            "webpage_url": "https://www.youtube.com/watch?v=HcYN5Gn5IuM",
+        }
+    )
+
+    assert candidates[0].provider == "title_quoted_song"
+    assert candidates[0].metadata.artist == "ClariS"
+    assert candidates[0].metadata.title == "コネクト"
+    assert candidates[0].metadata.release_date == "2017-01-05"
+
+
 def test_extracts_compact_artist_title_from_user_upload_title() -> None:
     candidates = build_hint_candidates(
         {

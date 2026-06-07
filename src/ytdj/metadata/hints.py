@@ -28,6 +28,10 @@ TITLE_QUOTED_SONG_RE = re.compile(
     r"(?P<artist>.+?)[「『“](?P<title>.+?)[」』”]"
 )
 
+TITLE_FIRST_QUOTED_SONG_RE = re.compile(
+    r"[「『“](?P<title>.+?)[」』”]\s*(?P<artist>.+)"
+)
+
 BY_SONG_RE = re.compile(
     r"[\"“](?P<title>.+?)[\"”]\s+by\s+(?P<artist>.+)",
     re.IGNORECASE,
@@ -237,9 +241,15 @@ def _parse_quoted_song(line: str) -> TrackMetadata | None:
 
 def _parse_title_quoted_song(line: str) -> TrackMetadata | None:
     match = TITLE_QUOTED_SONG_RE.search(line)
+    if match:
+        artist = _strip_artist_prefix(match.group("artist"))
+        title = match.group("title")
+        return clean_metadata(TrackMetadata(title=title, artist=artist, album_artist=artist))
+
+    match = TITLE_FIRST_QUOTED_SONG_RE.search(line)
     if not match:
         return None
-    artist = _strip_artist_prefix(match.group("artist"))
+    artist = _strip_title_trailing_artist_noise(match.group("artist"))
     title = match.group("title")
     return clean_metadata(TrackMetadata(title=title, artist=artist, album_artist=artist))
 
@@ -339,6 +349,18 @@ def _strip_artist_prefix(value: str) -> str:
     value = squash_spaces(value)
     value = re.sub(r"^(?:歌|歌唱|アーティスト|artist|singer)\s*[:：]\s*", "", value, flags=re.IGNORECASE)
     return _strip_episode_suffix(value)
+
+
+def _strip_title_trailing_artist_noise(value: str) -> str:
+    value = _strip_artist_prefix(value)
+    return squash_spaces(
+        re.sub(
+            r"\s+(?:full|full\s*ver(?:sion)?|short\s*ver(?:sion)?|music\s*video|mv|lyrics?|歌詞)\s*$",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _strip_episode_suffix(value: str) -> str:

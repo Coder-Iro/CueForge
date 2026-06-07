@@ -39,6 +39,15 @@ class FakeYDL:
         return f"D:/music/{info['id']}.webm"
 
 
+class CookieCopyFailingYDL(FakeYDL):
+    calls: list[dict] = []
+
+    def extract_info(self, url: str, download: bool = False) -> dict:
+        if self.options.get("cookiesfrombrowser"):
+            raise RuntimeError("ERROR: Could not copy Chrome cookie database")
+        return super().extract_info(url, download=download)
+
+
 def test_fetch_info_uses_ytdlp_without_download(tmp_path: Path) -> None:
     FakeYDL.calls.clear()
     downloader = YTDLPDownloader(
@@ -51,6 +60,7 @@ def test_fetch_info_uses_ytdlp_without_download(tmp_path: Path) -> None:
     assert info["id"] == "abc"
     assert FakeYDL.calls[-1]["cookiesfrombrowser"] == ("chrome",)
     assert FakeYDL.calls[-1]["remote_components"] == ["ejs:github"]
+    assert FakeYDL.calls[-1]["noplaylist"] is True
 
 
 def test_fetch_info_accepts_cookie_browser_string_from_qt(tmp_path: Path) -> None:
@@ -63,6 +73,20 @@ def test_fetch_info_accepts_cookie_browser_string_from_qt(tmp_path: Path) -> Non
     downloader.fetch_info("https://music.youtube.com/watch?v=abc")
 
     assert FakeYDL.calls[-1]["cookiesfrombrowser"] == ("chrome",)
+
+
+def test_fetch_info_retries_without_browser_cookies_when_cookie_copy_fails(tmp_path: Path) -> None:
+    CookieCopyFailingYDL.calls.clear()
+    downloader = YTDLPDownloader(
+        DownloadConfig(output_dir=tmp_path, cookie_browser=CookieBrowser.CHROME),
+        ydl_factory=CookieCopyFailingYDL,
+    )
+
+    info = downloader.fetch_info("https://music.youtube.com/watch?v=abc")
+
+    assert info["id"] == "abc"
+    assert CookieCopyFailingYDL.calls[0]["cookiesfrombrowser"] == ("chrome",)
+    assert "cookiesfrombrowser" not in CookieCopyFailingYDL.calls[1]
 
 
 def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
@@ -80,6 +104,20 @@ def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
     assert options["postprocessors"][0]["preferredquality"] == "320"
     assert result.path == Path("D:/music/abc.mp3")
     assert progresses[0].percent == 50.0
+
+
+def test_download_audio_retries_without_browser_cookies_when_cookie_copy_fails(tmp_path: Path) -> None:
+    CookieCopyFailingYDL.calls.clear()
+    downloader = YTDLPDownloader(
+        DownloadConfig(output_dir=tmp_path, cookie_browser=CookieBrowser.CHROME),
+        ydl_factory=CookieCopyFailingYDL,
+    )
+
+    result = downloader.download_audio("https://music.youtube.com/watch?v=abc")
+
+    assert result.path == Path("D:/music/abc.mp3")
+    assert CookieCopyFailingYDL.calls[0]["cookiesfrombrowser"] == ("chrome",)
+    assert "cookiesfrombrowser" not in CookieCopyFailingYDL.calls[1]
 
 
 def test_download_can_disable_remote_js_components(tmp_path: Path) -> None:

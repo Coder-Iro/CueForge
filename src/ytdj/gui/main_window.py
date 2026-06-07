@@ -364,6 +364,7 @@ class MainWindow(QMainWindow):
         self.queue_tab_index = self.tabs.addTab(self._queue_tab(), "Queue")
         self.review_tab_index = self.tabs.addTab(self._review_tab(), "Review")
         self.tabs.addTab(self._settings_tab(), "Settings")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs)
         self._refresh_actions()
 
@@ -602,8 +603,8 @@ class MainWindow(QMainWindow):
             job.status = DownloadStatus.DOWNLOADING
         else:
             job.status = DownloadStatus.REVIEW_REQUIRED
-            active_review = self._active_review_job()
-            if not active_review or active_review.status != DownloadStatus.REVIEW_REQUIRED:
+            loaded_review = self._loaded_review_job()
+            if not loaded_review or loaded_review.id == job.id or loaded_review.status != DownloadStatus.REVIEW_REQUIRED:
                 self._load_job_for_review(job, select_row=False)
         self._update_row(job)
         if review_state == ReviewState.AUTO_APPROVED:
@@ -645,11 +646,12 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             job.status = DownloadStatus.APPROVED
             self._update_row(job)
-            self._load_job_for_review(job, select_row=False)
             self._append_log(job.id, "metadata approved; queued for download")
+            self._load_next_review_or_current(job)
             self._refresh_actions()
             return
         self._run_worker(job, approved_metadata=metadata)
+        self._load_next_review_or_current(job)
 
     def _remove_selected(self) -> None:
         row = self.table.currentRow()
@@ -665,7 +667,11 @@ class MainWindow(QMainWindow):
         del self.jobs[job_id]
         if self.active_review_job_id == job_id:
             self.active_review_job_id = None
-            self._clear_review_panel()
+            next_review = self._next_review_job()
+            if next_review:
+                self._load_job_for_review(next_review, select_row=False)
+            else:
+                self._clear_review_panel()
         self._refresh_actions()
 
     def _load_selected_job(self) -> None:
@@ -702,6 +708,13 @@ class MainWindow(QMainWindow):
         self._loading_review = False
         self._refresh_cover_preview(job, metadata)
         self._refresh_actions()
+
+    def _load_next_review_or_current(self, current: DownloadJob) -> None:
+        next_review = self._next_review_job(exclude_id=current.id)
+        if next_review:
+            self._load_job_for_review(next_review, select_row=False)
+        else:
+            self._load_job_for_review(current, select_row=False)
 
     def _clear_review_panel(self) -> None:
         self.review_state_label.setText("No track selected")
@@ -863,6 +876,20 @@ class MainWindow(QMainWindow):
             return self.jobs.get(self.active_review_job_id)
         return self._selected_job()
 
+    def _loaded_review_job(self) -> DownloadJob | None:
+        if not self.active_review_job_id:
+            return None
+        return self.jobs.get(self.active_review_job_id)
+
+    def _next_review_job(self, *, exclude_id: str = "") -> DownloadJob | None:
+        for job_id in self.row_job_ids:
+            if job_id == exclude_id:
+                continue
+            job = self.jobs[job_id]
+            if job.status == DownloadStatus.REVIEW_REQUIRED:
+                return job
+        return None
+
     def _select_job_row(self, job: DownloadJob) -> None:
         try:
             row = self.row_job_ids.index(job.id)
@@ -909,6 +936,16 @@ class MainWindow(QMainWindow):
         else:
             text = "Add URLs, then process the queue."
         self.queue_status_label.setText(text)
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index != self.review_tab_index:
+            return
+        loaded_review = self._loaded_review_job()
+        if loaded_review and loaded_review.status == DownloadStatus.REVIEW_REQUIRED:
+            return
+        next_review = self._next_review_job()
+        if next_review:
+            self._load_job_for_review(next_review, select_row=False)
 
     def _append_log(self, job_id: str, message: str) -> None:
         short_id = job_id[:8]

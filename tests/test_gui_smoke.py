@@ -207,6 +207,40 @@ def test_metadata_ready_accepts_review_state_string(tmp_path) -> None:
         app.processEvents()
 
 
+def test_selected_running_job_loads_review_panel_when_metadata_needs_review(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.METADATA
+        window.table.selectRow(0)
+
+        window._on_metadata_ready(
+            job.id,
+            TrackMetadata(title="Needs Review", artist="Detected Artist"),
+            "review_required",
+            [
+                MetadataCandidate(
+                    provider="fallback",
+                    score=0.70,
+                    matched_fields=("title",),
+                    metadata=TrackMetadata(title="Needs Review", artist="Detected Artist"),
+                )
+            ],
+        )
+
+        assert window.active_review_job_id == job.id
+        assert window.review_fields["title"].text() == "Needs Review"
+        assert window.review_fields["artist"].text() == "Detected Artist"
+        assert window.candidate_table.rowCount() == 1
+        assert window.approve_button.isEnabled() is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
@@ -231,6 +265,31 @@ def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkey
         assert started[0][0] is job
         assert started[0][1].title == "Review Title"
         assert started[0][1].artist == "Review Artist"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_review_tab_loads_waiting_review_when_no_review_form_is_active(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        for url in ("https://youtu.be/first", "https://youtu.be/second"):
+            window.url_input.setText(url)
+            window._add_url()
+        first, second = window.jobs[window.row_job_ids[0]], window.jobs[window.row_job_ids[1]]
+        first.status = DownloadStatus.REVIEW_REQUIRED
+        first.selected_metadata = TrackMetadata(title="First Review", artist="Artist A")
+        second.status = DownloadStatus.PENDING
+        window.active_review_job_id = None
+        window.table.selectRow(1)
+
+        window.tabs.setCurrentIndex(window.review_tab_index)
+        app.processEvents()
+
+        assert window.active_review_job_id == first.id
+        assert window.review_fields["title"].text() == "First Review"
+        assert window.review_fields["artist"].text() == "Artist A"
     finally:
         window.close()
         app.processEvents()
@@ -263,6 +322,36 @@ def test_review_required_does_not_block_pending_queue_items(tmp_path, monkeypatc
         assert window.tabs.currentIndex() == window.queue_tab_index
         assert window.approve_button.isEnabled() is True
         assert window.tabs.tabText(window.review_tab_index) == "Review (1)"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_approve_loads_next_waiting_review_item(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        for url in ("https://youtu.be/first", "https://youtu.be/second"):
+            window.url_input.setText(url)
+            window._add_url()
+        first, second = window.jobs[window.row_job_ids[0]], window.jobs[window.row_job_ids[1]]
+        first.status = DownloadStatus.REVIEW_REQUIRED
+        first.selected_metadata = TrackMetadata(title="First Review", artist="Artist A")
+        second.status = DownloadStatus.REVIEW_REQUIRED
+        second.selected_metadata = TrackMetadata(title="Second Review", artist="Artist B")
+        window._load_job_for_review(first)
+
+        class RunningWorker:
+            def isRunning(self):
+                return True
+
+        window.worker = RunningWorker()
+        window._approve_selected()
+
+        assert first.status == DownloadStatus.APPROVED
+        assert window.active_review_job_id == second.id
+        assert window.review_fields["title"].text() == "Second Review"
+        assert window.review_fields["artist"].text() == "Artist B"
     finally:
         window.close()
         app.processEvents()

@@ -154,6 +154,36 @@ def test_review_candidate_table_applies_selected_candidate(tmp_path) -> None:
         app.processEvents()
 
 
+def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.REVIEW_REQUIRED
+        job.selected_metadata = TrackMetadata(title="Fallback", artist="Uploader")
+        job.candidates = [
+            MetadataCandidate(
+                provider="musicbrainz",
+                score=0.70,
+                matched_fields=("title",),
+                metadata=TrackMetadata(title="Candidate A", artist="Artist A"),
+            )
+        ]
+
+        window._load_job_for_review(job)
+
+        assert window.review_queue_table.rowCount() == 1
+        assert window.review_queue_table.item(0, 0).text() == "Fallback"
+        assert window.review_queue_table.item(0, 2).text() == "review"
+        assert "score 0.70" in window.confidence_detail_label.text()
+        assert "needs review" in window.confidence_detail_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_cover_source_infers_known_artwork_hosts() -> None:
     assert _cover_source_from_url("https://coverartarchive.org/release/rel/front-500.jpg") == "Cover Art Archive"
     assert _cover_source_from_url("https://i1.sndcdn.com/artworks-test.jpg") == "SoundCloud native"
@@ -207,6 +237,59 @@ def test_metadata_ready_accepts_review_state_string(tmp_path) -> None:
         app.processEvents()
 
 
+def test_auto_approved_metadata_waits_for_download_approved(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+
+        window._on_metadata_ready(
+            job.id,
+            TrackMetadata(title="Auto Song", artist="Auto Artist"),
+            "auto_approved",
+            [],
+        )
+
+        assert job.status == DownloadStatus.APPROVED
+        assert window.download_approved_button.isEnabled() is True
+        assert "ready to download" in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_analyze_and_download_buttons_are_separate(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        for url in ("https://youtu.be/pending", "https://youtu.be/approved"):
+            window.url_input.setText(url)
+            window._add_url()
+        pending, approved = window.jobs[window.row_job_ids[0]], window.jobs[window.row_job_ids[1]]
+        approved.status = DownloadStatus.APPROVED
+        approved.selected_metadata = TrackMetadata(title="Ready", artist="Artist")
+
+        started = []
+
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False):
+            started.append((job, approved_metadata, analyze_only))
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+
+        window._analyze_next()
+        window._download_next_approved()
+
+        assert started[0] == (pending, None, True)
+        assert started[1][0] is approved
+        assert started[1][1].title == "Ready"
+        assert started[1][2] is False
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_selected_running_job_loads_review_panel_when_metadata_needs_review(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
@@ -241,7 +324,7 @@ def test_selected_running_job_loads_review_panel_when_metadata_needs_review(tmp_
         app.processEvents()
 
 
-def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkeypatch) -> None:
+def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -253,18 +336,12 @@ def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkey
         window._load_job_for_review(job)
         assert window.active_review_job_id == job.id
 
-        started = []
-
-        def fake_run_worker(run_job, approved_metadata=None):
-            started.append((run_job, approved_metadata))
-
-        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
         window._approve_selected()
 
-        assert started
-        assert started[0][0] is job
-        assert started[0][1].title == "Review Title"
-        assert started[0][1].artist == "Review Artist"
+        assert job.status == DownloadStatus.APPROVED
+        assert job.selected_metadata.title == "Review Title"
+        assert job.selected_metadata.artist == "Review Artist"
+        assert window.download_approved_button.isEnabled() is True
     finally:
         window.close()
         app.processEvents()
@@ -307,18 +384,19 @@ def test_review_required_does_not_block_pending_queue_items(tmp_path, monkeypatc
 
         started = []
 
-        def fake_run_worker(job, approved_metadata=None):
-            started.append((job, approved_metadata))
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False):
+            started.append((job, approved_metadata, analyze_only))
             job.status = DownloadStatus.DOWNLOADING
 
         monkeypatch.setattr(window, "_run_worker", fake_run_worker)
 
         window._on_metadata_ready(first.id, TrackMetadata(title="Song", artist="Artist"), "review_required", [])
+        window.worker_mode = "analysis"
         window._worker_finished()
 
         assert first.status == DownloadStatus.REVIEW_REQUIRED
         assert second.status == DownloadStatus.DOWNLOADING
-        assert started == [(second, None)]
+        assert started == [(second, None, True)]
         assert window.tabs.currentIndex() == window.queue_tab_index
         assert window.approve_button.isEnabled() is True
         assert window.tabs.tabText(window.review_tab_index) == "Review (1)"
@@ -371,8 +449,8 @@ def test_approve_while_queue_running_queues_reviewed_job_first(tmp_path, monkeyp
 
         started = []
 
-        def fake_run_worker(job, approved_metadata=None):
-            started.append((job, approved_metadata))
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False):
+            started.append((job, approved_metadata, analyze_only))
             job.status = DownloadStatus.DOWNLOADING
 
         monkeypatch.setattr(window, "_run_worker", fake_run_worker)
@@ -389,9 +467,14 @@ def test_approve_while_queue_running_queues_reviewed_job_first(tmp_path, monkeyp
 
         window._worker_finished()
 
+        assert started == []
+        assert second.status == DownloadStatus.PENDING
+
+        window._download_next_approved()
+
         assert started[0][0] is first
         assert started[0][1].title == "Song"
-        assert second.status == DownloadStatus.PENDING
+        assert started[0][2] is False
     finally:
         window.close()
         app.processEvents()

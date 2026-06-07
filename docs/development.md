@@ -53,11 +53,13 @@ Automatic AcoustID recognition is skipped for SoundCloud tracks for the same rea
 
 Cover art is resolved in this order: SoundCloud native artwork for SoundCloud tracks, Cover Art Archive 500px front artwork when a MusicBrainz release ID is available, then platform thumbnails as fallback.
 
-The review tab shows candidate metadata rows, matched fields, candidate scores, cover source, and a cover preview before tagging. Selecting a candidate applies it to the editable review fields.
+The queue flow is split into `Analyze Metadata`, review approval, and `Download Approved`. Analysis turns auto-approved tracks into `approved` jobs and sends lower-confidence tracks to the review queue; downloading only runs for approved jobs.
+
+The review tab shows a review queue, candidate metadata rows, matched fields, candidate scores, confidence explanations, cover source, and a cover preview before tagging. Selecting a candidate applies it to the editable review fields.
 
 ## Beta Diagnostics
 
-The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, cover source, and written/skipped tag fields.
+The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, browser cookies, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, cover source, and written/skipped tag fields.
 
 For packaged or local metadata smoke checks without audio download:
 

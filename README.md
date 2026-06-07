@@ -12,11 +12,12 @@ YT-DJ is a Windows-first desktop app for downloading authorized YouTube/YouTube 
 - YouTube description/YTMusic metadata first, MusicBrainz enrichment second
 - Cover Art Archive release artwork preferred over YouTube thumbnails when MusicBrainz release metadata is available
 - AcoustID/Chromaprint audio recognition for low-confidence YouTube metadata
-- Low-confidence metadata review before final tagging
+- Separate metadata analysis, review approval, and approved download/tagging steps
+- Low-confidence metadata review queue before final tagging
 
 SoundCloud tracks are treated differently from YouTube videos: native SoundCloud title, artist/uploader, genre, tags, artwork, and source URL are trusted by default so remix, bootleg, edit, and mashup titles are preserved.
 Automatic audio recognition is skipped for SoundCloud by default to avoid replacing remix or bootleg metadata with the original commercial release.
-The review screen shows alternative metadata candidates, cover-art source, and a cover preview so beta testers can catch bad matches before tagging.
+The review screen shows a review queue, alternative metadata candidates, confidence details, cover-art source, and a cover preview so beta testers can catch bad matches before tagging. Use `Analyze Metadata` first, review or approve tracks as needed, then use `Download Approved` to download and tag the approved tracks. `Retry Failed` returns failed jobs to the analysis queue.
 
 ## Development
 

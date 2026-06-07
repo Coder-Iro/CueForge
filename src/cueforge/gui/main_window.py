@@ -274,12 +274,20 @@ class JobWorker(QThread):
             candidates=candidates,
             fingerprint_candidates=fingerprint_candidates,
         )
-        merged_metadata = self._new_resolver().enrich_cover_art(
+        resolver = self._new_resolver()
+        merged_metadata = resolver.enrich_cover_art(
             merged_metadata,
             platform=platform,
             fallback_cover_url=metadata.cover_url,
             log=lambda message: self.log_message.emit(self.job.id, message),
         )
+        merged_metadata, bpm_candidates = resolver.enrich_bpm(
+            merged_metadata,
+            info=result.info,
+            platform=platform,
+            log=lambda message: self.log_message.emit(self.job.id, message),
+        )
+        merged_candidates.extend(bpm_candidates)
         self._check_canceled()
         best = fingerprint_candidates[0]
         self.log_message.emit(self.job.id, f"AcoustID 최상위 일치: {best.metadata.artist} - {best.metadata.title} ({best.score:.2f})")

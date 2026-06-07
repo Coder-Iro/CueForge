@@ -74,6 +74,37 @@ class FakeCoverArtProvider:
         return "https://coverartarchive.org/release/rel-1/front-500.jpg"
 
 
+class FakeBpmResolver:
+    bpm_references: list[tuple[str, str, dict, SourcePlatform]] = []
+
+    def enrich_cover_art(
+        self,
+        metadata: TrackMetadata,
+        *,
+        platform: SourcePlatform,
+        fallback_cover_url: str = "",
+        log: object = None,
+    ) -> TrackMetadata:
+        return metadata
+
+    def enrich_bpm(
+        self,
+        metadata: TrackMetadata,
+        *,
+        info: dict,
+        platform: SourcePlatform,
+        log: object = None,
+    ) -> tuple[TrackMetadata, list[MetadataCandidate]]:
+        self.bpm_references.append((metadata.title, metadata.artist, info, platform))
+        candidate = MetadataCandidate(
+            provider="getsongbpm",
+            score=0.92,
+            matched_fields=("title", "artist", "bpm"),
+            metadata=TrackMetadata(bpm=128, bpm_source="GetSongBPM", bpm_confidence=0.92),
+        )
+        return metadata.overlay(candidate.metadata).normalized(), [candidate]
+
+
 class FakeTagWriter:
     writes: list[Path] = []
 
@@ -215,6 +246,38 @@ def test_worker_refreshes_cover_art_after_audio_recognition(tmp_path: Path) -> N
     assert candidates[0].provider == "acoustid"
     assert downloaded_path == job.downloaded_path
     assert FakeCoverArtProvider.calls == ["rel-1"]
+
+
+def test_worker_enriches_bpm_after_audio_recognition(tmp_path: Path) -> None:
+    FakeDownloader.downloads.clear()
+    FakeBpmResolver.bpm_references.clear()
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    worker = JobWorker(
+        job,
+        cookie_browser=None,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+        acoustid_provider_factory=FakeAcoustIDProvider,
+        resolver_factory=FakeBpmResolver,
+    )
+
+    metadata, state, candidates, downloaded_path = worker._try_audio_recognition(
+        metadata=TrackMetadata(title="Wrong", artist="Uploader"),
+        state=ReviewState.REVIEW_REQUIRED,
+        candidates=[],
+        platform=SourcePlatform.YOUTUBE,
+    )
+
+    assert state == ReviewState.AUTO_APPROVED
+    assert metadata.title == "Recognized"
+    assert metadata.artist == "Artist"
+    assert metadata.bpm == 128
+    assert metadata.bpm_source == "GetSongBPM"
+    assert candidates[-1].provider == "getsongbpm"
+    assert FakeBpmResolver.bpm_references == [("Recognized", "Artist", {"id": "abc"}, SourcePlatform.YOUTUBE)]
+    assert downloaded_path == job.downloaded_path
 
 
 def test_worker_skips_audio_recognition_for_soundcloud(tmp_path: Path) -> None:

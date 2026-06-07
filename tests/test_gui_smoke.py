@@ -5,8 +5,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QRect, QSettings, Qt
 from PySide6.QtWidgets import QApplication
 
-from ytdj.gui.main_window import MainWindow, _cover_source_from_url, _extract_urls
+from ytdj.gui.main_window import MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls
 from ytdj.models import DownloadStatus, MetadataCandidate, TrackMetadata
+from ytdj.runtime import DependencyStatus
 
 
 def _test_settings(tmp_path) -> QSettings:
@@ -202,6 +203,62 @@ def test_main_window_persists_beta_settings(tmp_path) -> None:
     finally:
         restored.close()
         app.processEvents()
+
+
+def test_first_run_opens_onboarding_and_can_complete(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    window = MainWindow(settings=settings)
+    try:
+        assert window.onboarding_dialog is not None
+        assert window.onboarding_dialog.isVisible()
+
+        window.onboarding_dialog._complete()
+        app.processEvents()
+
+        assert settings.value("onboarding/completed") is True
+        assert window.onboarding_dialog is None
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_settings_can_reopen_onboarding(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    settings.setValue("onboarding/completed", True)
+    window = MainWindow(settings=settings)
+    try:
+        assert window.onboarding_dialog is None
+        assert window.open_onboarding_button is not None
+
+        window.open_onboarding_button.click()
+        app.processEvents()
+
+        assert window.onboarding_dialog is not None
+        assert window.onboarding_dialog.isVisible()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_onboarding_dependency_status_marks_missing_bundled_tool_as_incomplete(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("ytdj.gui.main_window.find_executable", lambda name, explicit_path=None: DependencyStatus(name, None, "missing"))
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+
+    assert "설치가 불완전함" in _dependency_setup_status("ffmpeg")
+
+
+def test_onboarding_dependency_status_treats_path_tool_as_portable_fallback(monkeypatch, tmp_path) -> None:
+    tool = tmp_path / "ffmpeg.exe"
+    tool.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "ytdj.gui.main_window.find_executable",
+        lambda name, explicit_path=None: DependencyStatus(name, tool, "PATH"),
+    )
+    monkeypatch.delattr("sys.frozen", raising=False)
+
+    assert "개발/portable fallback" in _dependency_setup_status("ffmpeg")
 
 
 def test_review_candidate_table_applies_selected_candidate(tmp_path) -> None:

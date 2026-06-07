@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -269,6 +270,56 @@ class CoverPreviewWorker(QThread):
             self.cover_loaded.emit(self.job_id, self.url, b"", str(exc))
 
 
+class OnboardingDialog(QDialog):
+    def __init__(
+        self,
+        *,
+        parent: QWidget,
+        dependency_rows: list[tuple[str, str]],
+        optional_rows: list[tuple[str, str]],
+        on_done: Callable[[], None],
+    ) -> None:
+        super().__init__(parent)
+        self._on_done = on_done
+        self.setWindowTitle("초기 환경 점검")
+        self.resize(560, 420)
+
+        layout = QVBoxLayout(self)
+        intro = QLabel("설치된 외부 도구 상태를 확인하고 선택 설정을 점검합니다. 건너뛰어도 앱은 계속 사용할 수 있습니다.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        dependency_group = QGroupBox("번들 의존성")
+        dependency_layout = QFormLayout(dependency_group)
+        for name, status in dependency_rows:
+            label = QLabel(status)
+            label.setWordWrap(True)
+            dependency_layout.addRow(name, label)
+        layout.addWidget(dependency_group)
+
+        optional_group = QGroupBox("선택 설정")
+        optional_layout = QFormLayout(optional_group)
+        for name, status in optional_rows:
+            label = QLabel(status)
+            label.setWordWrap(True)
+            optional_layout.addRow(name, label)
+        layout.addWidget(optional_group)
+
+        action_row = QHBoxLayout()
+        action_row.addStretch(1)
+        skip_button = QPushButton("건너뛰기")
+        skip_button.clicked.connect(self._complete)
+        action_row.addWidget(skip_button)
+        done_button = QPushButton("확인")
+        done_button.clicked.connect(self._complete)
+        action_row.addWidget(done_button)
+        layout.addLayout(action_row)
+
+    def _complete(self) -> None:
+        self._on_done()
+        self.accept()
+
+
 class UrlInput(QPlainTextEdit):
     def text(self) -> str:
         return self.toPlainText()
@@ -305,6 +356,8 @@ class MainWindow(QMainWindow):
         self.retry_failed_button: QPushButton | None = None
         self.approve_button: QPushButton | None = None
         self.reopen_review_button: QPushButton | None = None
+        self.open_onboarding_button: QPushButton | None = None
+        self.onboarding_dialog: OnboardingDialog | None = None
         self.review_scroll_area: QScrollArea | None = None
         self.review_splitter: QSplitter | None = None
         self._loading_review = False
@@ -399,6 +452,8 @@ class MainWindow(QMainWindow):
 
         self._load_settings()
         self._build_ui()
+        if not _settings_bool(self._settings.value("onboarding/completed", False), default=False):
+            self._open_onboarding()
 
     def _build_ui(self) -> None:
         toolbar = QToolBar("작업")
@@ -613,6 +668,9 @@ class MainWindow(QMainWindow):
         bpm_group = QGroupBox("외부 BPM")
         bpm_form = QFormLayout(bpm_group)
         bpm_form.addRow("GetSongBPM API 키", self.getsongbpm_key_input)
+        self.open_onboarding_button = QPushButton("초기 설정 다시 열기")
+        self.open_onboarding_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
+        self.open_onboarding_button.clicked.connect(self._open_onboarding)
         diagnostics_button = QPushButton("진단 정보 복사")
         diagnostics_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
         diagnostics_button.clicked.connect(self._copy_diagnostics)
@@ -620,6 +678,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(paths_group)
         layout.addWidget(recognition_group)
         layout.addWidget(bpm_group)
+        layout.addWidget(self.open_onboarding_button)
         layout.addWidget(diagnostics_button)
         layout.addStretch()
         return root
@@ -689,6 +748,48 @@ class MainWindow(QMainWindow):
             f"AcoustID {acoustid}; GetSongBPM {getsongbpm}; 브라우저 쿠키 {cookies}; 쿠키 잠금 해제 {cookie_unlock}; "
             f"YTMusic 인증 {ytmusic_auth}."
         )
+
+    def _open_onboarding(self) -> None:
+        if self.onboarding_dialog and self.onboarding_dialog.isVisible():
+            self.onboarding_dialog.raise_()
+            self.onboarding_dialog.activateWindow()
+            return
+        dialog = OnboardingDialog(
+            parent=self,
+            dependency_rows=self._onboarding_dependency_rows(),
+            optional_rows=self._onboarding_optional_rows(),
+            on_done=self._complete_onboarding,
+        )
+        dialog.finished.connect(lambda _result: self._onboarding_finished(dialog))
+        self.onboarding_dialog = dialog
+        dialog.show()
+
+    def _complete_onboarding(self) -> None:
+        self._settings.setValue("onboarding/completed", True)
+        self._settings.sync()
+
+    def _onboarding_finished(self, dialog: OnboardingDialog) -> None:
+        if self.onboarding_dialog is dialog:
+            self.onboarding_dialog = None
+        dialog.deleteLater()
+
+    def _onboarding_dependency_rows(self) -> list[tuple[str, str]]:
+        return [
+            ("ffmpeg", _dependency_setup_status("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text()))),
+            ("Deno", _dependency_setup_status("deno")),
+            ("fpcalc", _dependency_setup_status("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))),
+        ]
+
+    def _onboarding_optional_rows(self) -> list[tuple[str, str]]:
+        cookie = _cookie_browser_value(self.cookie_combo.currentData()) or "사용 안 함"
+        cookie_unlock = "켜짐" if self.cookie_unlock_checkbox.isChecked() else "꺼짐"
+        return [
+            ("브라우저 쿠키", cookie),
+            ("YTMusic 인증 JSON", "설정됨" if self.auth_path_input.text().strip() else "미설정"),
+            ("쿠키 잠금 해제", cookie_unlock),
+            ("AcoustID 클라이언트 키", "설정됨" if self.acoustid_key_input.text().strip() else "미설정"),
+            ("GetSongBPM API 키", "설정됨" if self.getsongbpm_key_input.text().strip() else "미설정"),
+        ]
 
     def closeEvent(self, event: Any) -> None:
         self.save_settings()
@@ -1342,6 +1443,17 @@ def _audio_recognition_skip_reason(
 
 def _has_fpcalc(config: AcoustIDConfig) -> bool:
     return find_executable("fpcalc", explicit_path=config.fpcalc_path).available
+
+
+def _dependency_setup_status(name: str, *, explicit_path: Path | None = None) -> str:
+    status = find_executable(name, explicit_path=explicit_path)
+    if status.available and status.source == "bundled":
+        return f"정상 감지됨: {status.path}"
+    if not status.available and getattr(sys, "frozen", False):
+        return "설치가 불완전함: 번들된 실행 파일을 찾을 수 없습니다."
+    if status.available:
+        return f"개발/portable fallback 감지됨 ({status.source}): {status.path}"
+    return "누락됨: 개발/portable 실행이라면 PATH 또는 고급 경로 설정을 확인하세요."
 
 
 def _merge_audio_recognition_candidates(

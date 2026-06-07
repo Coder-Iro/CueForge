@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHeaderView,
@@ -25,6 +26,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStyle,
     QTableWidget,
@@ -289,6 +292,8 @@ class MainWindow(QMainWindow):
         self.retry_failed_button: QPushButton | None = None
         self.approve_button: QPushButton | None = None
         self.reopen_review_button: QPushButton | None = None
+        self.review_scroll_area: QScrollArea | None = None
+        self.review_splitter: QSplitter | None = None
         self._loading_review = False
         self._loading_review_queue = False
         self._cover_preview_workers: list[CoverPreviewWorker] = []
@@ -327,7 +332,8 @@ class MainWindow(QMainWindow):
         self.review_queue_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.review_queue_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.review_queue_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.review_queue_table.setMinimumHeight(150)
+        self.review_queue_table.setMinimumHeight(72)
+        self.review_queue_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.review_queue_table.itemSelectionChanged.connect(self._load_selected_review_queue_job)
 
         self.candidate_table = QTableWidget(0, len(self.CANDIDATE_COLUMNS))
@@ -337,7 +343,8 @@ class MainWindow(QMainWindow):
         self.candidate_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.candidate_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.candidate_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.candidate_table.setMinimumHeight(180)
+        self.candidate_table.setMinimumHeight(88)
+        self.candidate_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.candidate_table.itemSelectionChanged.connect(self._apply_selected_candidate)
 
         self.log = QPlainTextEdit()
@@ -450,14 +457,44 @@ class MainWindow(QMainWindow):
     def _review_tab(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(0, 0, 0, 0)
 
+        self.review_scroll_area = QScrollArea()
+        self.review_scroll_area.setWidgetResizable(True)
+        self.review_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.review_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.review_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+
+        content = QWidget()
+        content.setMinimumHeight(760)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(8, 8, 8, 8)
         splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(12)
+        splitter.setStyleSheet(
+            """
+            QSplitter::handle:vertical {
+                background: #c9ced6;
+                border: 1px solid #aeb5c0;
+                margin: 3px 0;
+            }
+            QSplitter::handle:vertical:hover {
+                background: #8f9bad;
+            }
+            """
+        )
+        self.review_splitter = splitter
 
         review_queue_group = QGroupBox("Review Queue")
+        review_queue_group.setMinimumHeight(96)
+        review_queue_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         review_queue_layout = QVBoxLayout(review_queue_group)
         review_queue_layout.addWidget(self.review_queue_table)
 
         provider_group = QGroupBox("Metadata Providers")
+        provider_group.setMinimumHeight(112)
+        provider_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         provider_layout = QVBoxLayout(provider_group)
         provider_layout.addWidget(self.review_state_label)
         provider_layout.addWidget(self.review_hint_label)
@@ -466,6 +503,8 @@ class MainWindow(QMainWindow):
         provider_layout.addWidget(self.candidate_table)
 
         tag_editor_group = QGroupBox("Tag Editor")
+        tag_editor_group.setMinimumHeight(140)
+        tag_editor_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         tag_editor_layout = QVBoxLayout(tag_editor_group)
 
         form = QFormLayout()
@@ -510,8 +549,10 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 2)
         splitter.setStretchFactor(1, 3)
         splitter.setStretchFactor(2, 3)
-        splitter.setSizes([180, 260, 280])
-        layout.addWidget(splitter)
+        splitter.setSizes([210, 270, 280])
+        content_layout.addWidget(splitter)
+        self.review_scroll_area.setWidget(content)
+        layout.addWidget(self.review_scroll_area)
         return root
 
     def _settings_tab(self) -> QWidget:

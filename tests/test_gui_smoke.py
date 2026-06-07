@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QRect, QSettings
+from PySide6.QtCore import QPoint, QRect, QSettings, Qt
 from PySide6.QtWidgets import QApplication
 
 from ytdj.gui.main_window import MainWindow, _cover_source_from_url, _extract_urls
@@ -99,10 +99,19 @@ def test_review_tab_gives_queue_and_provider_tables_room(tmp_path) -> None:
         window.show()
         app.processEvents()
 
-        assert window.review_queue_table.minimumHeight() >= 150
-        assert window.candidate_table.minimumHeight() >= 180
-        assert window.review_queue_table.height() >= 150
-        assert window.candidate_table.height() >= 180
+        assert window.review_scroll_area is not None
+        assert window.review_scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        assert window.review_splitter is not None
+        assert window.review_splitter.count() == 3
+        assert window.review_splitter.handleWidth() >= 10
+
+        window.review_splitter.setSizes([100, 120, 520])
+        app.processEvents()
+
+        sizes = window.review_splitter.sizes()
+        assert sizes[0] <= 130
+        assert sizes[1] <= 160
+        assert sizes[2] >= 400
     finally:
         window.close()
         app.processEvents()

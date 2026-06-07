@@ -29,7 +29,7 @@ def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
             track_number=7,
             disc_number=1,
             bpm=128,
-            bpm_source="GetSongBPM",
+            bpm_source="External BPM",
             bpm_confidence=0.91,
             label="Label",
             isrc="USABC260001",
@@ -49,7 +49,7 @@ def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
     assert tags["TBPM"].text[0] == "128"
     assert tags["TRCK"].text[0] == "7"
     assert tags["TSRC"].text[0] == "USABC260001"
-    assert tags["TXXX:BPM Source"].text[0] == "GetSongBPM"
+    assert tags["TXXX:BPM Source"].text[0] == "External BPM"
     assert tags["TXXX:BPM Confidence"].text[0] == "0.910"
     pictures = tags.getall("APIC")
     assert len(pictures) == 1
@@ -65,7 +65,7 @@ def test_writer_omits_bpm_when_missing(tmp_path: Path) -> None:
     target = tmp_path / "track.mp3"
     target.write_bytes(b"")
 
-    RekordboxTagWriter().write(target, TrackMetadata(title="Song", artist="Artist", bpm_source="GetSongBPM", bpm_confidence=0.9))
+    RekordboxTagWriter().write(target, TrackMetadata(title="Song", artist="Artist", bpm_source="External BPM", bpm_confidence=0.9))
 
     tags = ID3(target)
     assert "TBPM" not in tags

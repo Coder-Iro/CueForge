@@ -12,7 +12,7 @@ python -m venv .venv
 `ffmpeg` must be on PATH or selected in the Settings tab.
 Install Deno on PATH for YouTube JavaScript challenge solving. The downloader enables yt-dlp's `ejs:github` remote component by default so Deno can run the current solver script.
 Optional audio recognition requires `fpcalc` from Chromaprint. Put `fpcalc` on PATH or select the executable in Settings.
-Optional external BPM tagging requires a GetSongBPM API key in Settings. BPM is never calculated locally.
+BPM is never calculated locally. The app writes BPM only when it comes from manual review input or native yt-dlp source metadata.
 Use `python -m cueforge --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
 
 ## Git Workflow
@@ -45,15 +45,11 @@ For beta metadata validation, enable "Verify YouTube auto-approved metadata with
 
 Configure an AcoustID application client key in Settings. Do not commit keys or user credentials. The free AcoustID web service is intended for non-commercial use and rate-limits clients, so this app uses it only as a fallback recognition layer.
 
-## External BPM
+## BPM Tagging
 
-BPM source priority is manual Tag Editor input, then native yt-dlp metadata such as SoundCloud BPM/tempo, then GetSongBPM. Missing BPM is not a job failure; the app simply omits the `TBPM` tag.
+BPM source priority is manual Tag Editor input, then native yt-dlp metadata such as SoundCloud BPM/tempo. Missing BPM is not a job failure; the app simply omits the `TBPM` tag.
 
-GetSongBPM is queried only when an API key is configured. The resolver sends `type=both`, `lookup=song:<title> artist:<artist>`, and `limit=5` to `https://api.getsong.co/search/` with the key in the `X-API-KEY` header. Only strict title/artist-centered matches scoring 0.85 or higher are applied. Values are written as integer ID3 `TBPM` frames after decimal rounding, with no half/double tempo correction, so values like 64, 174, and 220 pass through.
-
-GetSongBPM requires a mandatory backlink; include it in release notes, project docs, or the public distribution page when shipping builds. CueForge's public README links to https://getsongbpm.com/ for this requirement. Spotify Audio Features/Audio Analysis is intentionally excluded from v1 because access for new Spotify apps is restricted.
-
-CueForge first sends GetSongBPM credentials through the documented `X-API-KEY` header. If the server rejects that with 401 or 403, CueForge retries once with the documented `api_key` query parameter because some deployments may not preserve custom auth headers. If both forms fail, check that the key was copied correctly, the registration email was activated, and the backlink URL submitted to GetSongBPM points to the public CueForge README or release page.
+Values are written as integer ID3 `TBPM` frames after decimal rounding, with no half/double tempo correction, so values like 64, 174, and 220 pass through. API-key BPM lookup services are excluded from v1 to avoid release-time key, account, and backlink requirements.
 
 ## SoundCloud Metadata
 
@@ -72,7 +68,7 @@ The review tab shows a review queue, candidate metadata rows, matched fields, ca
 
 ## Beta Diagnostics
 
-The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, GetSongBPM, browser cookies, cookie unlock state, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, BPM resolution/skips, cover source, and written/skipped tag fields.
+The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, browser cookies, cookie unlock state, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, BPM resolution/skips, cover source, and written/skipped tag fields.
 
 For packaged or local metadata smoke checks without audio download:
 
@@ -102,4 +98,4 @@ External dependency package IDs are configured in `packaging\dependencies.window
 
 For installer builds, `scripts\resolve_winget_dependencies.py` reads the latest stable x64 ZIP installer manifest for each package and generates `build\dependencies.windows-x64.resolved.json` plus `build\dependencies.windows-x64.iss`. The Inno script includes the generated `.iss`, downloads those ZIP archives, checks SHA-256 hashes, and extracts them to `{app}\bin`. The runtime prepends discovered dependency directories to `PATH`, so the bundled app can find `ffmpeg`, `ffprobe`, `fpcalc`, and `deno` without system-wide installs.
 
-The resolved dependency report is copied to `release\CueForge-<version>-windows-x64-dependencies.json`, and the full release report is written to `release\CueForge-<version>-windows-x64-release-report.json`. The release report includes external dependency versions and SHA-256 values, packaged diagnostics, packaged test results, installer SHA-256 when an installer is built, and the GetSongBPM backlink notice flag. When changing package IDs, install subdirectories, expected executables, or public notices, update the config and notices together, then run the packaging tests before cutting a release.
+The resolved dependency report is copied to `release\CueForge-<version>-windows-x64-dependencies.json`, and the full release report is written to `release\CueForge-<version>-windows-x64-release-report.json`. The release report includes external dependency versions and SHA-256 values, packaged diagnostics, packaged test results, installer SHA-256 when an installer is built, and the third-party notice path. When changing package IDs, install subdirectories, expected executables, or public notices, update the config and notices together, then run the packaging tests before cutting a release.

@@ -281,7 +281,7 @@
     }
   },
   {
-    "id": "getsongbpm_strict_match",
+    "id": "external_bpm_strict_match",
     "url": "https://music.youtube.com/watch?v=bpm-ok",
     "info": {
       "extractor_key": "Youtube",
@@ -296,12 +296,12 @@
     "musicbrainz": [],
     "bpm": [
       {
-        "provider": "getsongbpm",
+        "provider": "external_bpm",
         "score": 0.91,
         "matched_fields": ["title", "artist"],
         "metadata": {
           "bpm": 128,
-          "bpm_source": "GetSongBPM",
+          "bpm_source": "External BPM",
           "bpm_confidence": 0.91
         }
       }
@@ -315,11 +315,11 @@
       "bpm": 128,
       "cover_source": "",
       "review_state": "review_required",
-      "top_candidate_provider": "getsongbpm"
+      "top_candidate_provider": "external_bpm"
     }
   },
   {
-    "id": "getsongbpm_low_match",
+    "id": "external_bpm_low_match",
     "url": "https://music.youtube.com/watch?v=bpm-low",
     "info": {
       "extractor_key": "Youtube",
@@ -334,12 +334,12 @@
     "musicbrainz": [],
     "bpm": [
       {
-        "provider": "getsongbpm",
+        "provider": "external_bpm",
         "score": 0.84,
         "matched_fields": ["title"],
         "metadata": {
           "bpm": 140,
-          "bpm_source": "GetSongBPM",
+          "bpm_source": "External BPM",
           "bpm_confidence": 0.84
         }
       }
@@ -353,7 +353,7 @@
       "bpm": null,
       "cover_source": "",
       "review_state": "review_required",
-      "top_candidate_provider": "getsongbpm"
+      "top_candidate_provider": "external_bpm"
     }
   }
 ]

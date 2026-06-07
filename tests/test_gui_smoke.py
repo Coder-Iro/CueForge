@@ -175,11 +175,9 @@ def test_main_window_has_audio_recognition_settings(tmp_path) -> None:
         assert window.verify_auto_approved_checkbox.isChecked() is False
         assert window.cookie_unlock_checkbox.isChecked() is False
         window.acoustid_key_input.setText("client-key")
-        window.getsongbpm_key_input.setText("bpm-key")
         window.fpcalc_path_input.setText("C:\\tools\\fpcalc.exe")
 
         assert window.acoustid_key_input.text() == "client-key"
-        assert window.getsongbpm_key_input.text() == "bpm-key"
         assert window.fpcalc_path_input.text() == "C:\\tools\\fpcalc.exe"
     finally:
         window.close()
@@ -196,7 +194,6 @@ def test_main_window_persists_beta_settings(tmp_path) -> None:
         window.cookie_unlock_checkbox.setChecked(True)
         window.verify_auto_approved_checkbox.setChecked(True)
         window.acoustid_key_input.setText("client-key")
-        window.getsongbpm_key_input.setText("bpm-key")
         window.save_settings()
     finally:
         window.close()
@@ -209,7 +206,6 @@ def test_main_window_persists_beta_settings(tmp_path) -> None:
         assert restored.cookie_unlock_checkbox.isChecked() is True
         assert restored.verify_auto_approved_checkbox.isChecked() is True
         assert restored.acoustid_key_input.text() == "client-key"
-        assert restored.getsongbpm_key_input.text() == "bpm-key"
     finally:
         restored.close()
         app.processEvents()
@@ -335,7 +331,7 @@ def test_tag_editor_bpm_field_manual_value_wins(tmp_path) -> None:
             title="Song",
             artist="Artist",
             bpm=128,
-            bpm_source="GetSongBPM",
+            bpm_source="External BPM",
             bpm_confidence=0.91,
         )
 
@@ -367,7 +363,7 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
                 provider="musicbrainz",
                 score=0.70,
                 matched_fields=("title",),
-                metadata=TrackMetadata(title="Candidate A", artist="Artist A", bpm=140, bpm_source="GetSongBPM", bpm_confidence=0.70),
+                metadata=TrackMetadata(title="Candidate A", artist="Artist A", bpm=140, bpm_source="External BPM", bpm_confidence=0.70),
             )
         ]
 
@@ -380,8 +376,8 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
         assert "검수 필요" in window.confidence_detail_label.text()
         assert "아티스트 충돌" in window.candidate_table.item(0, 3).text()
         assert "BPM 있음" in window.candidate_table.item(0, 3).text()
-        assert window.candidate_table.item(0, 4).text() == "140 (GetSongBPM 0.70)"
-        assert "BPM 출처: GetSongBPM" in window.confidence_detail_label.text()
+        assert window.candidate_table.item(0, 4).text() == "140 (External BPM 0.70)"
+        assert "BPM 출처: External BPM" in window.confidence_detail_label.text()
     finally:
         window.close()
         app.processEvents()

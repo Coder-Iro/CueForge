@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from cueforge.download import CookieBrowser, DownloadCanceled, DownloadConfig, DownloadProgress, YTDLPDownloader
-from cueforge.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, GetSongBpmConfig, MetadataResolver
+from cueforge.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, MetadataResolver
 from cueforge.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from cueforge.metadata.matching import text_similarity
 from cueforge.metadata.normalize import merge_metadata
@@ -82,7 +82,6 @@ class JobWorker(QThread):
         ytmusic_auth_path: Path | None,
         ffmpeg_location: Path | None,
         acoustid_config: AcoustIDConfig | None = None,
-        getsongbpm_api_key: str = "",
         audio_recognition_enabled: bool = True,
         verify_auto_approved_metadata: bool = False,
         approved_metadata: TrackMetadata | None = None,
@@ -100,7 +99,6 @@ class JobWorker(QThread):
         self.ytmusic_auth_path = ytmusic_auth_path
         self.ffmpeg_location = ffmpeg_location
         self.acoustid_config = acoustid_config or AcoustIDConfig()
-        self.getsongbpm_api_key = getsongbpm_api_key
         self.audio_recognition_enabled = audio_recognition_enabled
         self.verify_auto_approved_metadata = verify_auto_approved_metadata
         self.approved_metadata = approved_metadata
@@ -188,7 +186,6 @@ class JobWorker(QThread):
             return self._resolver_factory()
         return MetadataResolver(
             cover_art_provider_factory=self._cover_art_provider_factory,
-            bpm_config=GetSongBpmConfig(client_key=self.getsongbpm_api_key),
         )
 
     def _resolve_metadata(self, downloader: YTDLPDownloader) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate], SourcePlatform]:
@@ -445,8 +442,6 @@ class MainWindow(QMainWindow):
         self.verify_auto_approved_checkbox = QCheckBox("YouTube 자동 승인 메타데이터를 AcoustID로 검증")
         self.acoustid_key_input = QLineEdit()
         self.acoustid_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.getsongbpm_key_input = QLineEdit()
-        self.getsongbpm_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.fpcalc_path_input = QLineEdit()
 
         self.table = QTableWidget(0, len(self.COLUMNS))
@@ -766,9 +761,6 @@ class MainWindow(QMainWindow):
         recognition_form.addRow("AcoustID 클라이언트 키", self.acoustid_key_input)
         recognition_form.addRow("fpcalc 경로", self._path_row(self.fpcalc_path_input, self._browse_fpcalc))
 
-        bpm_group = QGroupBox("외부 BPM")
-        bpm_form = QFormLayout(bpm_group)
-        bpm_form.addRow("GetSongBPM API 키", self.getsongbpm_key_input)
         self.open_onboarding_button = QPushButton("초기 설정 다시 열기")
         self.open_onboarding_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
         self.open_onboarding_button.clicked.connect(self._open_onboarding)
@@ -778,7 +770,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(paths_group)
         layout.addWidget(recognition_group)
-        layout.addWidget(bpm_group)
         layout.addWidget(self.open_onboarding_button)
         layout.addWidget(diagnostics_button)
         layout.addStretch()
@@ -801,7 +792,6 @@ class MainWindow(QMainWindow):
         self.ffmpeg_path_input.setText(str(self._settings.value("paths/ffmpeg", "")))
         self.fpcalc_path_input.setText(str(self._settings.value("paths/fpcalc", "")))
         self.acoustid_key_input.setText(str(self._settings.value("acoustid/client_key", "")))
-        self.getsongbpm_key_input.setText(str(self._settings.value("bpm/getsongbpm_api_key", "")))
         self.audio_recognition_checkbox.setChecked(_settings_bool(self._settings.value("acoustid/enabled", True), default=True))
         self.verify_auto_approved_checkbox.setChecked(
             _settings_bool(self._settings.value("acoustid/verify_auto_approved", False), default=False)
@@ -817,7 +807,6 @@ class MainWindow(QMainWindow):
         self._settings.setValue("paths/ffmpeg", self.ffmpeg_path_input.text().strip())
         self._settings.setValue("paths/fpcalc", self.fpcalc_path_input.text().strip())
         self._settings.setValue("acoustid/client_key", self.acoustid_key_input.text().strip())
-        self._settings.setValue("bpm/getsongbpm_api_key", self.getsongbpm_key_input.text().strip())
         self._settings.setValue("acoustid/enabled", self.audio_recognition_checkbox.isChecked())
         self._settings.setValue("acoustid/verify_auto_approved", self.verify_auto_approved_checkbox.isChecked())
         cookie_browser = self.cookie_combo.currentData()
@@ -839,14 +828,13 @@ class MainWindow(QMainWindow):
         ffmpeg = find_executable("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text()))
         fpcalc = find_executable("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))
         acoustid = "설정됨" if self.acoustid_key_input.text().strip() else "미설정"
-        getsongbpm = "설정됨" if self.getsongbpm_key_input.text().strip() else "미설정"
         cookies = _cookie_browser_value(self.cookie_combo.currentData()) or "없음"
         cookie_unlock = "켜짐" if self.cookie_unlock_checkbox.isChecked() else "꺼짐"
         ytmusic_auth = "수동 JSON" if self.auth_path_input.text().strip() else ("브라우저 쿠키 자동" if cookies != "없음" else "미설정")
         return (
             f"설정: ffmpeg {ffmpeg.source if ffmpeg.available else '없음'}; "
             f"fpcalc {fpcalc.source if fpcalc.available else '없음'}; "
-            f"AcoustID {acoustid}; GetSongBPM {getsongbpm}; 브라우저 쿠키 {cookies}; 쿠키 잠금 해제 {cookie_unlock}; "
+            f"AcoustID {acoustid}; 브라우저 쿠키 {cookies}; 쿠키 잠금 해제 {cookie_unlock}; "
             f"YTMusic 인증 {ytmusic_auth}."
         )
 
@@ -891,7 +879,6 @@ class MainWindow(QMainWindow):
             ("YTMusic 인증 JSON", "고급 fallback 설정됨" if self.auth_path_input.text().strip() else "고급 fallback 미설정"),
             ("쿠키 잠금 해제", cookie_unlock),
             ("AcoustID 클라이언트 키", "설정됨" if self.acoustid_key_input.text().strip() else "미설정"),
-            ("GetSongBPM API 키", "설정됨" if self.getsongbpm_key_input.text().strip() else "미설정"),
         ]
 
     def closeEvent(self, event: Any) -> None:
@@ -1039,7 +1026,6 @@ class MainWindow(QMainWindow):
                 client_key=self.acoustid_key_input.text().strip(),
                 fpcalc_path=_optional_path(self.fpcalc_path_input.text()),
             ),
-            getsongbpm_api_key=self.getsongbpm_key_input.text().strip(),
             audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
             verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
             approved_metadata=approved_metadata,

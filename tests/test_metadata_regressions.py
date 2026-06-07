@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from cueforge.metadata.bpm import GetSongBpmConfig
+from cueforge.metadata.bpm import BpmProviderConfig
 from cueforge.metadata.resolver import MetadataResolver
 from cueforge.models import MetadataCandidate, TrackMetadata
 from cueforge.sources import SourcePlatform
@@ -65,7 +65,7 @@ def test_metadata_regression_fixture(case: dict[str, Any]) -> None:
         ytmusic_provider_factory=lambda auth_path: FixtureYTMusicProvider(case),
         musicbrainz_provider_factory=lambda: FixtureMusicBrainzProvider(case),
         cover_art_provider_factory=lambda: FixtureCoverArtProvider(case),
-        bpm_config=GetSongBpmConfig(client_key="fixture-key"),
+        bpm_config=BpmProviderConfig(),
         bpm_provider_factory=lambda config: FixtureBpmProvider(case),
     )
 

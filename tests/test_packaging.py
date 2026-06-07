@@ -106,14 +106,10 @@ def test_packaging_script_writes_release_report() -> None:
     assert "--checksum-file" in script
 
 
-def test_getsongbpm_notice_includes_backlink_requirement() -> None:
+def test_third_party_notices_are_available() -> None:
     notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
-    docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
 
-    assert "GetSongBPM" in notices
-    assert "mandatory backlink" in notices
-    assert "GetSongBPM" in docs
-    assert "backlink" in docs
+    assert "Third-Party Notices" in notices
 
 
 def test_release_report_writer_includes_dependency_hashes_and_diagnostics(tmp_path: Path) -> None:
@@ -163,7 +159,7 @@ def test_release_report_writer_includes_dependency_hashes_and_diagnostics(tmp_pa
     assert saved["dependencies"]["dependencies"][0]["sha256"] == "a" * 64
     assert saved["packaged_results"][0]["output"]["sha256"]
     assert saved["installer"]["sha256"]
-    assert saved["notices"]["getsongbpm_backlink_required"] is True
+    assert saved["notices"]["third_party_notice"] == "THIRD_PARTY_NOTICES.md"
 
 
 def test_resolver_selects_latest_stable_x64_zip(monkeypatch: pytest.MonkeyPatch) -> None:

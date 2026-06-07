@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from cueforge.metadata.bpm import GetSongBpmConfig, GetSongBpmProvider
+from cueforge.metadata.bpm import BpmProvider, BpmProviderConfig
 from cueforge.metadata.cover_art import CoverArtProvider
 from cueforge.metadata.hints import build_hint_candidates
 from cueforge.metadata.normalize import build_safe_fallback, merge_metadata
@@ -28,7 +28,7 @@ class MetadataResolution:
 YTMusicProviderFactory = Callable[..., Any]
 MusicBrainzProviderFactory = Callable[[], Any]
 CoverArtProviderFactory = Callable[[], Any]
-BpmProviderFactory = Callable[[GetSongBpmConfig], Any]
+BpmProviderFactory = Callable[[BpmProviderConfig], Any]
 
 
 class MetadataResolver:
@@ -38,14 +38,14 @@ class MetadataResolver:
         ytmusic_provider_factory: YTMusicProviderFactory | None = None,
         musicbrainz_provider_factory: MusicBrainzProviderFactory | None = None,
         cover_art_provider_factory: CoverArtProviderFactory | None = None,
-        bpm_config: GetSongBpmConfig | None = None,
+        bpm_config: BpmProviderConfig | None = None,
         bpm_provider_factory: BpmProviderFactory | None = None,
     ) -> None:
         self._ytmusic_provider_factory = ytmusic_provider_factory or YouTubeMusicProvider
         self._musicbrainz_provider_factory = musicbrainz_provider_factory or MusicBrainzProvider
         self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
-        self._bpm_config = bpm_config or GetSongBpmConfig()
-        self._bpm_provider_factory = bpm_provider_factory or GetSongBpmProvider
+        self._bpm_config = bpm_config or BpmProviderConfig()
+        self._bpm_provider_factory = bpm_provider_factory or BpmProvider
 
     def resolve(
         self,
@@ -178,7 +178,7 @@ class MetadataResolver:
                 duration_ms=_duration_ms(info),
             )
         except Exception as exc:
-            _log(log, f"GetSongBPM lookup skipped: {exc}")
+            _log(log, f"BPM lookup skipped: {exc}")
             candidates = []
 
         if metadata.bpm:
@@ -197,10 +197,7 @@ class MetadataResolver:
             _log(log, f"bpm resolved: {enriched.bpm} from {enriched.bpm_source}")
             return enriched, candidates
 
-        if self._bpm_config.client_key.strip():
-            _log(log, "bpm skipped: no strict external match")
-        else:
-            _log(log, "bpm skipped: no native BPM and GetSongBPM API key missing")
+        _log(log, "bpm skipped: no native BPM source available")
         return metadata, candidates
 
     def _musicbrainz_candidates(

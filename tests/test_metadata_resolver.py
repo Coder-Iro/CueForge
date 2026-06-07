@@ -326,10 +326,10 @@ def test_resolver_applies_strict_external_bpm_without_changing_review_state() ->
         bpm_provider_factory=lambda config: FakeBpmProvider(
             [
                 MetadataCandidate(
-                    provider="getsongbpm",
+                    provider="external_bpm",
                     score=0.85,
                     matched_fields=("title", "artist"),
-                    metadata=TrackMetadata(bpm=174, bpm_source="GetSongBPM", bpm_confidence=0.85),
+                    metadata=TrackMetadata(bpm=174, bpm_source="External BPM", bpm_confidence=0.85),
                 )
             ]
         ),
@@ -341,9 +341,9 @@ def test_resolver_applies_strict_external_bpm_without_changing_review_state() ->
     )
 
     assert resolution.metadata.bpm == 174
-    assert resolution.metadata.bpm_source == "GetSongBPM"
+    assert resolution.metadata.bpm_source == "External BPM"
     assert resolution.state == ReviewState.REVIEW_REQUIRED
-    assert resolution.candidates[-1].provider == "getsongbpm"
+    assert resolution.candidates[-1].provider == "external_bpm"
 
 
 def test_resolver_skips_low_confidence_external_bpm() -> None:
@@ -353,10 +353,10 @@ def test_resolver_skips_low_confidence_external_bpm() -> None:
         bpm_provider_factory=lambda config: FakeBpmProvider(
             [
                 MetadataCandidate(
-                    provider="getsongbpm",
+                    provider="external_bpm",
                     score=0.84,
                     matched_fields=("title",),
-                    metadata=TrackMetadata(bpm=128, bpm_source="GetSongBPM", bpm_confidence=0.84),
+                    metadata=TrackMetadata(bpm=128, bpm_source="External BPM", bpm_confidence=0.84),
                 )
             ]
         ),
@@ -369,4 +369,4 @@ def test_resolver_skips_low_confidence_external_bpm() -> None:
 
     assert resolution.metadata.bpm is None
     assert resolution.state == ReviewState.REVIEW_REQUIRED
-    assert resolution.candidates[-1].provider == "getsongbpm"
+    assert resolution.candidates[-1].provider == "external_bpm"

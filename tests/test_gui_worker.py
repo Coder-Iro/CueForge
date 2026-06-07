@@ -97,10 +97,10 @@ class FakeBpmResolver:
     ) -> tuple[TrackMetadata, list[MetadataCandidate]]:
         self.bpm_references.append((metadata.title, metadata.artist, info, platform))
         candidate = MetadataCandidate(
-            provider="getsongbpm",
+            provider="external_bpm",
             score=0.92,
             matched_fields=("title", "artist", "bpm"),
-            metadata=TrackMetadata(bpm=128, bpm_source="GetSongBPM", bpm_confidence=0.92),
+            metadata=TrackMetadata(bpm=128, bpm_source="External BPM", bpm_confidence=0.92),
         )
         return metadata.overlay(candidate.metadata).normalized(), [candidate]
 
@@ -274,8 +274,8 @@ def test_worker_enriches_bpm_after_audio_recognition(tmp_path: Path) -> None:
     assert metadata.title == "Recognized"
     assert metadata.artist == "Artist"
     assert metadata.bpm == 128
-    assert metadata.bpm_source == "GetSongBPM"
-    assert candidates[-1].provider == "getsongbpm"
+    assert metadata.bpm_source == "External BPM"
+    assert candidates[-1].provider == "external_bpm"
     assert FakeBpmResolver.bpm_references == [("Recognized", "Artist", {"id": "abc"}, SourcePlatform.YOUTUBE)]
     assert downloaded_path == job.downloaded_path
 

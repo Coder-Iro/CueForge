@@ -58,7 +58,6 @@ def write_release_report(
         "installer": installer_entry,
         "checksum": checksum_entry,
         "notices": {
-            "getsongbpm_backlink_required": True,
             "third_party_notice": "THIRD_PARTY_NOTICES.md",
         },
     }

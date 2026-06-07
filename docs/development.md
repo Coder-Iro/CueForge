@@ -35,7 +35,7 @@ The app can run without browser cookies for public URLs. For account-scoped acce
 
 If Chrome or Edge cookies fail with a locked cookie database error, enable "Use Chrome/Edge cookie unlock if the browser database is locked" in Settings. This is an opt-in Windows-only fallback based on `seproDev/yt-dlp-ChromeCookieUnlock`; it asks Windows Restart Manager to release the lock and may close the browser process holding that cookie database.
 
-For YouTube Music metadata calls, create a `ytmusicapi` browser auth JSON outside git and select it in Settings. Do not commit auth JSON or copied request headers.
+The same browser cookie selection is also used for YouTube Music metadata. CueForge reads the `music.youtube.com` cookie header through yt-dlp's browser cookie extractor and, when `__Secure-3PAPISID` is present, builds the browser auth payload expected by `ytmusicapi`. Manual `ytmusicapi` browser auth JSON remains available as an advanced fallback; do not commit auth JSON, copied request headers, or browser cookies.
 
 ## Audio Recognition
 
@@ -66,7 +66,7 @@ Cover art is resolved in this order: SoundCloud native artwork for SoundCloud tr
 
 The queue flow is split into `Analyze Metadata`, review approval, and `Download Approved`. Analysis turns auto-approved tracks into `approved` jobs and sends lower-confidence tracks to the review queue; downloading only runs for approved jobs.
 
-The review tab shows a review queue, candidate metadata rows, matched fields, candidate scores, confidence explanations, cover source, and a cover preview before tagging. Selecting a candidate applies it to the editable review fields.
+The review tab shows a review queue, candidate metadata rows, matched fields, candidate scores, confidence explanations, cover source, and a cover preview before tagging. Selecting a candidate shows a current-vs-candidate preview; the editable fields are changed only after pressing `후보 적용`.
 
 ## Beta Diagnostics
 

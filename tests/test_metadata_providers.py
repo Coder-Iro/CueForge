@@ -12,6 +12,11 @@ from cueforge.metadata.fingerprint import (
 from cueforge.metadata.matching import score_candidate
 from cueforge.metadata.musicbrainz import MusicBrainzConfig, MusicBrainzProvider
 from cueforge.metadata.ytmusic import YouTubeMusicProvider, extract_video_id
+from cueforge.metadata.ytmusic_auth import (
+    YTMusicBrowserAuthConfig,
+    YTMusicBrowserAuthError,
+    build_ytmusic_browser_auth,
+)
 from cueforge.models import ReviewState, TrackMetadata
 
 
@@ -49,6 +54,16 @@ class FakeYTMusicGenericPrefix:
                 }
             ]
         }
+
+
+class FakeCookieJar:
+    def __init__(self, cookie_header: str) -> None:
+        self.cookie_header = cookie_header
+        self.urls: list[str] = []
+
+    def get_cookie_header(self, url: str) -> str:
+        self.urls.append(url)
+        return self.cookie_header
 
 
 class FakeResponse:
@@ -163,6 +178,84 @@ def test_youtube_music_provider_uses_generic_prefix_as_title_cleanup_only() -> N
 
     assert metadata.title == "개미관찰"
     assert metadata.artist == "토우링고"
+
+
+def test_youtube_music_browser_auth_builds_ytmusicapi_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    unlock_calls: list[bool] = []
+    monkeypatch.setattr("cueforge.metadata.ytmusic_auth.set_chromium_cookie_unlock_enabled", unlock_calls.append)
+    jar = FakeCookieJar("SID=sid; __Secure-3PAPISID=sapisid; LOGIN_INFO=login")
+
+    auth = build_ytmusic_browser_auth(
+        YTMusicBrowserAuthConfig(cookie_browser="chrome", unlock_browser_cookie_database=True),
+        cookie_jar_loader=lambda browser: jar,
+    )
+
+    assert unlock_calls == [True]
+    assert jar.urls == ["https://music.youtube.com/"]
+    assert auth is not None
+    assert auth["Cookie"] == "SID=sid; __Secure-3PAPISID=sapisid; LOGIN_INFO=login"
+    assert auth["Authorization"].startswith("SAPISIDHASH ")
+    assert auth["x-origin"] == "https://music.youtube.com"
+
+
+def test_youtube_music_browser_auth_requires_sapisid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("cueforge.metadata.ytmusic_auth.set_chromium_cookie_unlock_enabled", lambda enabled: None)
+
+    with pytest.raises(YTMusicBrowserAuthError, match="__Secure-3PAPISID"):
+        build_ytmusic_browser_auth(
+            YTMusicBrowserAuthConfig(cookie_browser="firefox"),
+            cookie_jar_loader=lambda browser: FakeCookieJar("SID=sid"),
+        )
+
+
+def test_youtube_music_provider_uses_browser_cookie_auth_when_json_is_absent() -> None:
+    auth_payload = {"Cookie": "__Secure-3PAPISID=sapisid", "Authorization": "SAPISIDHASH 0_0"}
+    calls: list[dict[str, str] | None] = []
+
+    provider = YouTubeMusicProvider(
+        cookie_browser="chrome",
+        browser_auth_builder=lambda: auth_payload,
+        client_factory=lambda auth: calls.append(auth) or FakeYTMusic(),
+    )
+
+    metadata = provider.lookup("https://music.youtube.com/watch?v=abc")
+
+    assert calls == [auth_payload]
+    assert metadata.title == "Song"
+
+
+def test_youtube_music_provider_prefers_manual_auth_json(tmp_path: Path) -> None:
+    auth_path = tmp_path / "browser.json"
+    auth_path.write_text("{}", encoding="utf-8")
+    calls: list[object] = []
+
+    provider = YouTubeMusicProvider(
+        auth_path=auth_path,
+        cookie_browser="chrome",
+        browser_auth_builder=lambda: {"Cookie": "__Secure-3PAPISID=sapisid"},
+        client_factory=lambda auth: calls.append(auth) or FakeYTMusic(),
+    )
+
+    provider.lookup("abc")
+
+    assert calls == [str(auth_path)]
+
+
+def test_youtube_music_provider_falls_back_when_browser_cookie_auth_fails() -> None:
+    logs: list[str] = []
+    calls: list[object] = []
+
+    provider = YouTubeMusicProvider(
+        cookie_browser="chrome",
+        browser_auth_builder=lambda: (_ for _ in ()).throw(YTMusicBrowserAuthError("no sapisid")),
+        client_factory=lambda auth: calls.append(auth) or FakeYTMusic(),
+        log=logs.append,
+    )
+
+    provider.lookup("abc")
+
+    assert calls == [None]
+    assert logs == ["YTMusic 브라우저 쿠키 인증 생략: no sapisid"]
 
 
 def test_musicbrainz_provider_scores_and_caches(tmp_path: Path) -> None:

@@ -25,7 +25,7 @@ class MetadataResolution:
     platform: SourcePlatform
 
 
-YTMusicProviderFactory = Callable[[Path | None], Any]
+YTMusicProviderFactory = Callable[..., Any]
 MusicBrainzProviderFactory = Callable[[], Any]
 CoverArtProviderFactory = Callable[[], Any]
 BpmProviderFactory = Callable[[GetSongBpmConfig], Any]
@@ -41,7 +41,7 @@ class MetadataResolver:
         bpm_config: GetSongBpmConfig | None = None,
         bpm_provider_factory: BpmProviderFactory | None = None,
     ) -> None:
-        self._ytmusic_provider_factory = ytmusic_provider_factory or (lambda auth_path: YouTubeMusicProvider(auth_path=auth_path))
+        self._ytmusic_provider_factory = ytmusic_provider_factory or YouTubeMusicProvider
         self._musicbrainz_provider_factory = musicbrainz_provider_factory or MusicBrainzProvider
         self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
         self._bpm_config = bpm_config or GetSongBpmConfig()
@@ -53,6 +53,8 @@ class MetadataResolver:
         url: str,
         info: dict[str, Any],
         ytmusic_auth_path: Path | None = None,
+        ytmusic_cookie_browser: str | None = None,
+        unlock_browser_cookie_database: bool = False,
         log: Callable[[str], None] | None = None,
     ) -> MetadataResolution:
         platform = detect_source_platform(url, info)
@@ -64,7 +66,12 @@ class MetadataResolver:
 
         youtube = TrackMetadata()
         if policy.use_youtube_music:
-            youtube = self._ytmusic_provider_factory(ytmusic_auth_path).lookup(url)
+            youtube = self._new_ytmusic_provider(
+                auth_path=ytmusic_auth_path,
+                cookie_browser=ytmusic_cookie_browser,
+                unlock_browser_cookie_database=unlock_browser_cookie_database,
+                log=log,
+            ).lookup(url)
         reference = youtube.with_defaults_from(fallback).normalized()
         hint_candidates = build_hint_candidates(info)
         candidates = self._enriched_hint_candidates(hint_candidates, info, log=log)
@@ -77,6 +84,24 @@ class MetadataResolver:
         metadata, bpm_candidates = self.enrich_bpm(metadata, info=info, platform=platform, log=log)
         candidates.extend(bpm_candidates)
         return MetadataResolution(metadata=metadata, state=state, candidates=candidates, platform=platform)
+
+    def _new_ytmusic_provider(
+        self,
+        *,
+        auth_path: Path | None,
+        cookie_browser: str | None,
+        unlock_browser_cookie_database: bool,
+        log: Callable[[str], None] | None,
+    ) -> Any:
+        try:
+            return self._ytmusic_provider_factory(
+                auth_path=auth_path,
+                cookie_browser=cookie_browser,
+                unlock_browser_cookie_database=unlock_browser_cookie_database,
+                log=log,
+            )
+        except TypeError:
+            return self._ytmusic_provider_factory(auth_path)
 
     def _resolve_soundcloud(
         self,

@@ -132,6 +132,29 @@ def test_youtube_resolver_still_uses_ytmusic_and_musicbrainz() -> None:
     assert resolution.state == ReviewState.AUTO_APPROVED
 
 
+def test_youtube_resolver_passes_browser_cookie_auth_options() -> None:
+    calls: list[dict] = []
+
+    def factory(**kwargs: object) -> FakeYTMusicProvider:
+        calls.append(kwargs)
+        return FakeYTMusicProvider()
+
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=factory,
+        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
+    )
+
+    resolver.resolve(
+        url="https://music.youtube.com/watch?v=abc",
+        info={"extractor_key": "Youtube", "title": "Fallback"},
+        ytmusic_cookie_browser="chrome",
+        unlock_browser_cookie_database=True,
+    )
+
+    assert calls[0]["cookie_browser"] == "chrome"
+    assert calls[0]["unlock_browser_cookie_database"] is True
+
+
 def test_youtube_resolver_prefers_cover_art_archive_over_platform_thumbnail() -> None:
     calls: list[str] = []
 

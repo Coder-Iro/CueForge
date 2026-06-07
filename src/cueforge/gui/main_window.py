@@ -197,6 +197,8 @@ class JobWorker(QThread):
             url=self.job.url,
             info=info,
             ytmusic_auth_path=self.ytmusic_auth_path,
+            ytmusic_cookie_browser=_cookie_browser_value(self.cookie_browser),
+            unlock_browser_cookie_database=self.unlock_browser_cookie_database,
             log=lambda message: self.log_message.emit(self.job.id, message),
         )
         self.log_message.emit(
@@ -739,7 +741,7 @@ class MainWindow(QMainWindow):
 
         form.addRow("브라우저 쿠키", self.cookie_combo)
         form.addRow(self.cookie_unlock_checkbox)
-        form.addRow("YTMusic 인증 JSON", self._path_row(self.auth_path_input, self._browse_auth_file))
+        form.addRow("YTMusic 인증 JSON (고급)", self._path_row(self.auth_path_input, self._browse_auth_file))
         form.addRow("ffmpeg 경로", self._path_row(self.ffmpeg_path_input, self._browse_ffmpeg))
 
         recognition_group = QGroupBox("오디오 인식")
@@ -825,7 +827,7 @@ class MainWindow(QMainWindow):
         getsongbpm = "설정됨" if self.getsongbpm_key_input.text().strip() else "미설정"
         cookies = _cookie_browser_value(self.cookie_combo.currentData()) or "없음"
         cookie_unlock = "켜짐" if self.cookie_unlock_checkbox.isChecked() else "꺼짐"
-        ytmusic_auth = "설정됨" if self.auth_path_input.text().strip() else "미설정"
+        ytmusic_auth = "수동 JSON" if self.auth_path_input.text().strip() else ("브라우저 쿠키 자동" if cookies != "없음" else "미설정")
         return (
             f"설정: ffmpeg {ffmpeg.source if ffmpeg.available else '없음'}; "
             f"fpcalc {fpcalc.source if fpcalc.available else '없음'}; "
@@ -867,9 +869,11 @@ class MainWindow(QMainWindow):
     def _onboarding_optional_rows(self) -> list[tuple[str, str]]:
         cookie = _cookie_browser_value(self.cookie_combo.currentData()) or "사용 안 함"
         cookie_unlock = "켜짐" if self.cookie_unlock_checkbox.isChecked() else "꺼짐"
+        ytmusic_auth = "수동 JSON" if self.auth_path_input.text().strip() else ("브라우저 쿠키 자동" if cookie != "사용 안 함" else "미설정")
         return [
             ("브라우저 쿠키", cookie),
-            ("YTMusic 인증 JSON", "설정됨" if self.auth_path_input.text().strip() else "미설정"),
+            ("YTMusic 인증", ytmusic_auth),
+            ("YTMusic 인증 JSON", "고급 fallback 설정됨" if self.auth_path_input.text().strip() else "고급 fallback 미설정"),
             ("쿠키 잠금 해제", cookie_unlock),
             ("AcoustID 클라이언트 키", "설정됨" if self.acoustid_key_input.text().strip() else "미설정"),
             ("GetSongBPM API 키", "설정됨" if self.getsongbpm_key_input.text().strip() else "미설정"),

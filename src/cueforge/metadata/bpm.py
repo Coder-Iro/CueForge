@@ -15,6 +15,10 @@ from cueforge.sources import SourcePlatform
 GETSONGBPM_ENDPOINT = "https://api.getsong.co/search/"
 
 
+class GetSongBpmAuthenticationError(RuntimeError):
+    """Raised when GetSongBPM rejects the configured API key."""
+
+
 @dataclass(frozen=True, slots=True)
 class GetSongBpmConfig:
     client_key: str = ""
@@ -56,7 +60,7 @@ class GetSongBpmProvider:
             },
             timeout=self.config.timeout_seconds,
         )
-        response.raise_for_status()
+        _raise_for_getsongbpm_status(response)
         payload = response.json()
         candidates = [
             candidate
@@ -223,3 +227,13 @@ def _requests_session() -> Any:
     import requests
 
     return requests.Session()
+
+
+def _raise_for_getsongbpm_status(response: Any) -> None:
+    status_code = getattr(response, "status_code", None)
+    if status_code in {401, 403}:
+        raise GetSongBpmAuthenticationError(
+            "GetSongBPM API 인증 실패: Settings의 API 키가 잘못됐거나 아직 활성화되지 않았거나, "
+            "필수 백링크 조건으로 키가 정지됐을 수 있습니다."
+        )
+    response.raise_for_status()

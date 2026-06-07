@@ -1,4 +1,12 @@
-from cueforge.metadata.bpm import GetSongBpmConfig, GetSongBpmProvider, native_bpm_candidate, parse_bpm
+import pytest
+
+from cueforge.metadata.bpm import (
+    GetSongBpmAuthenticationError,
+    GetSongBpmConfig,
+    GetSongBpmProvider,
+    native_bpm_candidate,
+    parse_bpm,
+)
 from cueforge.models import TrackMetadata
 from cueforge.sources import SourcePlatform
 
@@ -14,6 +22,15 @@ class FakeResponse:
         return self.payload
 
 
+class FakeStatusResponse(FakeResponse):
+    def __init__(self, status_code: int) -> None:
+        super().__init__({})
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        raise AssertionError("custom auth error should be raised before raw HTTPError")
+
+
 class FakeSession:
     def __init__(self, payload: dict) -> None:
         self.headers: dict[str, str] = {}
@@ -23,6 +40,16 @@ class FakeSession:
     def get(self, url: str, *, params: dict[str, str], timeout: int) -> FakeResponse:
         self.calls.append((url, params, timeout))
         return FakeResponse(self.payload)
+
+
+class FakeStatusSession(FakeSession):
+    def __init__(self, status_code: int) -> None:
+        super().__init__({})
+        self.status_code = status_code
+
+    def get(self, url: str, *, params: dict[str, str], timeout: int) -> FakeStatusResponse:
+        self.calls.append((url, params, timeout))
+        return FakeStatusResponse(self.status_code)
 
 
 def test_parse_bpm_passthrough_and_decimal_rounding() -> None:
@@ -94,6 +121,13 @@ def test_getsongbpm_missing_key_does_not_request() -> None:
 
     assert candidates == []
     assert session.calls == []
+
+
+def test_getsongbpm_auth_failure_has_actionable_error() -> None:
+    provider = GetSongBpmProvider(GetSongBpmConfig(client_key="bad-key"), session=FakeStatusSession(401))
+
+    with pytest.raises(GetSongBpmAuthenticationError, match="API 키"):
+        provider.lookup(TrackMetadata(title="Song", artist="Artist"), info={}, platform=SourcePlatform.YOUTUBE)
 
 
 def test_native_bpm_wins_over_getsongbpm() -> None:

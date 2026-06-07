@@ -53,6 +53,26 @@ function Invoke-Native {
     }
 }
 
+function Invoke-PackagedCommand {
+    param(
+        [string]$Executable,
+        [string[]]$Arguments,
+        [string]$Label,
+        [int]$TimeoutSeconds = 60
+    )
+
+    $process = Start-Process -FilePath $Executable -ArgumentList $Arguments -PassThru -WindowStyle Hidden
+    Wait-Process -Id $process.Id -Timeout $TimeoutSeconds -ErrorAction SilentlyContinue
+    $runningProcess = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
+    if ($runningProcess) {
+        Stop-Process -Id $process.Id -Force
+        throw "$Label timed out after $TimeoutSeconds seconds"
+    }
+    if ($process.ExitCode -ne 0) {
+        throw "$Label failed with exit code $($process.ExitCode)"
+    }
+}
+
 function Invoke-PackagedDiagnostics {
     param(
         [string]$Executable,
@@ -60,22 +80,16 @@ function Invoke-PackagedDiagnostics {
         [int]$TimeoutSeconds = 60
     )
 
-    $process = Start-Process -FilePath $Executable -ArgumentList @("--diagnose-file", $DiagnosticsPath, "--smoke-gui") -PassThru
-    Wait-Process -Id $process.Id -Timeout $TimeoutSeconds -ErrorAction SilentlyContinue
-    $runningProcess = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
-    if ($runningProcess) {
-        Stop-Process -Id $process.Id -Force
-        throw "Packaged diagnostics timed out after $TimeoutSeconds seconds"
-    }
-    if ($process.ExitCode -ne 0) {
-        throw "Packaged diagnostics failed with exit code $($process.ExitCode)"
-    }
+    Invoke-PackagedCommand -Executable $Executable -Arguments @("--diagnose-file", $DiagnosticsPath) -Label "Packaged diagnose" -TimeoutSeconds $TimeoutSeconds
+    Invoke-PackagedCommand -Executable $Executable -Arguments @("--smoke-gui") -Label "Packaged smoke-gui" -TimeoutSeconds $TimeoutSeconds
 }
 
 Push-Location $Root
 try {
     if (-not $SkipTests) {
         Invoke-Native $Python @("-m", "pytest")
+        Invoke-Native $Python @("-m", "ytdj", "--smoke-gui")
+        Invoke-Native $Python @("-m", "pytest", "tests\test_metadata_regressions.py")
     }
 
     Invoke-Native $Python @("-m", "pip", "install", "-e", ".[packaging]")
@@ -83,6 +97,7 @@ try {
     Remove-BuildPath (Join-Path $Root "dist\YT-DJ")
     Remove-BuildPath (Join-Path $Root "build\ytdj")
     New-Item -ItemType Directory -Force -Path "release" | Out-Null
+    New-Item -ItemType Directory -Force -Path "build" | Out-Null
 
     Invoke-Native $Python @("-m", "PyInstaller", "--noconfirm", "packaging\ytdj.spec")
 
@@ -97,9 +112,12 @@ try {
     }
     Write-Host "Packaged diagnostics: $diagnosticsPath"
 
+    $resolvedDependencyJson = ""
+    $installer = ""
+    $checksumPath = ""
     if (-not $SkipInstaller) {
-        $resolvedDependencyJson = Join-Path $Root "build\dependencies.windows-x64.resolved.json"
         $resolvedDependencyInno = Join-Path $Root "build\dependencies.windows-x64.iss"
+        $resolvedDependencyJson = Join-Path $Root "build\dependencies.windows-x64.resolved.json"
         Invoke-Native $Python @(
             "scripts\resolve_winget_dependencies.py",
             "--config",
@@ -134,6 +152,31 @@ try {
         Write-Host "SHA256: $($hash.Hash.ToLowerInvariant())"
         Write-Host "Dependencies: $dependencyReport"
     }
+
+    $releaseReport = Join-Path $Root "release\YT-DJ-$Version-windows-x64-release-report.json"
+    $reportArgs = @(
+        "scripts\write_release_report.py",
+        "--version",
+        $Version,
+        "--diagnostics-file",
+        $diagnosticsPath,
+        "--output",
+        $releaseReport
+    )
+    if ($SkipTests) {
+        $reportArgs += "--tests-skipped"
+    }
+    if ($resolvedDependencyJson -and (Test-Path -LiteralPath $resolvedDependencyJson)) {
+        $reportArgs += @("--dependencies-json", $resolvedDependencyJson)
+    }
+    if ($installer -and (Test-Path -LiteralPath $installer)) {
+        $reportArgs += @("--installer", $installer)
+    }
+    if ($checksumPath -and (Test-Path -LiteralPath $checksumPath)) {
+        $reportArgs += @("--checksum-file", $checksumPath)
+    }
+    Invoke-Native $Python $reportArgs
+    Write-Host "Release report: $releaseReport"
 }
 finally {
     Pop-Location

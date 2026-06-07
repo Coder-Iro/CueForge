@@ -90,7 +90,7 @@ Windows releases are built as a PyInstaller application plus an Inno Setup onlin
 .\scripts\package_windows.ps1
 ```
 
-The package script runs tests, builds `dist\YT-DJ\YT-DJ.exe`, verifies the packaged app with `--diagnose-file`, resolves external dependency URLs from `microsoft/winget-pkgs`, then invokes Inno Setup if `ISCC.exe` is available. Use `-SkipInstaller` when only the PyInstaller app is needed, or `-SkipTests` for a repeat build after tests have already passed.
+The package script runs verification in this fixed order: full `pytest`, local GUI smoke, metadata regression fixture suite, packaged `--diagnose-file`, and packaged `--smoke-gui`. It then resolves external dependency URLs from `microsoft/winget-pkgs` and invokes Inno Setup if `ISCC.exe` is available. Use `-SkipInstaller` when only the PyInstaller app is needed, or `-SkipTests` for a repeat build after tests have already passed.
 
 External dependency package IDs are configured in `packaging\dependencies.windows-x64.json`:
 
@@ -100,4 +100,4 @@ External dependency package IDs are configured in `packaging\dependencies.window
 
 For installer builds, `scripts\resolve_winget_dependencies.py` reads the latest stable x64 ZIP installer manifest for each package and generates `build\dependencies.windows-x64.resolved.json` plus `build\dependencies.windows-x64.iss`. The Inno script includes the generated `.iss`, downloads those ZIP archives, checks SHA-256 hashes, and extracts them to `{app}\bin`. The runtime prepends discovered dependency directories to `PATH`, so the bundled app can find `ffmpeg`, `ffprobe`, `fpcalc`, and `deno` without system-wide installs.
 
-The generated release report is copied to `release\YT-DJ-<version>-windows-x64-dependencies.json`. When changing package IDs, install subdirectories, or expected executables, update the config and notices together, then run the packaging tests before cutting a release.
+The resolved dependency report is copied to `release\YT-DJ-<version>-windows-x64-dependencies.json`, and the full release report is written to `release\YT-DJ-<version>-windows-x64-release-report.json`. The release report includes external dependency versions and SHA-256 values, packaged diagnostics, packaged test results, installer SHA-256 when an installer is built, and the GetSongBPM backlink notice flag. When changing package IDs, install subdirectories, expected executables, or public notices, update the config and notices together, then run the packaging tests before cutting a release.

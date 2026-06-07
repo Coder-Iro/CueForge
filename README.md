@@ -41,6 +41,6 @@ The release flow builds a PyInstaller app and an Inno Setup online installer. At
 .\scripts\package_windows.ps1
 ```
 
-Use `-SkipInstaller` to build only the PyInstaller app. External dependency package IDs are configured in `packaging/dependencies.windows-x64.json`; resolved versions and hashes are written to the release dependency report during packaging.
+Use `-SkipInstaller` to build only the PyInstaller app. External dependency package IDs are configured in `packaging/dependencies.windows-x64.json`; resolved versions, hashes, packaged diagnostics, installer SHA-256, and verification results are written to the release report during packaging.
 
 See [docs/development.md](docs/development.md) for commit, authentication, and packaging notes.

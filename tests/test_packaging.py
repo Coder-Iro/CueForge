@@ -21,6 +21,16 @@ def _load_resolver() -> ModuleType:
     return module
 
 
+def _load_report_writer() -> ModuleType:
+    path = ROOT / "scripts" / "write_release_report.py"
+    spec = importlib.util.spec_from_file_location("write_release_report", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_windows_dependency_config_uses_winget_manifest_sources() -> None:
     payload = json.loads((ROOT / "packaging" / "dependencies.windows-x64.json").read_text(encoding="utf-8"))
 
@@ -48,6 +58,7 @@ def test_online_installer_uses_generated_dependency_include() -> None:
     assert "#include DependencyInclude" in script
     assert "AddDependencyDownloads;" in script
     assert "ExtractAllDependencies" in script
+    assert "Failed to download external dependencies (ffmpeg, fpcalc, and Deno)" in script
     assert "github.com/denoland/deno/releases" not in script
     assert "github.com/acoustid/chromaprint/releases" not in script
     assert "github.com/GyanD/codexffmpeg/releases" not in script
@@ -65,8 +76,94 @@ def test_packaging_script_times_out_packaged_diagnostics() -> None:
     script = (ROOT / "scripts" / "package_windows.ps1").read_text(encoding="utf-8")
 
     assert "function Invoke-PackagedDiagnostics" in script
+    assert "function Invoke-PackagedCommand" in script
     assert "Wait-Process" in script
-    assert "Packaged diagnostics timed out" in script
+    assert "-WindowStyle Hidden" in script
+    assert "timed out after $TimeoutSeconds seconds" in script
+
+
+def test_packaging_script_runs_release_checks_in_fixed_order() -> None:
+    script = (ROOT / "scripts" / "package_windows.ps1").read_text(encoding="utf-8")
+
+    full_pytest = 'Invoke-Native $Python @("-m", "pytest")'
+    gui_smoke = 'Invoke-Native $Python @("-m", "ytdj", "--smoke-gui")'
+    fixture_suite = 'Invoke-Native $Python @("-m", "pytest", "tests\\test_metadata_regressions.py")'
+    packaged_diagnose = 'Invoke-PackagedCommand -Executable $Executable -Arguments @("--diagnose-file", $DiagnosticsPath)'
+    packaged_smoke = 'Invoke-PackagedCommand -Executable $Executable -Arguments @("--smoke-gui")'
+
+    assert script.index(full_pytest) < script.index(gui_smoke) < script.index(fixture_suite)
+    assert script.index(packaged_diagnose) < script.index(packaged_smoke)
+
+
+def test_packaging_script_writes_release_report() -> None:
+    script = (ROOT / "scripts" / "package_windows.ps1").read_text(encoding="utf-8")
+
+    assert "scripts\\write_release_report.py" in script
+    assert "windows-x64-release-report.json" in script
+    assert "--diagnostics-file" in script
+    assert "--dependencies-json" in script
+    assert "--installer" in script
+    assert "--checksum-file" in script
+
+
+def test_getsongbpm_notice_includes_backlink_requirement() -> None:
+    notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    docs = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
+
+    assert "GetSongBPM" in notices
+    assert "mandatory backlink" in notices
+    assert "GetSongBPM" in docs
+    assert "backlink" in docs
+
+
+def test_release_report_writer_includes_dependency_hashes_and_diagnostics(tmp_path: Path) -> None:
+    writer = _load_report_writer()
+    dependencies = tmp_path / "dependencies.json"
+    diagnostics = tmp_path / "diagnostics.txt"
+    installer = tmp_path / "setup.exe"
+    checksum = tmp_path / "setup.exe.sha256"
+    output = tmp_path / "release-report.json"
+    dependencies.write_text(
+        json.dumps(
+            {
+                "generated_at_utc": "2026-06-07T00:00:00+00:00",
+                "dependencies": [
+                    {
+                        "name": "ffmpeg",
+                        "package_id": "Gyan.FFmpeg.Shared",
+                        "version": "1.2.3",
+                        "url": "https://example.invalid/ffmpeg.zip",
+                        "sha256": "a" * 64,
+                        "install_subdir": "ffmpeg",
+                        "executables": ["ffmpeg.exe", "ffprobe.exe"],
+                        "license": "LGPL/GPL",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    diagnostics.write_text("diagnostics ok\n", encoding="utf-8")
+    installer.write_bytes(b"installer")
+    checksum.write_text("checksum  setup.exe\n", encoding="ascii")
+
+    report = writer.write_release_report(
+        version="1.0.0",
+        output=output,
+        diagnostics_file=diagnostics,
+        dependencies_json=dependencies,
+        installer=installer,
+        checksum_file=checksum,
+        tests_skipped=False,
+    )
+
+    saved = json.loads(output.read_text(encoding="utf-8"))
+    assert saved == report
+    assert saved["verification_order"] == writer.VERIFICATION_ORDER
+    assert saved["dependencies"]["dependencies"][0]["sha256"] == "a" * 64
+    assert saved["packaged_results"][0]["output"]["sha256"]
+    assert saved["installer"]["sha256"]
+    assert saved["notices"]["getsongbpm_backlink_required"] is True
 
 
 def test_resolver_selects_latest_stable_x64_zip(monkeypatch: pytest.MonkeyPatch) -> None:

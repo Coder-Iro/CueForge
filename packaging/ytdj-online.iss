@@ -118,7 +118,7 @@ begin
     try
       DownloadPage.Download;
     except
-      MsgBox('Failed to download external dependencies: ' + GetExceptionMessage, mbError, MB_OK);
+      MsgBox('Failed to download external dependencies (ffmpeg, fpcalc, and Deno): ' + GetExceptionMessage, mbError, MB_OK);
       Result := False;
     end;
   finally

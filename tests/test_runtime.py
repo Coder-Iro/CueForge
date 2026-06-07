@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ytdj import runtime
+from cueforge import runtime
 
 
 def test_find_executable_prefers_explicit_path(tmp_path: Path) -> None:

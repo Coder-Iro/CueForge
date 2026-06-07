@@ -35,7 +35,7 @@ def write_release_report(
     checksum_entry = _file_entry(checksum_file) if checksum_file else None
     report = {
         "schema_version": 1,
-        "app": "YT-DJ",
+        "app": "CueForge",
         "version": version,
         "platform": "windows-x64",
         "generated_at_utc": datetime.now(UTC).isoformat(),
@@ -44,13 +44,13 @@ def write_release_report(
         "packaged_results": [
             {
                 "name": "packaged diagnose",
-                "command": "YT-DJ.exe --diagnose-file <diagnostics>",
+                "command": "CueForge.exe --diagnose-file <diagnostics>",
                 "status": "passed",
                 "output": diagnostics,
             },
             {
                 "name": "packaged smoke-gui",
-                "command": "YT-DJ.exe --smoke-gui",
+                "command": "CueForge.exe --smoke-gui",
                 "status": "passed",
             },
         ],
@@ -71,7 +71,7 @@ def _test_results(*, tests_skipped: bool) -> list[dict[str, str]]:
     status = "skipped" if tests_skipped else "passed"
     return [
         {"name": "full pytest", "command": "python -m pytest", "status": status},
-        {"name": "GUI smoke", "command": "python -m ytdj --smoke-gui", "status": status},
+        {"name": "GUI smoke", "command": "python -m cueforge --smoke-gui", "status": status},
         {
             "name": "metadata fixture suite",
             "command": "python -m pytest tests/test_metadata_regressions.py",

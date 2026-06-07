@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-YT-DJ depends on Python packages and external command-line tools. This file is an alpha-stage notice list for Windows builds and must be reviewed before public release.
+CueForge depends on Python packages and external command-line tools. This file is an alpha-stage notice list for Windows builds and must be reviewed before public release.
 
 ## Python Packages
 
@@ -37,4 +37,5 @@ The Windows online installer downloads external command-line tools during setup 
 - Cover Art Archive: cover artwork lookup by MusicBrainz release identifier.
 - AcoustID: optional acoustic fingerprint metadata lookup; users provide their own client key.
 - GetSongBPM: optional BPM metadata lookup; users provide their own API key. Public releases must satisfy GetSongBPM's mandatory backlink requirement.
+  - Website: https://getsongbpm.com/
 - YouTube, YouTube Music, and SoundCloud: URLs are processed through yt-dlp. Users are responsible for using the app only with content they are authorized to download.

@@ -2,8 +2,8 @@ from pathlib import Path
 
 from mutagen.id3 import ID3
 
-from ytdj.models import TrackMetadata
-from ytdj.tags import RekordboxTagWriter, safe_track_filename
+from cueforge.models import TrackMetadata
+from cueforge.tags import RekordboxTagWriter, safe_track_filename
 
 
 def test_safe_track_filename_removes_windows_invalid_chars() -> None:

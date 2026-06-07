@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
-from ytdj.chrome_cookie_unlock import set_chromium_cookie_unlock_enabled
+from cueforge.chrome_cookie_unlock import set_chromium_cookie_unlock_enabled
 
 
 class CookieBrowser(str, Enum):

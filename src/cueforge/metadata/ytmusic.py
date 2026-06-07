@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
-from ytdj.metadata.normalize import clean_metadata, clean_title, parse_artist_title
-from ytdj.models import TrackMetadata
+from cueforge.metadata.normalize import clean_metadata, clean_title, parse_artist_title
+from cueforge.models import TrackMetadata
 
 
 class YTMusicLike(Protocol):

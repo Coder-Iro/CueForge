@@ -88,20 +88,20 @@ Push-Location $Root
 try {
     if (-not $SkipTests) {
         Invoke-Native $Python @("-m", "pytest")
-        Invoke-Native $Python @("-m", "ytdj", "--smoke-gui")
+        Invoke-Native $Python @("-m", "cueforge", "--smoke-gui")
         Invoke-Native $Python @("-m", "pytest", "tests\test_metadata_regressions.py")
     }
 
     Invoke-Native $Python @("-m", "pip", "install", "-e", ".[packaging]")
 
-    Remove-BuildPath (Join-Path $Root "dist\YT-DJ")
-    Remove-BuildPath (Join-Path $Root "build\ytdj")
+    Remove-BuildPath (Join-Path $Root "dist\CueForge")
+    Remove-BuildPath (Join-Path $Root "build\cueforge")
     New-Item -ItemType Directory -Force -Path "release" | Out-Null
     New-Item -ItemType Directory -Force -Path "build" | Out-Null
 
-    Invoke-Native $Python @("-m", "PyInstaller", "--noconfirm", "packaging\ytdj.spec")
+    Invoke-Native $Python @("-m", "PyInstaller", "--noconfirm", "packaging\cueforge.spec")
 
-    $packagedExe = Join-Path $Root "dist\YT-DJ\YT-DJ.exe"
+    $packagedExe = Join-Path $Root "dist\CueForge\CueForge.exe"
     if (-not (Test-Path -LiteralPath $packagedExe)) {
         throw "Expected PyInstaller executable was not produced: $packagedExe"
     }
@@ -128,18 +128,18 @@ try {
             $resolvedDependencyInno
         )
 
-        $dependencyReport = Join-Path $Root "release\YT-DJ-$Version-windows-x64-dependencies.json"
+        $dependencyReport = Join-Path $Root "release\CueForge-$Version-windows-x64-dependencies.json"
 
         $iscc = Resolve-InnoCompiler
         Invoke-Native $iscc @(
-            "packaging\ytdj-online.iss",
+            "packaging\cueforge-online.iss",
             "/DAppVersion=$Version",
             "/DOutputDir=..\release",
-            "/DDistDir=..\dist\YT-DJ",
+            "/DDistDir=..\dist\CueForge",
             "/DDependencyInclude=..\build\dependencies.windows-x64.iss"
         )
 
-        $installer = Join-Path $Root "release\YT-DJ-$Version-windows-x64-online-setup.exe"
+        $installer = Join-Path $Root "release\CueForge-$Version-windows-x64-online-setup.exe"
         if (-not (Test-Path -LiteralPath $installer)) {
             throw "Expected installer was not produced: $installer"
         }
@@ -153,7 +153,7 @@ try {
         Write-Host "Dependencies: $dependencyReport"
     }
 
-    $releaseReport = Join-Path $Root "release\YT-DJ-$Version-windows-x64-release-report.json"
+    $releaseReport = Join-Path $Root "release\CueForge-$Version-windows-x64-release-report.json"
     $reportArgs = @(
         "scripts\write_release_report.py",
         "--version",

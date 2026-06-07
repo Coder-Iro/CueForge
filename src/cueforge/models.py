@@ -68,7 +68,7 @@ class TrackMetadata:
         return TrackMetadata(**values)
 
     def normalized(self) -> "TrackMetadata":
-        from ytdj.metadata.normalize import clean_metadata
+        from cueforge.metadata.normalize import clean_metadata
 
         return clean_metadata(self)
 

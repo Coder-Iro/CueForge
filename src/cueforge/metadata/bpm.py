@@ -7,10 +7,10 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ytdj.metadata.matching import score_candidate
-from ytdj.metadata.normalize import clean_metadata, squash_spaces
-from ytdj.models import MetadataCandidate, TrackMetadata
-from ytdj.sources import SourcePlatform
+from cueforge.metadata.matching import score_candidate
+from cueforge.metadata.normalize import clean_metadata, squash_spaces
+from cueforge.models import MetadataCandidate, TrackMetadata
+from cueforge.sources import SourcePlatform
 
 GETSONGBPM_ENDPOINT = "https://api.getsong.co/search/"
 
@@ -20,7 +20,7 @@ class GetSongBpmConfig:
     client_key: str = ""
     endpoint: str = GETSONGBPM_ENDPOINT
     timeout_seconds: int = 15
-    user_agent: str = "YT-DJ/0.1.0"
+    user_agent: str = "CueForge/0.1.0"
 
 
 class GetSongBpmProvider:

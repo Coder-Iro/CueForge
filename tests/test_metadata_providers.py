@@ -2,17 +2,17 @@ from pathlib import Path
 
 import pytest
 
-from ytdj.metadata.fingerprint import (
+from cueforge.metadata.fingerprint import (
     AcoustIDConfig,
     AcoustIDProvider,
     AudioFingerprint,
     FingerprintUnavailable,
     FpcalcFingerprinter,
 )
-from ytdj.metadata.matching import score_candidate
-from ytdj.metadata.musicbrainz import MusicBrainzConfig, MusicBrainzProvider
-from ytdj.metadata.ytmusic import YouTubeMusicProvider, extract_video_id
-from ytdj.models import ReviewState, TrackMetadata
+from cueforge.metadata.matching import score_candidate
+from cueforge.metadata.musicbrainz import MusicBrainzConfig, MusicBrainzProvider
+from cueforge.metadata.ytmusic import YouTubeMusicProvider, extract_video_id
+from cueforge.models import ReviewState, TrackMetadata
 
 
 class FakeYTMusic:
@@ -211,7 +211,7 @@ def test_fpcalc_fingerprinter_parses_json(tmp_path: Path) -> None:
 
 
 def test_fpcalc_fingerprinter_requires_executable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("ytdj.runtime.shutil.which", lambda name: None)
+    monkeypatch.setattr("cueforge.runtime.shutil.which", lambda name: None)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "empty-local-app-data"))
 
     with pytest.raises(FingerprintUnavailable, match="fpcalc"):

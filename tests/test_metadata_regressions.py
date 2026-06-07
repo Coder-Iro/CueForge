@@ -4,10 +4,10 @@ from typing import Any
 
 import pytest
 
-from ytdj.metadata.bpm import GetSongBpmConfig
-from ytdj.metadata.resolver import MetadataResolver
-from ytdj.models import MetadataCandidate, TrackMetadata
-from ytdj.sources import SourcePlatform
+from cueforge.metadata.bpm import GetSongBpmConfig
+from cueforge.metadata.resolver import MetadataResolver
+from cueforge.models import MetadataCandidate, TrackMetadata
+from cueforge.sources import SourcePlatform
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "metadata_regressions.json"
 

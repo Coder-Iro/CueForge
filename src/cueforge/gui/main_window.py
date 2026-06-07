@@ -39,15 +39,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ytdj.download import CookieBrowser, DownloadCanceled, DownloadConfig, DownloadProgress, YTDLPDownloader
-from ytdj.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, GetSongBpmConfig, MetadataResolver
-from ytdj.metadata.fingerprint import FingerprintError, FingerprintUnavailable
-from ytdj.metadata.matching import text_similarity
-from ytdj.metadata.normalize import merge_metadata
-from ytdj.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
-from ytdj.runtime import find_executable, format_diagnostics
-from ytdj.sources import SourcePlatform, detect_source_platform
-from ytdj.tags import RekordboxTagWriter, safe_track_filename
+from cueforge.download import CookieBrowser, DownloadCanceled, DownloadConfig, DownloadProgress, YTDLPDownloader
+from cueforge.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, GetSongBpmConfig, MetadataResolver
+from cueforge.metadata.fingerprint import FingerprintError, FingerprintUnavailable
+from cueforge.metadata.matching import text_similarity
+from cueforge.metadata.normalize import merge_metadata
+from cueforge.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
+from cueforge.runtime import find_executable, format_diagnostics
+from cueforge.sources import SourcePlatform, detect_source_platform
+from cueforge.tags import RekordboxTagWriter, safe_track_filename
 
 DownloaderFactory = Callable[[DownloadConfig, Any], YTDLPDownloader]
 ResolverFactory = Callable[[], MetadataResolver]
@@ -374,9 +374,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self, *, settings: QSettings | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("YT-DJ")
+        self.setWindowTitle("CueForge")
         self.resize(1120, 720)
-        self._settings = settings or QSettings("YT-DJ", "YT-DJ")
+        self._settings = settings or QSettings("CueForge", "CueForge")
         self.jobs: dict[str, DownloadJob] = {}
         self.row_job_ids: list[str] = []
         self.worker: JobWorker | None = None
@@ -1693,7 +1693,7 @@ def _merge_audio_recognition_candidates(
 
 
 def _temp_output_dir(job: DownloadJob) -> Path:
-    return job.output_dir / ".ytdj-temp" / job.id
+    return job.output_dir / ".cueforge-temp" / job.id
 
 
 def _cleanup_temp_download(job: DownloadJob, *extra_paths: Path | None) -> None:

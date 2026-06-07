@@ -1,4 +1,4 @@
-from ytdj.sources import SourcePlatform, detect_source_platform, trust_policy_for
+from cueforge.sources import SourcePlatform, detect_source_platform, trust_policy_for
 
 
 def test_detect_source_platform_from_url() -> None:

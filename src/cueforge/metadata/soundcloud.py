@@ -5,8 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from ytdj.metadata.normalize import clean_metadata, parse_artist_title, squash_spaces
-from ytdj.models import MetadataCandidate, TrackMetadata
+from cueforge.metadata.normalize import clean_metadata, parse_artist_title, squash_spaces
+from cueforge.models import MetadataCandidate, TrackMetadata
 
 REMIX_MARKERS = (
     "bootleg",

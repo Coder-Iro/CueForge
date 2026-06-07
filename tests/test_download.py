@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ytdj.download import CookieBrowser, DownloadConfig, DownloadProgress, YTDLPDownloader
+from cueforge.download import CookieBrowser, DownloadConfig, DownloadProgress, YTDLPDownloader
 
 
 class FakeYDL:
@@ -78,7 +78,7 @@ def test_fetch_info_accepts_cookie_browser_string_from_qt(tmp_path: Path) -> Non
 def test_chromium_cookie_unlock_can_be_enabled_for_chrome(tmp_path: Path, monkeypatch) -> None:
     FakeYDL.calls.clear()
     unlock_calls: list[bool] = []
-    monkeypatch.setattr("ytdj.download.set_chromium_cookie_unlock_enabled", unlock_calls.append)
+    monkeypatch.setattr("cueforge.download.set_chromium_cookie_unlock_enabled", unlock_calls.append)
     downloader = YTDLPDownloader(
         DownloadConfig(
             output_dir=tmp_path,
@@ -96,7 +96,7 @@ def test_chromium_cookie_unlock_can_be_enabled_for_chrome(tmp_path: Path, monkey
 
 def test_cookie_unlock_is_not_enabled_for_firefox(tmp_path: Path, monkeypatch) -> None:
     unlock_calls: list[bool] = []
-    monkeypatch.setattr("ytdj.download.set_chromium_cookie_unlock_enabled", unlock_calls.append)
+    monkeypatch.setattr("cueforge.download.set_chromium_cookie_unlock_enabled", unlock_calls.append)
     downloader = YTDLPDownloader(
         DownloadConfig(
             output_dir=tmp_path,

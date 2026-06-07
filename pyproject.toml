@@ -3,13 +3,13 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ytdj"
+name = "cueforge"
 version = "0.1.0"
-description = "Desktop downloader and metadata tagger for rekordbox-friendly YouTube Music files"
+description = "Desktop downloader and metadata tagger for DJ-ready YouTube, YouTube Music, and SoundCloud files"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 license = "MIT"
-authors = [{ name = "YT-DJ Contributors" }]
+authors = [{ name = "CueForge Contributors" }]
 dependencies = [
   "mutagen>=1.47",
   "platformdirs>=4.3",
@@ -28,7 +28,7 @@ packaging = [
 ]
 
 [project.scripts]
-ytdj = "ytdj.app:main"
+cueforge = "cueforge.app:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -36,5 +36,4 @@ pythonpath = ["src"]
 addopts = "-q"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ytdj"]
-
+packages = ["src/cueforge"]

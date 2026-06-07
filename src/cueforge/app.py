@@ -7,7 +7,7 @@ import os
 import sys
 import traceback
 
-from ytdj.runtime import configure_dependency_path, format_diagnostics
+from cueforge.runtime import configure_dependency_path, format_diagnostics
 
 
 def main() -> int:
@@ -39,7 +39,7 @@ def main() -> int:
     if "--smoke-gui" in sys.argv:
         _smoke_gui()
         return _finish_cli(0)
-    from ytdj.gui.main_window import run_app
+    from cueforge.gui.main_window import run_app
 
     return run_app()
 
@@ -129,8 +129,8 @@ def _smoke_metadata(
 ) -> dict:
     from pathlib import Path
 
-    from ytdj.download import DownloadConfig, YTDLPDownloader
-    from ytdj.metadata.resolver import MetadataResolver
+    from cueforge.download import DownloadConfig, YTDLPDownloader
+    from cueforge.metadata.resolver import MetadataResolver
 
     downloader_cls = downloader_factory or YTDLPDownloader
     resolver_cls = resolver_factory or MetadataResolver
@@ -169,10 +169,10 @@ def _smoke_metadata(
 def _smoke_gui() -> None:
     from PySide6.QtWidgets import QApplication
 
-    from ytdj.gui.main_window import MainWindow
+    from cueforge.gui.main_window import MainWindow
 
     app = QApplication.instance() or QApplication([])
-    app.setApplicationName("YT-DJ")
+    app.setApplicationName("CueForge")
     window = MainWindow()
     window.close()
     window.deleteLater()

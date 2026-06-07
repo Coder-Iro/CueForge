@@ -16,7 +16,7 @@ hiddenimports = [
 
 
 a = Analysis(
-    [str(ROOT / "src" / "ytdj" / "app.py")],
+    [str(ROOT / "src" / "cueforge" / "app.py")],
     pathex=[str(ROOT / "src")],
     binaries=binaries,
     datas=datas,
@@ -35,7 +35,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="YT-DJ",
+    name="CueForge",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -54,5 +54,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="YT-DJ",
+    name="CueForge",
 )

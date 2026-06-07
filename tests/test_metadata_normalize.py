@@ -1,5 +1,5 @@
-from ytdj.metadata import build_safe_fallback, merge_metadata, parse_artist_title
-from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
+from cueforge.metadata import build_safe_fallback, merge_metadata, parse_artist_title
+from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
 
 
 def test_parse_artist_title_removes_video_noise() -> None:

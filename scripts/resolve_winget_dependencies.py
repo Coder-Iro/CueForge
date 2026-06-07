@@ -17,7 +17,7 @@ from typing import Any
 
 GITHUB_API = "https://api.github.com"
 RAW_GITHUB = "https://raw.githubusercontent.com"
-USER_AGENT = "YT-DJ-Packager"
+USER_AGENT = "CueForge-Packager"
 STABLE_VERSION_RE = re.compile(r"^\d+(?:\.\d+)*$")
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 

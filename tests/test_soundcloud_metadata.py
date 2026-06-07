@@ -1,4 +1,4 @@
-from ytdj.metadata.soundcloud import build_soundcloud_metadata, build_soundcloud_native_candidate
+from cueforge.metadata.soundcloud import build_soundcloud_metadata, build_soundcloud_native_candidate
 
 
 def test_soundcloud_metadata_preserves_remix_title_and_source() -> None:

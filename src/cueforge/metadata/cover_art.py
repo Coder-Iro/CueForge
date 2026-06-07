@@ -20,7 +20,7 @@ class HTTPSessionLike(Protocol):
 
 @dataclass(slots=True)
 class CoverArtConfig:
-    app_name: str = "YT-DJ"
+    app_name: str = "CueForge"
     app_version: str = "0.1.0"
     contact: str = ""
     cache_path: Path | None = None
@@ -45,7 +45,7 @@ class CoverArtProvider:
         self.config = config or CoverArtConfig()
         self.session = session or self._create_session()
         self.session.headers.update({"User-Agent": self.config.user_agent})
-        self.cache = _JsonCache(self.config.cache_path or user_cache_path("YT-DJ") / "cover_art.sqlite")
+        self.cache = _JsonCache(self.config.cache_path or user_cache_path("CueForge") / "cover_art.sqlite")
 
     def lookup(self, release_id: str) -> str:
         release_id = release_id.strip()

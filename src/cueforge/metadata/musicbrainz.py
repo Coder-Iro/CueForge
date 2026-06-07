@@ -11,9 +11,9 @@ from typing import Any, Protocol
 
 from platformdirs import user_cache_path
 
-from ytdj.metadata.matching import score_candidate
-from ytdj.metadata.normalize import clean_metadata
-from ytdj.models import MetadataCandidate, TrackMetadata
+from cueforge.metadata.matching import score_candidate
+from cueforge.metadata.normalize import clean_metadata
+from cueforge.models import MetadataCandidate, TrackMetadata
 
 
 class HTTPSessionLike(Protocol):
@@ -24,7 +24,7 @@ class HTTPSessionLike(Protocol):
 
 @dataclass(slots=True)
 class MusicBrainzConfig:
-    app_name: str = "YT-DJ"
+    app_name: str = "CueForge"
     app_version: str = "0.1.0"
     contact: str = ""
     cache_path: Path | None = None
@@ -51,7 +51,7 @@ class MusicBrainzProvider:
         self.config = config or MusicBrainzConfig()
         self.session = session or self._create_session()
         self.session.headers.update({"User-Agent": self.config.user_agent})
-        self.cache = _JsonCache(self.config.cache_path or user_cache_path("YT-DJ") / "musicbrainz.sqlite")
+        self.cache = _JsonCache(self.config.cache_path or user_cache_path("CueForge") / "musicbrainz.sqlite")
         self._sleeper = sleeper
         self._clock = clock
         self._last_request_at = 0.0

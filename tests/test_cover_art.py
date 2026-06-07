@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ytdj.metadata.cover_art import CoverArtConfig, CoverArtProvider
+from cueforge.metadata.cover_art import CoverArtConfig, CoverArtProvider
 
 
 class FakeResponse:
@@ -61,7 +61,7 @@ def test_cover_art_provider_selects_front_500_thumbnail(tmp_path: Path) -> None:
     cover_url = provider.lookup("rel-1")
 
     assert cover_url == "https://coverartarchive.org/release/rel/front-500.jpg"
-    assert session.headers["User-Agent"] == "YT-DJ/0.1.0"
+    assert session.headers["User-Agent"] == "CueForge/0.1.0"
     assert session.calls == ["https://coverartarchive.org/release/rel-1/"]
 
 

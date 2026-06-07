@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
+from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
 
 NOISE_PATTERNS = [
     re.compile(r"\s*\[(?:official\s*)?(?:music\s*)?video\]\s*", re.IGNORECASE),

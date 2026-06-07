@@ -1,4 +1,4 @@
-from ytdj.metadata.hints import build_hint_candidates, extract_credit_hints, extract_metadata_hints, preferred_theme_types
+from cueforge.metadata.hints import build_hint_candidates, extract_credit_hints, extract_metadata_hints, preferred_theme_types
 
 
 def test_extract_japanese_ending_theme_from_next_line() -> None:

@@ -53,7 +53,7 @@ def test_windows_dependency_config_uses_winget_manifest_sources() -> None:
 
 
 def test_online_installer_uses_generated_dependency_include() -> None:
-    script = (ROOT / "packaging" / "ytdj-online.iss").read_text(encoding="utf-8")
+    script = (ROOT / "packaging" / "cueforge-online.iss").read_text(encoding="utf-8")
 
     assert "#include DependencyInclude" in script
     assert "AddDependencyDownloads;" in script
@@ -65,7 +65,7 @@ def test_online_installer_uses_generated_dependency_include() -> None:
 
 
 def test_pyinstaller_spec_bundles_ytmusicapi_locales() -> None:
-    spec = (ROOT / "packaging" / "ytdj.spec").read_text(encoding="utf-8")
+    spec = (ROOT / "packaging" / "cueforge.spec").read_text(encoding="utf-8")
 
     assert "collect_data_files" in spec
     assert '"ytmusicapi"' in spec
@@ -86,7 +86,7 @@ def test_packaging_script_runs_release_checks_in_fixed_order() -> None:
     script = (ROOT / "scripts" / "package_windows.ps1").read_text(encoding="utf-8")
 
     full_pytest = 'Invoke-Native $Python @("-m", "pytest")'
-    gui_smoke = 'Invoke-Native $Python @("-m", "ytdj", "--smoke-gui")'
+    gui_smoke = 'Invoke-Native $Python @("-m", "cueforge", "--smoke-gui")'
     fixture_suite = 'Invoke-Native $Python @("-m", "pytest", "tests\\test_metadata_regressions.py")'
     packaged_diagnose = 'Invoke-PackagedCommand -Executable $Executable -Arguments @("--diagnose-file", $DiagnosticsPath)'
     packaged_smoke = 'Invoke-PackagedCommand -Executable $Executable -Arguments @("--smoke-gui")'

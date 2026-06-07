@@ -5,9 +5,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QRect, QSettings, Qt
 from PySide6.QtWidgets import QApplication
 
-from ytdj.gui.main_window import MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls
-from ytdj.models import DownloadStatus, MetadataCandidate, TrackMetadata
-from ytdj.runtime import DependencyStatus
+from cueforge.gui.main_window import MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls
+from cueforge.models import DownloadStatus, MetadataCandidate, TrackMetadata
+from cueforge.runtime import DependencyStatus
 
 
 def _test_settings(tmp_path) -> QSettings:
@@ -253,7 +253,7 @@ def test_settings_can_reopen_onboarding(tmp_path) -> None:
 
 
 def test_onboarding_dependency_status_marks_missing_bundled_tool_as_incomplete(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("ytdj.gui.main_window.find_executable", lambda name, explicit_path=None: DependencyStatus(name, None, "missing"))
+    monkeypatch.setattr("cueforge.gui.main_window.find_executable", lambda name, explicit_path=None: DependencyStatus(name, None, "missing"))
     monkeypatch.setattr("sys.frozen", True, raising=False)
 
     assert "설치가 불완전함" in _dependency_setup_status("ffmpeg")
@@ -263,7 +263,7 @@ def test_onboarding_dependency_status_treats_path_tool_as_portable_fallback(monk
     tool = tmp_path / "ffmpeg.exe"
     tool.write_text("", encoding="utf-8")
     monkeypatch.setattr(
-        "ytdj.gui.main_window.find_executable",
+        "cueforge.gui.main_window.find_executable",
         lambda name, explicit_path=None: DependencyStatus(name, tool, "PATH"),
     )
     monkeypatch.delattr("sys.frozen", raising=False)
@@ -407,7 +407,7 @@ def test_extract_urls_handles_pasted_text_and_de_duplicates() -> None:
 def test_copy_diagnostics_puts_report_on_clipboard(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
-    monkeypatch.setattr("ytdj.gui.main_window.format_diagnostics", lambda: "diagnostics report")
+    monkeypatch.setattr("cueforge.gui.main_window.format_diagnostics", lambda: "diagnostics report")
     try:
         window._copy_diagnostics()
 

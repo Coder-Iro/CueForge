@@ -5,8 +5,8 @@ from __future__ import annotations
 from difflib import SequenceMatcher
 from typing import Any
 
-from ytdj.metadata.normalize import squash_spaces
-from ytdj.models import MetadataCandidate, TrackMetadata
+from cueforge.metadata.normalize import squash_spaces
+from cueforge.models import MetadataCandidate, TrackMetadata
 
 
 def text_similarity(left: str, right: str) -> float:

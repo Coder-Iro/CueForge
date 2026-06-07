@@ -27,7 +27,7 @@ from mutagen.id3 import (
     ID3NoHeaderError,
 )
 
-from ytdj.models import TagWriteResult, TrackMetadata
+from cueforge.models import TagWriteResult, TrackMetadata
 
 CoverFetcher = Callable[[str], tuple[bytes, str]]
 

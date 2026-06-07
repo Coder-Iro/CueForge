@@ -1,9 +1,9 @@
-#define AppName "YT-DJ"
+#define AppName "CueForge"
 #ifndef AppVersion
 #define AppVersion "0.1.0-alpha1"
 #endif
 #ifndef DistDir
-#define DistDir "..\dist\YT-DJ"
+#define DistDir "..\dist\CueForge"
 #endif
 #ifndef OutputDir
 #define OutputDir "..\release"
@@ -16,17 +16,17 @@
 AppId={{9BC88C57-9EE1-4D07-9182-5373F61014AB}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=YT-DJ Contributors
-DefaultDirName={localappdata}\Programs\YT-DJ
+AppPublisher=CueForge Contributors
+DefaultDirName={localappdata}\Programs\CueForge
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir={#OutputDir}
-OutputBaseFilename=YT-DJ-{#AppVersion}-windows-x64-online-setup
+OutputBaseFilename=CueForge-{#AppVersion}-windows-x64-online-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\YT-DJ.exe
+UninstallDisplayIcon={app}\CueForge.exe
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 
@@ -38,11 +38,11 @@ Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Icons]
-Name: "{group}\YT-DJ"; Filename: "{app}\YT-DJ.exe"
-Name: "{autodesktop}\YT-DJ"; Filename: "{app}\YT-DJ.exe"; Tasks: desktopicon
+Name: "{group}\CueForge"; Filename: "{app}\CueForge.exe"
+Name: "{autodesktop}\CueForge"; Filename: "{app}\CueForge.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\YT-DJ.exe"; Description: "{cm:LaunchProgram,YT-DJ}"; Flags: nowait postinstall skipifsilent unchecked
+Filename: "{app}\CueForge.exe"; Description: "{cm:LaunchProgram,CueForge}"; Flags: nowait postinstall skipifsilent unchecked
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\bin"

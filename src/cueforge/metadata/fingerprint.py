@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from ytdj.metadata.normalize import clean_metadata
-from ytdj.models import MetadataCandidate, TrackMetadata
-from ytdj.runtime import find_executable
+from cueforge.metadata.normalize import clean_metadata
+from cueforge.models import MetadataCandidate, TrackMetadata
+from cueforge.runtime import find_executable
 
 
 class FingerprintError(Exception):
@@ -42,7 +42,7 @@ class AudioFingerprint:
 class AcoustIDConfig:
     client_key: str = ""
     fpcalc_path: Path | None = None
-    app_name: str = "YT-DJ"
+    app_name: str = "CueForge"
     app_version: str = "0.1.0"
     rate_limit_seconds: float = 0.34
     timeout_seconds: int = 15

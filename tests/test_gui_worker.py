@@ -5,11 +5,11 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from ytdj.download import DownloadCanceled, DownloadConfig, DownloadProgress, DownloadResult
-from ytdj.gui.main_window import JobWorker
-from ytdj.metadata import AcoustIDConfig
-from ytdj.models import DownloadJob, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
-from ytdj.sources import SourcePlatform
+from cueforge.download import DownloadCanceled, DownloadConfig, DownloadProgress, DownloadResult
+from cueforge.gui.main_window import JobWorker
+from cueforge.metadata import AcoustIDConfig
+from cueforge.models import DownloadJob, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
+from cueforge.sources import SourcePlatform
 
 
 class FakeDownloader:
@@ -108,7 +108,7 @@ def test_worker_downloads_temp_audio_for_low_confidence_youtube(tmp_path: Path) 
     assert candidates[0].provider == "acoustid"
     assert downloaded_path == job.downloaded_path
     assert downloaded_path is not None
-    assert downloaded_path.parent == tmp_path / ".ytdj-temp" / job.id
+    assert downloaded_path.parent == tmp_path / ".cueforge-temp" / job.id
     assert FakeDownloader.downloads == [downloaded_path]
 
 
@@ -247,7 +247,7 @@ def test_worker_skips_audio_recognition_for_soundcloud(tmp_path: Path) -> None:
 def test_worker_reuses_prepared_download_after_review_approval(tmp_path: Path) -> None:
     FakeDownloader.downloads.clear()
     FakeTagWriter.writes.clear()
-    prepared = tmp_path / ".ytdj-temp" / "job" / "abc.mp3"
+    prepared = tmp_path / ".cueforge-temp" / "job" / "abc.mp3"
     prepared.parent.mkdir(parents=True)
     prepared.write_bytes(b"fake mp3")
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
@@ -276,7 +276,7 @@ def test_worker_reuses_prepared_download_after_review_approval(tmp_path: Path) -
 
 def test_worker_cancellation_cleans_prepared_temp_download(tmp_path: Path) -> None:
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
-    prepared = tmp_path / ".ytdj-temp" / job.id / "abc.mp3"
+    prepared = tmp_path / ".cueforge-temp" / job.id / "abc.mp3"
     prepared.parent.mkdir(parents=True)
     prepared.write_bytes(b"fake mp3")
     job.downloaded_path = prepared

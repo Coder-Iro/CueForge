@@ -1,6 +1,6 @@
-from ytdj.metadata.bpm import GetSongBpmConfig, GetSongBpmProvider, native_bpm_candidate, parse_bpm
-from ytdj.models import TrackMetadata
-from ytdj.sources import SourcePlatform
+from cueforge.metadata.bpm import GetSongBpmConfig, GetSongBpmProvider, native_bpm_candidate, parse_bpm
+from cueforge.models import TrackMetadata
+from cueforge.sources import SourcePlatform
 
 
 class FakeResponse:

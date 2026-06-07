@@ -1,11 +1,11 @@
 import sys
 
-from ytdj import app as ytdj_app
-from ytdj.app import _finish_cli, _is_cli_utility_mode, _print_cli_output, _smoke_metadata, _write_cli_output
-from ytdj.download import DownloadConfig
-from ytdj.metadata.resolver import MetadataResolution
-from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
-from ytdj.sources import SourcePlatform
+from cueforge import app as cueforge_app
+from cueforge.app import _finish_cli, _is_cli_utility_mode, _print_cli_output, _smoke_metadata, _write_cli_output
+from cueforge.download import DownloadConfig
+from cueforge.metadata.resolver import MetadataResolution
+from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
+from cueforge.sources import SourcePlatform
 
 
 class FakeDownloader:
@@ -42,7 +42,7 @@ class FakeResolver:
 
 
 def test_smoke_metadata_reports_resolved_metadata(monkeypatch) -> None:
-    monkeypatch.setattr("ytdj.app.format_diagnostics", lambda: "diagnostics")
+    monkeypatch.setattr("cueforge.app.format_diagnostics", lambda: "diagnostics")
 
     payload = _smoke_metadata(
         "https://youtu.be/abc",
@@ -65,26 +65,26 @@ def test_main_writes_metadata_smoke_failures(tmp_path, monkeypatch) -> None:
     def failing_smoke(url: str) -> dict:
         raise RuntimeError("metadata failed")
 
-    monkeypatch.setattr(ytdj_app, "_smoke_metadata", failing_smoke)
-    monkeypatch.setattr(ytdj_app, "format_diagnostics", lambda: "diagnostics")
+    monkeypatch.setattr(cueforge_app, "_smoke_metadata", failing_smoke)
+    monkeypatch.setattr(cueforge_app, "format_diagnostics", lambda: "diagnostics")
     monkeypatch.setattr(
         sys,
         "argv",
-        ["ytdj", "--smoke-metadata-url", "https://youtu.be/abc", "--diagnose-file", str(output)],
+        ["cueforge", "--smoke-metadata-url", "https://youtu.be/abc", "--diagnose-file", str(output)],
     )
 
-    assert ytdj_app.main() == 2
+    assert cueforge_app.main() == 2
     text = output.read_text(encoding="utf-8")
     assert "metadata failed" in text
     assert "diagnostics" in text
 
 
 def test_cli_utility_modes_force_entrypoint_exit() -> None:
-    assert _is_cli_utility_mode(["ytdj", "--diagnose"])
-    assert _is_cli_utility_mode(["ytdj", "--diagnose-file", "diagnostics.txt"])
-    assert _is_cli_utility_mode(["ytdj", "--smoke-gui"])
-    assert _is_cli_utility_mode(["ytdj", "--smoke-metadata-url", "https://youtu.be/abc"])
-    assert not _is_cli_utility_mode(["ytdj"])
+    assert _is_cli_utility_mode(["cueforge", "--diagnose"])
+    assert _is_cli_utility_mode(["cueforge", "--diagnose-file", "diagnostics.txt"])
+    assert _is_cli_utility_mode(["cueforge", "--smoke-gui"])
+    assert _is_cli_utility_mode(["cueforge", "--smoke-metadata-url", "https://youtu.be/abc"])
+    assert not _is_cli_utility_mode(["cueforge"])
 
 
 def test_frozen_cli_output_writes_file_without_printing(tmp_path, monkeypatch, capsys) -> None:

@@ -6,15 +6,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from ytdj.metadata.bpm import GetSongBpmConfig, GetSongBpmProvider
-from ytdj.metadata.cover_art import CoverArtProvider
-from ytdj.metadata.hints import build_hint_candidates
-from ytdj.metadata.normalize import build_safe_fallback, merge_metadata
-from ytdj.metadata.soundcloud import as_reference_candidate, build_soundcloud_native_candidate
-from ytdj.metadata.ytmusic import YouTubeMusicProvider
-from ytdj.metadata.musicbrainz import MusicBrainzProvider
-from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
-from ytdj.sources import SourcePlatform, detect_source_platform, trust_policy_for
+from cueforge.metadata.bpm import GetSongBpmConfig, GetSongBpmProvider
+from cueforge.metadata.cover_art import CoverArtProvider
+from cueforge.metadata.hints import build_hint_candidates
+from cueforge.metadata.normalize import build_safe_fallback, merge_metadata
+from cueforge.metadata.soundcloud import as_reference_candidate, build_soundcloud_native_candidate
+from cueforge.metadata.ytmusic import YouTubeMusicProvider
+from cueforge.metadata.musicbrainz import MusicBrainzProvider
+from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
+from cueforge.sources import SourcePlatform, detect_source_platform, trust_policy_for
 
 
 @dataclass(slots=True)

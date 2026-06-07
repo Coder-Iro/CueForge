@@ -6,8 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ytdj.metadata.normalize import build_safe_fallback, clean_metadata, parse_artist_title, squash_spaces
-from ytdj.models import MetadataCandidate, TrackMetadata
+from cueforge.metadata.normalize import build_safe_fallback, clean_metadata, parse_artist_title, squash_spaces
+from cueforge.models import MetadataCandidate, TrackMetadata
 
 THEME_HEADER_RE = re.compile(
     r"^\s*(?:▮|■|#|\*|-)?\s*"

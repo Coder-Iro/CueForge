@@ -1,6 +1,6 @@
-from ytdj.metadata.resolver import MetadataResolver
-from ytdj.models import MetadataCandidate, ReviewState, TrackMetadata
-from ytdj.sources import SourcePlatform
+from cueforge.metadata.resolver import MetadataResolver
+from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
+from cueforge.sources import SourcePlatform
 
 
 class FailingYTMusicProvider:

@@ -1,4 +1,4 @@
-from ytdj import __version__
+from cueforge import __version__
 
 
 def test_version_is_defined() -> None:

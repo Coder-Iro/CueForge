@@ -285,8 +285,10 @@ class MainWindow(QMainWindow):
         self.add_url_button: QPushButton | None = None
         self.start_queue_button: QPushButton | None = None
         self.download_approved_button: QPushButton | None = None
+        self.review_selected_button: QPushButton | None = None
         self.retry_failed_button: QPushButton | None = None
         self.approve_button: QPushButton | None = None
+        self.reopen_review_button: QPushButton | None = None
         self._loading_review = False
         self._loading_review_queue = False
         self._cover_preview_workers: list[CoverPreviewWorker] = []
@@ -325,6 +327,7 @@ class MainWindow(QMainWindow):
         self.review_queue_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.review_queue_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.review_queue_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.review_queue_table.setMinimumHeight(150)
         self.review_queue_table.itemSelectionChanged.connect(self._load_selected_review_queue_job)
 
         self.candidate_table = QTableWidget(0, len(self.CANDIDATE_COLUMNS))
@@ -334,6 +337,7 @@ class MainWindow(QMainWindow):
         self.candidate_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.candidate_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.candidate_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.candidate_table.setMinimumHeight(180)
         self.candidate_table.itemSelectionChanged.connect(self._apply_selected_candidate)
 
         self.log = QPlainTextEdit()
@@ -413,20 +417,24 @@ class MainWindow(QMainWindow):
         url_row.setColumnStretch(1, 1)
         layout.addLayout(url_row)
 
-        action_row = QHBoxLayout()
-        action_row.addStretch(1)
+        action_row = QGridLayout()
+        action_row.setColumnStretch(0, 1)
         self.start_queue_button = QPushButton("Analyze Metadata")
         self.start_queue_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.start_queue_button.clicked.connect(self._analyze_next)
-        action_row.addWidget(self.start_queue_button)
+        action_row.addWidget(self.start_queue_button, 0, 1)
         self.download_approved_button = QPushButton("Download Approved")
         self.download_approved_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.download_approved_button.clicked.connect(self._download_next_approved)
-        action_row.addWidget(self.download_approved_button)
+        action_row.addWidget(self.download_approved_button, 0, 2)
+        self.review_selected_button = QPushButton("Move Selected to Review")
+        self.review_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.review_selected_button.clicked.connect(self._move_selected_to_review_queue)
+        action_row.addWidget(self.review_selected_button, 1, 1)
         self.retry_failed_button = QPushButton("Retry Failed")
         self.retry_failed_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.retry_failed_button.clicked.connect(self._retry_failed)
-        action_row.addWidget(self.retry_failed_button)
+        action_row.addWidget(self.retry_failed_button, 1, 2)
         layout.addLayout(action_row)
         layout.addWidget(self.queue_status_label)
         layout.addWidget(self.dependency_status_label)
@@ -442,13 +450,23 @@ class MainWindow(QMainWindow):
     def _review_tab(self) -> QWidget:
         root = QWidget()
         layout = QVBoxLayout(root)
-        layout.addWidget(QLabel("Review Queue"))
-        layout.addWidget(self.review_queue_table)
-        layout.addWidget(self.review_state_label)
-        layout.addWidget(self.review_hint_label)
-        layout.addWidget(self.candidate_label)
-        layout.addWidget(self.confidence_detail_label)
-        layout.addWidget(self.candidate_table)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        review_queue_group = QGroupBox("Review Queue")
+        review_queue_layout = QVBoxLayout(review_queue_group)
+        review_queue_layout.addWidget(self.review_queue_table)
+
+        provider_group = QGroupBox("Metadata Providers")
+        provider_layout = QVBoxLayout(provider_group)
+        provider_layout.addWidget(self.review_state_label)
+        provider_layout.addWidget(self.review_hint_label)
+        provider_layout.addWidget(self.candidate_label)
+        provider_layout.addWidget(self.confidence_detail_label)
+        provider_layout.addWidget(self.candidate_table)
+
+        tag_editor_group = QGroupBox("Tag Editor")
+        tag_editor_layout = QVBoxLayout(tag_editor_group)
 
         form = QFormLayout()
         labels = {
@@ -464,7 +482,7 @@ class MainWindow(QMainWindow):
         }
         for key, label in labels.items():
             form.addRow(label, self.review_fields[key])
-        layout.addLayout(form)
+        tag_editor_layout.addLayout(form)
 
         cover_row = QWidget()
         cover_layout = QGridLayout(cover_row)
@@ -472,13 +490,28 @@ class MainWindow(QMainWindow):
         cover_layout.addWidget(self.cover_preview_label, 0, 0, 2, 1)
         cover_layout.addWidget(self.cover_source_label, 0, 1)
         cover_layout.setColumnStretch(1, 1)
-        layout.addWidget(cover_row)
+        tag_editor_layout.addWidget(cover_row)
 
+        review_action_row = QHBoxLayout()
+        review_action_row.addStretch(1)
+        self.reopen_review_button = QPushButton("Move to Review Queue")
+        self.reopen_review_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.reopen_review_button.clicked.connect(self._move_active_to_review_queue)
+        review_action_row.addWidget(self.reopen_review_button)
         self.approve_button = QPushButton("Approve Metadata")
         self.approve_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.approve_button.clicked.connect(self._approve_selected)
-        layout.addWidget(self.approve_button)
-        layout.addStretch()
+        review_action_row.addWidget(self.approve_button)
+        tag_editor_layout.addLayout(review_action_row)
+
+        splitter.addWidget(review_queue_group)
+        splitter.addWidget(provider_group)
+        splitter.addWidget(tag_editor_group)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 3)
+        splitter.setSizes([180, 260, 280])
+        layout.addWidget(splitter)
         return root
 
     def _settings_tab(self) -> QWidget:
@@ -750,6 +783,35 @@ class MainWindow(QMainWindow):
         self._load_next_review_or_current(job)
         self._refresh_actions()
 
+    def _move_selected_to_review_queue(self) -> None:
+        job = self._selected_job()
+        if not job:
+            QMessageBox.warning(self, "No track selected", "Select an approved track in the Queue tab first.")
+            return
+        self._move_job_to_review_queue(job)
+
+    def _move_active_to_review_queue(self) -> None:
+        job = self._active_review_job()
+        if not job:
+            QMessageBox.warning(self, "No track loaded", "Load an approved track before moving it to review.")
+            return
+        self._move_job_to_review_queue(job)
+
+    def _move_job_to_review_queue(self, job: DownloadJob) -> None:
+        if self.worker and self.worker.isRunning():
+            QMessageBox.warning(self, "Cannot move", "Wait for the current job to finish before changing review state.")
+            return
+        if job.status != DownloadStatus.APPROVED:
+            QMessageBox.warning(self, "Not approved", "Only approved tracks can be moved back to the review queue.")
+            return
+        job.status = DownloadStatus.REVIEW_REQUIRED
+        self._update_row(job)
+        self._append_log(job.id, "approved metadata moved back to review queue")
+        self._load_job_for_review(job)
+        if self.tabs:
+            self.tabs.setCurrentIndex(self.review_tab_index)
+        self._refresh_actions()
+
     def _remove_selected(self) -> None:
         row = self.table.currentRow()
         if row < 0:
@@ -801,7 +863,7 @@ class MainWindow(QMainWindow):
         if job.status == DownloadStatus.REVIEW_REQUIRED:
             self.review_hint_label.setText("Edit tags if needed. Approval marks this track ready for Download Approved.")
         elif job.status == DownloadStatus.APPROVED:
-            self.review_hint_label.setText("Approved. Use Download Approved to download and tag this track.")
+            self.review_hint_label.setText("Approved. Use Download Approved, or move it back to the review queue for more edits.")
         elif job.status == DownloadStatus.DONE:
             self.review_hint_label.setText("This track is already downloaded and tagged.")
         elif job.status == DownloadStatus.FAILED:
@@ -1022,11 +1084,14 @@ class MainWindow(QMainWindow):
         approved_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.APPROVED)
         review_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.REVIEW_REQUIRED)
         failed_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.FAILED)
+        selected_job = self._selected_job()
         active_review = self._active_review_job()
         can_analyze = pending_count > 0 and not running
         can_download = approved_count > 0 and not running
         can_retry = failed_count > 0 and not running
         can_approve = bool(active_review and active_review.status == DownloadStatus.REVIEW_REQUIRED)
+        can_move_selected_to_review = bool(selected_job and selected_job.status == DownloadStatus.APPROVED and not running)
+        can_move_active_to_review = bool(active_review and active_review.status == DownloadStatus.APPROVED and not running)
         self._refresh_review_queue()
 
         if self.start_action:
@@ -1039,10 +1104,14 @@ class MainWindow(QMainWindow):
             self.start_queue_button.setEnabled(can_analyze)
         if self.download_approved_button:
             self.download_approved_button.setEnabled(can_download)
+        if self.review_selected_button:
+            self.review_selected_button.setEnabled(can_move_selected_to_review)
         if self.retry_failed_button:
             self.retry_failed_button.setEnabled(can_retry)
         if self.approve_button:
             self.approve_button.setEnabled(can_approve)
+        if self.reopen_review_button:
+            self.reopen_review_button.setEnabled(can_move_active_to_review)
         if self.tabs:
             self.tabs.setTabText(self.review_tab_index, f"Review ({review_count})" if review_count else "Review")
 

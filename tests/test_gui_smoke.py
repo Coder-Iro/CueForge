@@ -68,6 +68,7 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
         assert window.add_url_button is not None
         assert window.start_queue_button is not None
         assert window.download_approved_button is not None
+        assert window.review_selected_button is not None
         assert window.retry_failed_button is not None
 
         button_rects = [
@@ -76,6 +77,7 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
                 window.add_url_button,
                 window.start_queue_button,
                 window.download_approved_button,
+                window.review_selected_button,
                 window.retry_failed_button,
             )
         ]
@@ -83,6 +85,24 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
         for index, rect in enumerate(button_rects):
             for other in button_rects[index + 1 :]:
                 assert not rect.intersects(other)
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_review_tab_gives_queue_and_provider_tables_room(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.resize(900, 760)
+        window.tabs.setCurrentIndex(window.review_tab_index)
+        window.show()
+        app.processEvents()
+
+        assert window.review_queue_table.minimumHeight() >= 150
+        assert window.candidate_table.minimumHeight() >= 180
+        assert window.review_queue_table.height() >= 150
+        assert window.candidate_table.height() >= 180
     finally:
         window.close()
         app.processEvents()
@@ -286,6 +306,59 @@ def test_auto_approved_metadata_waits_for_download_approved(tmp_path) -> None:
         assert job.status == DownloadStatus.APPROVED
         assert window.download_approved_button.isEnabled() is True
         assert "ready to download" in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_approved_selected_track_can_move_back_to_review_queue(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.APPROVED
+        job.selected_metadata = TrackMetadata(title="Approved Song", artist="Approved Artist")
+        window._update_row(job)
+        window.table.selectRow(0)
+        window._refresh_actions()
+
+        assert window.review_selected_button.isEnabled() is True
+
+        window._move_selected_to_review_queue()
+
+        assert job.status == DownloadStatus.REVIEW_REQUIRED
+        assert window.table.item(0, 0).text() == DownloadStatus.REVIEW_REQUIRED.value
+        assert window.review_queue_table.rowCount() == 1
+        assert window.review_queue_table.item(0, 0).text() == "Approved Song"
+        assert window.active_review_job_id == job.id
+        assert window.tabs.currentIndex() == window.review_tab_index
+        assert window.approve_button.isEnabled() is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_loaded_approved_track_can_move_back_to_review_queue(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.APPROVED
+        job.selected_metadata = TrackMetadata(title="Approved Song", artist="Approved Artist")
+        window._load_job_for_review(job)
+
+        assert window.reopen_review_button.isEnabled() is True
+
+        window._move_active_to_review_queue()
+
+        assert job.status == DownloadStatus.REVIEW_REQUIRED
+        assert window.review_queue_table.rowCount() == 1
+        assert window.review_fields["title"].text() == "Approved Song"
+        assert window.approve_button.isEnabled() is True
     finally:
         window.close()
         app.processEvents()

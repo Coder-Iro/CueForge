@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -15,7 +16,11 @@ from cueforge.metadata.ytmusic import YouTubeMusicProvider, extract_video_id
 from cueforge.metadata.ytmusic_auth import (
     YTMusicCookieAuthConfig,
     YTMusicCookieAuthError,
+    YTMusicOAuthClient,
+    YTMusicOAuthError,
+    build_ytmusic_oauth_authorization_url,
     build_ytmusic_cookie_auth,
+    exchange_ytmusic_oauth_code,
     load_ytmusic_oauth_client,
     write_ytmusic_oauth_token,
 )
@@ -269,7 +274,7 @@ def test_youtube_music_provider_prefers_oauth_token(tmp_path: Path) -> None:
 def test_youtube_music_oauth_client_loader_accepts_google_client_json(tmp_path: Path) -> None:
     client_file = tmp_path / "google_oauth_client.json"
     client_file.write_text(
-        '{"installed": {"client_id": "client.apps.googleusercontent.com", "client_secret": "secret"}}',
+        '{"installed": {"client_id": "client.apps.googleusercontent.com", "client_secret": "secret", "auth_uri": "https://accounts.google.com/o/oauth2/v2/auth", "token_uri": "https://oauth2.googleapis.com/token"}}',
         encoding="utf-8",
     )
 
@@ -277,6 +282,103 @@ def test_youtube_music_oauth_client_loader_accepts_google_client_json(tmp_path: 
 
     assert client.client_id == "client.apps.googleusercontent.com"
     assert client.client_secret == "secret"
+    assert client.auth_uri == "https://accounts.google.com/o/oauth2/v2/auth"
+    assert client.token_uri == "https://oauth2.googleapis.com/token"
+
+
+def test_youtube_music_oauth_authorization_url_uses_desktop_callback() -> None:
+    client = YTMusicOAuthClient(
+        client_id="client.apps.googleusercontent.com",
+        client_secret="secret",
+        source_path=Path("client.json"),
+    )
+
+    url = build_ytmusic_oauth_authorization_url(
+        client,
+        redirect_uri="http://127.0.0.1:12345/oauth/callback",
+        state="state-token",
+    )
+
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    assert parsed.netloc == "accounts.google.com"
+    assert query["client_id"] == ["client.apps.googleusercontent.com"]
+    assert query["redirect_uri"] == ["http://127.0.0.1:12345/oauth/callback"]
+    assert query["scope"] == ["https://www.googleapis.com/auth/youtube"]
+    assert query["access_type"] == ["offline"]
+    assert query["prompt"] == ["consent"]
+    assert query["state"] == ["state-token"]
+
+
+def test_youtube_music_oauth_code_exchange_posts_desktop_payload() -> None:
+    client = YTMusicOAuthClient(
+        client_id="client.apps.googleusercontent.com",
+        client_secret="secret",
+        source_path=Path("client.json"),
+        token_uri="https://oauth2.googleapis.com/token",
+    )
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, object]:
+            return {"access_token": "access", "refresh_token": "refresh", "expires_in": 3600, "token_type": "Bearer"}
+
+    class Session:
+        def post(self, url: str, *, data: dict[str, object], timeout: int) -> Response:
+            calls.append({"url": url, "data": data, "timeout": timeout})
+            return Response()
+
+    token = exchange_ytmusic_oauth_code(
+        client,
+        code="auth-code",
+        redirect_uri="http://127.0.0.1:12345/oauth/callback",
+        session=Session(),
+    )
+
+    assert token["refresh_token"] == "refresh"
+    assert calls == [
+        {
+            "url": "https://oauth2.googleapis.com/token",
+            "data": {
+                "code": "auth-code",
+                "client_id": "client.apps.googleusercontent.com",
+                "client_secret": "secret",
+                "redirect_uri": "http://127.0.0.1:12345/oauth/callback",
+                "grant_type": "authorization_code",
+            },
+            "timeout": 30,
+        }
+    ]
+
+
+def test_youtube_music_oauth_code_exchange_reports_google_error() -> None:
+    client = YTMusicOAuthClient(
+        client_id="client.apps.googleusercontent.com",
+        client_secret="secret",
+        source_path=Path("client.json"),
+    )
+
+    class Response:
+        status_code = 400
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {"error": "invalid_grant", "error_description": "Bad code"}
+
+    class Session:
+        def post(self, url: str, *, data: dict[str, object], timeout: int) -> Response:
+            return Response()
+
+    with pytest.raises(YTMusicOAuthError, match="Bad code"):
+        exchange_ytmusic_oauth_code(
+            client,
+            code="bad-code",
+            redirect_uri="http://127.0.0.1:12345/oauth/callback",
+            session=Session(),
+        )
 
 
 def test_youtube_music_oauth_token_writer_adds_expiration(tmp_path: Path) -> None:

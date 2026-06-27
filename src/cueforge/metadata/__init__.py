@@ -27,6 +27,7 @@ from cueforge.metadata.ytmusic_auth import (
     default_ytmusic_oauth_token_path,
     find_ytmusic_oauth_client_file,
     load_ytmusic_oauth_client,
+    run_ytmusic_oauth_desktop_flow,
     write_ytmusic_oauth_token,
 )
 from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
@@ -65,5 +66,6 @@ __all__ = [
     "load_ytmusic_oauth_client",
     "merge_metadata",
     "parse_artist_title",
+    "run_ytmusic_oauth_desktop_flow",
     "write_ytmusic_oauth_token",
 ]

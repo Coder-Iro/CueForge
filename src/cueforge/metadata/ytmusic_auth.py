@@ -274,6 +274,40 @@ def write_ytmusic_oauth_account(account: YTMusicOAuthAccount, path: Path) -> Non
     path.write_text(json.dumps(asdict(account), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def read_ytmusic_oauth_token(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise YTMusicOAuthError(f"OAuth 토큰 파일을 읽을 수 없음: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise YTMusicOAuthError("OAuth 토큰 파일 형식이 올바르지 않음")
+    return payload
+
+
+def refresh_ytmusic_oauth_token_if_needed(
+    client: YTMusicOAuthClient,
+    token_path: Path,
+    *,
+    min_valid_seconds: int = 60,
+) -> dict[str, Any]:
+    token = read_ytmusic_oauth_token(token_path)
+    expires_at = int(token.get("expires_at") or 0)
+    if token.get("access_token") and expires_at - int(time.time()) > min_valid_seconds:
+        return token
+    refresh_token = str(token.get("refresh_token") or "")
+    if not refresh_token:
+        raise YTMusicOAuthError("OAuth refresh_token이 없어 Google 계정을 다시 연결해야 합니다.")
+    try:
+        fresh = build_ytmusic_oauth_credentials(client).refresh_token(refresh_token)
+    except Exception as exc:
+        raise YTMusicOAuthError(f"OAuth 토큰 갱신 실패: {exc}") from exc
+    if fresh.get("error"):
+        raise YTMusicOAuthError(str(fresh.get("error_description") or fresh.get("error")))
+    merged = {**token, **fresh, "refresh_token": refresh_token}
+    write_ytmusic_oauth_token(merged, token_path)
+    return read_ytmusic_oauth_token(token_path)
+
+
 def write_ytmusic_oauth_token(token: dict[str, Any], path: Path) -> None:
     token = {key: token[key] for key in YTMUSIC_TOKEN_KEYS if key in token}
     if "expires_at" not in token and token.get("expires_in"):

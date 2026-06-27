@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from cueforge.metadata.resolver import MetadataResolver
 from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
 from cueforge.sources import SourcePlatform
@@ -117,8 +119,9 @@ def test_youtube_resolver_still_uses_ytmusic_and_musicbrainz() -> None:
     assert resolution.state == ReviewState.AUTO_APPROVED
 
 
-def test_youtube_resolver_passes_browser_cookie_auth_options() -> None:
+def test_youtube_resolver_passes_cookie_file_auth_option(tmp_path: Path) -> None:
     calls: list[dict] = []
+    cookie_file = tmp_path / "cookies.txt"
 
     def factory(**kwargs: object) -> FakeYTMusicProvider:
         calls.append(kwargs)
@@ -132,12 +135,10 @@ def test_youtube_resolver_passes_browser_cookie_auth_options() -> None:
     resolver.resolve(
         url="https://music.youtube.com/watch?v=abc",
         info={"extractor_key": "Youtube", "title": "Fallback"},
-        ytmusic_cookie_browser="chrome",
-        unlock_browser_cookie_database=True,
+        ytmusic_cookie_file=cookie_file,
     )
 
-    assert calls[0]["cookie_browser"] == "chrome"
-    assert calls[0]["unlock_browser_cookie_database"] is True
+    assert calls[0]["cookie_file"] == cookie_file
 
 
 def test_youtube_resolver_prefers_cover_art_archive_over_platform_thumbnail() -> None:

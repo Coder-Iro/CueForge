@@ -106,6 +106,13 @@ def test_packaging_script_writes_release_report() -> None:
     assert "--checksum-file" in script
 
 
+def test_packaging_script_uses_dependency_lock_when_present() -> None:
+    script = (ROOT / "scripts" / "package_windows.ps1").read_text(encoding="utf-8")
+
+    assert "dependencies.windows-x64.lock.json" in script
+    assert "--lock-file" in script
+
+
 def test_third_party_notices_are_available() -> None:
     notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
 
@@ -218,6 +225,56 @@ ManifestType: installer
     assert dependency["url"] == "https://example.invalid/tool-x64.zip"
     assert dependency["sha256"] == "b" * 64
     assert dependency["archive_name"] == "tool-x64.zip"
+
+
+def test_resolver_can_emit_from_lock_file_without_fetching(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    resolver = _load_resolver()
+    config = tmp_path / "dependencies.json"
+    lock = tmp_path / "dependencies.lock.json"
+    json_out = tmp_path / "resolved.json"
+    inno_out = tmp_path / "resolved.iss"
+    config.write_text(json.dumps({"platform": "windows-x64", "dependencies": []}), encoding="utf-8")
+    lock.write_text(
+        json.dumps(
+            {
+                "platform": "windows-x64",
+                "dependencies": [
+                    {
+                        "name": "tool",
+                        "package_id": "Vendor.Tool",
+                        "version": "1.0.0",
+                        "manifest_path": "manifests/vendor/tool",
+                        "architecture": "x64",
+                        "installer_type": "zip",
+                        "url": "https://example.invalid/tool.zip",
+                        "sha256": "a" * 64,
+                        "archive_name": "tool.zip",
+                        "install_subdir": "tool",
+                        "executables": ["tool.exe"],
+                        "license": "MIT",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(resolver, "resolve_dependencies", lambda config, ref=None: (_ for _ in ()).throw(AssertionError("fetch")))
+
+    assert resolver.main(
+        [
+            "--config",
+            str(config),
+            "--lock-file",
+            str(lock),
+            "--json-out",
+            str(json_out),
+            "--inno-out",
+            str(inno_out),
+        ]
+    ) == 0
+
+    assert json.loads(json_out.read_text(encoding="utf-8"))["dependencies"][0]["version"] == "1.0.0"
+    assert "tool.zip" in inno_out.read_text(encoding="utf-8")
 
 
 def test_resolver_rejects_missing_x64_installer() -> None:

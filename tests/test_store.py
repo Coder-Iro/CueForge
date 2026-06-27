@@ -1,0 +1,60 @@
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from cueforge.models import DownloadJob, DownloadStatus, JobEvent, MetadataCandidate, TrackMetadata
+from cueforge.store import JobStore
+
+
+def test_job_store_persists_jobs_candidate_summaries_and_sanitized_events(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs.sqlite")
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path / "downloads")
+    job.status = DownloadStatus.REVIEW_REQUIRED
+    job.platform = "youtube"
+    job.selected_metadata = TrackMetadata(title="Song", artist="Artist")
+    job.candidates = [
+        MetadataCandidate(
+            provider="musicbrainz",
+            score=0.91,
+            matched_fields=("title", "artist"),
+            metadata=TrackMetadata(title="Song", artist="Artist", album="Album"),
+            raw={"ignored": "__Secure-3PAPISID=secret"},
+        )
+    ]
+
+    store.upsert_job(job)
+    store.record_event(JobEvent(job_id=job.id, event_type="failed", message="Cookie: __Secure-3PAPISID=secret"))
+
+    loaded = store.load_jobs()
+    events = store.list_events(job.id)
+
+    assert len(loaded) == 1
+    assert loaded[0].selected_metadata.title == "Song"
+    assert loaded[0].candidates[0].provider == "musicbrainz"
+    assert loaded[0].candidates[0].metadata.album == "Album"
+    assert "secret" not in events[0].message
+    assert "<redacted>" in events[0].message
+
+
+def test_job_store_keeps_active_queue_but_can_clear_terminal_history(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs.sqlite")
+    active = DownloadJob(url="https://youtu.be/active", output_dir=tmp_path)
+    done = DownloadJob(url="https://youtu.be/done", output_dir=tmp_path, status=DownloadStatus.DONE)
+    store.upsert_job(active)
+    store.upsert_job(done)
+
+    assert store.clear_history() == 1
+
+    loaded = store.load_jobs()
+    assert [job.url for job in loaded] == ["https://youtu.be/active"]
+
+
+def test_job_store_rejects_unknown_schema_version(tmp_path: Path) -> None:
+    path = tmp_path / "jobs.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE schema_info (version INTEGER NOT NULL)")
+        conn.execute("INSERT INTO schema_info (version) VALUES (999)")
+
+    with pytest.raises(RuntimeError, match="Unsupported"):
+        JobStore(path)

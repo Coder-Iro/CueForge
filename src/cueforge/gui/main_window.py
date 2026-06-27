@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QColor, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QSplitter,
     QStyle,
     QTableWidget,
@@ -40,22 +42,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cueforge.download import CookieBrowser, DownloadCanceled, DownloadConfig, DownloadProgress, YTDLPDownloader
+from cueforge.download import DownloadCanceled, DownloadConfig, DownloadProgress, PlaylistExpansionResult, YTDLPDownloader
+from cueforge.errors import action_hint, user_facing_error
+from cueforge.gui.scheduler import JobScheduler
 from cueforge.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, MetadataResolver
 from cueforge.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from cueforge.metadata.matching import text_similarity
 from cueforge.metadata.normalize import merge_metadata
-from cueforge.models import DownloadJob, DownloadStatus, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
+from cueforge.models import DownloadJob, DownloadStatus, JobEvent, MetadataCandidate, ReviewState, SchedulerLimits, TagWriteResult, TrackMetadata
+from cueforge.paths import default_output_dir, legacy_cwd_output_dir
 from cueforge.runtime import find_executable, format_diagnostics
 from cueforge.sources import SourcePlatform, detect_source_platform
-from cueforge.tags import RekordboxTagWriter, safe_track_filename
+from cueforge.store import JobStore
+from cueforge.tags import MAX_COVER_BYTES, RekordboxTagWriter, safe_track_filename
 
 DownloaderFactory = Callable[[DownloadConfig, Any], YTDLPDownloader]
+PlaylistExpander = Callable[[str], PlaylistExpansionResult]
 ResolverFactory = Callable[[], MetadataResolver]
 AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
 CoverArtProviderFactory = Callable[[], Any]
 TagWriterFactory = Callable[[], Any]
 _ACTIVE_STATUSES = {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}
+_TERMINAL_STATUSES = {DownloadStatus.DONE, DownloadStatus.FAILED, DownloadStatus.CANCELED}
 _ANALYZABLE_STATUSES = {
     DownloadStatus.PENDING,
     DownloadStatus.REVIEW_REQUIRED,
@@ -63,6 +71,15 @@ _ANALYZABLE_STATUSES = {
     DownloadStatus.FAILED,
     DownloadStatus.CANCELED,
 }
+_PIPELINE_STATUSES = (
+    DownloadStatus.PENDING,
+    DownloadStatus.METADATA,
+    DownloadStatus.REVIEW_REQUIRED,
+    DownloadStatus.APPROVED,
+    DownloadStatus.DOWNLOADING,
+    DownloadStatus.DONE,
+    DownloadStatus.FAILED,
+)
 
 
 class JobWorker(QThread):
@@ -77,10 +94,9 @@ class JobWorker(QThread):
         self,
         job: DownloadJob,
         *,
-        cookie_browser: CookieBrowser | None,
-        unlock_browser_cookie_database: bool = False,
-        ytmusic_auth_path: Path | None,
-        ffmpeg_location: Path | None,
+        cookie_file: Path | None = None,
+        ytmusic_auth_path: Path | None = None,
+        ffmpeg_location: Path | None = None,
         acoustid_config: AcoustIDConfig | None = None,
         audio_recognition_enabled: bool = True,
         verify_auto_approved_metadata: bool = False,
@@ -91,11 +107,11 @@ class JobWorker(QThread):
         acoustid_provider_factory: AcoustIDProviderFactory | None = None,
         cover_art_provider_factory: CoverArtProviderFactory | None = None,
         tag_writer_factory: TagWriterFactory | None = None,
+        tag_semaphore: threading.Semaphore | None = None,
     ) -> None:
         super().__init__()
         self.job = job
-        self.cookie_browser = cookie_browser
-        self.unlock_browser_cookie_database = unlock_browser_cookie_database
+        self.cookie_file = cookie_file
         self.ytmusic_auth_path = ytmusic_auth_path
         self.ffmpeg_location = ffmpeg_location
         self.acoustid_config = acoustid_config or AcoustIDConfig()
@@ -108,6 +124,7 @@ class JobWorker(QThread):
         self._acoustid_provider_factory = acoustid_provider_factory or AcoustIDProvider
         self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
         self._tag_writer_factory = tag_writer_factory or RekordboxTagWriter
+        self._tag_semaphore = tag_semaphore
         self._current_download_path: Path | None = None
         self._cancel_requested = False
 
@@ -146,9 +163,14 @@ class JobWorker(QThread):
             self._check_canceled()
             self.progress_changed.emit(self.job.id, 100.0, DownloadStatus.TAGGING.value)
             self._check_canceled()
+            self._acquire_tag_slot()
+            try:
+                tag_result: TagWriteResult = self._tag_writer_factory().write(downloaded_path, metadata)
+            finally:
+                self._release_tag_slot()
+            self._check_canceled()
             final_path = _move_to_final(downloaded_path, self.job.output_dir, metadata)
             self.job.downloaded_path = None
-            tag_result: TagWriteResult = self._tag_writer_factory().write(final_path, metadata)
             if tag_result.written_fields:
                 self.log_message.emit(self.job.id, f"기록된 태그: {', '.join(tag_result.written_fields)}")
             if tag_result.skipped_fields:
@@ -174,8 +196,7 @@ class JobWorker(QThread):
         return self._downloader_factory(
             DownloadConfig(
                 output_dir=output_dir,
-                cookie_browser=self.cookie_browser,
-                unlock_browser_cookie_database=self.unlock_browser_cookie_database,
+                cookie_file=self.cookie_file,
                 ffmpeg_location=self.ffmpeg_location,
             ),
             self._on_progress,
@@ -200,8 +221,7 @@ class JobWorker(QThread):
             url=self.job.url,
             info=info,
             ytmusic_auth_path=self.ytmusic_auth_path,
-            ytmusic_cookie_browser=_cookie_browser_value(self.cookie_browser),
-            unlock_browser_cookie_database=self.unlock_browser_cookie_database,
+            ytmusic_cookie_file=self.cookie_file,
             log=lambda message: self.log_message.emit(self.job.id, message),
         )
         self.log_message.emit(self.job.id, f"메타데이터 공급자 조회 완료 ({_elapsed(started_at)})")
@@ -286,6 +306,16 @@ class JobWorker(QThread):
         status = DownloadStatus.DOWNLOADING.value if progress.status == "downloading" else progress.status
         self.progress_changed.emit(self.job.id, percent, status)
 
+    def _acquire_tag_slot(self) -> None:
+        if not self._tag_semaphore:
+            return
+        while not self._tag_semaphore.acquire(timeout=0.2):
+            self._check_canceled()
+
+    def _release_tag_slot(self) -> None:
+        if self._tag_semaphore:
+            self._tag_semaphore.release()
+
 
 class CoverPreviewWorker(QThread):
     cover_loaded = Signal(str, str, object, str)
@@ -304,6 +334,17 @@ class CoverPreviewWorker(QThread):
             mime = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
             if mime and not mime.startswith("image/"):
                 self.cover_loaded.emit(self.job_id, self.url, b"", f"non-image cover response: {mime}")
+                return
+            length = response.headers.get("Content-Length")
+            if length:
+                try:
+                    if int(length) > MAX_COVER_BYTES:
+                        self.cover_loaded.emit(self.job_id, self.url, b"", "cover image is too large")
+                        return
+                except ValueError:
+                    pass
+            if len(response.content) > MAX_COVER_BYTES:
+                self.cover_loaded.emit(self.job_id, self.url, b"", "cover image is too large")
                 return
             self.cover_loaded.emit(self.job_id, self.url, response.content, "")
         except Exception as exc:
@@ -348,7 +389,7 @@ class OnboardingDialog(QDialog):
         action_row = QHBoxLayout()
         action_row.addStretch(1)
         skip_button = QPushButton("건너뛰기")
-        skip_button.clicked.connect(self._complete)
+        skip_button.clicked.connect(self.reject)
         action_row.addWidget(skip_button)
         done_button = QPushButton("확인")
         done_button.clicked.connect(self._complete)
@@ -374,20 +415,33 @@ class MainWindow(QMainWindow):
     CANDIDATE_COLUMNS = ("제공자", "점수", "신뢰도", "배지", "일치 항목", "제목", "아티스트", "앨범", "날짜", "ISRC", "커버")
     CANDIDATE_PREVIEW_COLUMNS = ("필드", "현재 값", "후보 적용 값")
 
-    def __init__(self, *, settings: QSettings | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        settings: QSettings | None = None,
+        job_store: JobStore | None = None,
+        playlist_expander: PlaylistExpander | None = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("CueForge")
         self.resize(1120, 720)
         self._settings = settings or QSettings("CueForge", "CueForge")
+        self.job_store = job_store or JobStore(_job_store_path_for_settings(self._settings))
         self.jobs: dict[str, DownloadJob] = {}
         self.row_job_ids: list[str] = []
         self.worker: JobWorker | None = None
+        self.scheduler: JobScheduler | None = None
         self.worker_mode = ""
         self.cancel_requested = False
         self.active_review_job_id: str | None = None
         self.tabs: QTabWidget | None = None
         self.queue_tab_index = 0
         self.review_tab_index = 1
+        self.pipeline_tab_index = 0
+        self.history_tab_index = 0
+        self.settings_tab_index = 0
+        self._last_tab_index = 0
+        self.workflow_stage_labels: dict[str, QLabel] = {}
         self.start_action: QAction | None = None
         self.download_action: QAction | None = None
         self.retry_action: QAction | None = None
@@ -412,17 +466,17 @@ class MainWindow(QMainWindow):
         self._loading_review = False
         self._loading_review_queue = False
         self._cover_preview_workers: list[CoverPreviewWorker] = []
+        self._loading_pipeline = False
+        self._loading_history = False
+        self._dependency_status_cache = ""
+        self._dependency_status_cache_key: tuple[Any, ...] | None = None
+        self._playlist_expander = playlist_expander
 
         self.url_input = UrlInput()
         self.url_input.setPlaceholderText("YouTube / YouTube Music / SoundCloud URL을 하나 이상 붙여넣으세요")
         self.url_input.setFixedHeight(76)
-        self.output_dir_input = QLineEdit(str(Path.cwd() / "downloads"))
-        self.cookie_combo = QComboBox()
-        self.cookie_combo.addItem("브라우저 쿠키 사용 안 함", None)
-        self.cookie_combo.addItem("Chrome", CookieBrowser.CHROME)
-        self.cookie_combo.addItem("Edge", CookieBrowser.EDGE)
-        self.cookie_combo.addItem("Firefox", CookieBrowser.FIREFOX)
-        self.cookie_unlock_checkbox = QCheckBox("Chrome/Edge 쿠키 DB가 잠겨 있으면 잠금 해제 보조 기능 사용")
+        self.output_dir_input = QLineEdit(str(default_output_dir()))
+        self.cookie_file_input = QLineEdit()
         self.auth_path_input = QLineEdit()
         self.ffmpeg_path_input = QLineEdit()
         self.audio_recognition_checkbox = QCheckBox("메타데이터 신뢰도가 낮으면 AcoustID 사용")
@@ -431,12 +485,22 @@ class MainWindow(QMainWindow):
         self.acoustid_key_input = QLineEdit()
         self.acoustid_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.fpcalc_path_input = QLineEdit()
+        self.metadata_parallel_spin = QSpinBox()
+        self.metadata_parallel_spin.setRange(1, 8)
+        self.metadata_parallel_spin.setValue(3)
+        self.download_parallel_spin = QSpinBox()
+        self.download_parallel_spin.setRange(1, 6)
+        self.download_parallel_spin.setValue(2)
+        self.tagging_parallel_spin = QSpinBox()
+        self.tagging_parallel_spin.setRange(1, 3)
+        self.tagging_parallel_spin.setValue(1)
 
         self.table = QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._load_selected_job)
 
@@ -502,9 +566,22 @@ class MainWindow(QMainWindow):
         self.cover_preview_label.setFixedSize(180, 180)
         self.cover_preview_label.setStyleSheet("border: 1px solid #b8b8b8;")
         self.review_fields["cover_url"].editingFinished.connect(self._cover_url_edited)
+        self.pipeline_tables: dict[DownloadStatus, QTableWidget] = {}
+        self.pipeline_detail = QPlainTextEdit()
+        self.pipeline_detail.setReadOnly(True)
+        self.pipeline_start_button: QPushButton | None = None
+        self.pipeline_download_button: QPushButton | None = None
+        self.pipeline_retry_button: QPushButton | None = None
+        self.history_table = QTableWidget(0, 5)
+        self.clear_history_button: QPushButton | None = None
 
         self._load_settings()
         self._build_ui()
+        self._connect_settings_status_updates()
+        self.scheduler = JobScheduler(worker_factory=self._create_scheduled_worker, limits=self._scheduler_limits(), parent=self)
+        self.scheduler.job_started.connect(self._on_scheduled_job_started)
+        self.scheduler.idle.connect(self._on_scheduler_idle)
+        self._load_jobs_from_store()
         if not _settings_bool(self._settings.value("onboarding/completed", False), default=False):
             self._open_onboarding()
 
@@ -514,10 +591,10 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
         add_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder), "URL 추가", self)
         add_action.triggered.connect(self._add_url)
-        self.start_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay), "메타데이터 분석", self)
-        self.start_action.triggered.connect(self._analyze_next)
+        self.start_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay), "전체 처리 시작", self)
+        self.start_action.triggered.connect(self._start_pipeline)
         self.download_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton), "승인 항목 다운로드", self)
-        self.download_action.triggered.connect(self._download_next_approved)
+        self.download_action.triggered.connect(self._schedule_approved_downloads)
         self.retry_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "실패 재시도", self)
         self.retry_action.triggered.connect(self._retry_failed)
         remove_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), "삭제", self)
@@ -529,9 +606,12 @@ class MainWindow(QMainWindow):
         toolbar.addAction(remove_action)
 
         self.tabs = QTabWidget()
-        self.queue_tab_index = self.tabs.addTab(self._queue_tab(), "큐")
+        self.queue_tab_index = self.tabs.addTab(self._queue_tab(), "작업")
+        self.pipeline_tab_index = self.queue_tab_index
         self.review_tab_index = self.tabs.addTab(self._review_tab(), "검수")
-        self.tabs.addTab(self._settings_tab(), "설정")
+        self.history_tab_index = self.tabs.addTab(self._history_tab(), "이력")
+        self.settings_tab_index = self.tabs.addTab(self._settings_tab(), "설정")
+        self._last_tab_index = self.tabs.currentIndex()
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs)
         self._refresh_actions()
@@ -551,53 +631,182 @@ class MainWindow(QMainWindow):
         layout.addLayout(url_row)
 
         action_row = QGridLayout()
-        action_row.setColumnStretch(0, 1)
-        self.start_queue_button = QPushButton("메타데이터 분석")
+        self.start_queue_button = QPushButton("전체 처리 시작")
         self.start_queue_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.start_queue_button.clicked.connect(self._analyze_next)
-        action_row.addWidget(self.start_queue_button, 0, 1)
+        self.start_queue_button.clicked.connect(self._start_pipeline)
+        action_row.addWidget(self.start_queue_button, 0, 0)
         self.download_approved_button = QPushButton("승인 항목 다운로드")
         self.download_approved_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
-        self.download_approved_button.clicked.connect(self._download_next_approved)
-        action_row.addWidget(self.download_approved_button, 0, 2)
+        self.download_approved_button.clicked.connect(self._schedule_approved_downloads)
+        action_row.addWidget(self.download_approved_button, 0, 1)
         self.cancel_current_button = QPushButton("현재 작업 취소")
         self.cancel_current_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
         self.cancel_current_button.clicked.connect(self._cancel_current_job)
-        action_row.addWidget(self.cancel_current_button, 0, 3)
+        action_row.addWidget(self.cancel_current_button, 0, 2)
         self.analyze_selected_button = QPushButton("선택 항목 분석")
         self.analyze_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.analyze_selected_button.clicked.connect(self._analyze_selected)
-        action_row.addWidget(self.analyze_selected_button, 1, 1)
+        action_row.addWidget(self.analyze_selected_button, 1, 0)
         self.download_selected_button = QPushButton("선택 항목 다운로드")
         self.download_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.download_selected_button.clicked.connect(self._download_selected_approved)
-        action_row.addWidget(self.download_selected_button, 1, 2)
+        action_row.addWidget(self.download_selected_button, 1, 1)
         self.retry_selected_button = QPushButton("선택 항목 재시도")
         self.retry_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.retry_selected_button.clicked.connect(self._retry_selected)
-        action_row.addWidget(self.retry_selected_button, 1, 3)
+        action_row.addWidget(self.retry_selected_button, 1, 2)
         self.review_selected_button = QPushButton("선택 항목 검수로 이동")
         self.review_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.review_selected_button.clicked.connect(self._move_selected_to_review_queue)
-        action_row.addWidget(self.review_selected_button, 2, 1)
+        action_row.addWidget(self.review_selected_button, 2, 0)
         self.retry_failed_button = QPushButton("실패 재시도")
         self.retry_failed_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.retry_failed_button.clicked.connect(self._retry_failed)
-        action_row.addWidget(self.retry_failed_button, 2, 2)
+        action_row.addWidget(self.retry_failed_button, 2, 1)
         self.remove_selected_button = QPushButton("선택 항목 삭제")
         self.remove_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
         self.remove_selected_button.clicked.connect(self._remove_selected)
-        action_row.addWidget(self.remove_selected_button, 2, 3)
+        action_row.addWidget(self.remove_selected_button, 2, 2)
+        for column in range(3):
+            action_row.setColumnStretch(column, 1)
         layout.addLayout(action_row)
+        layout.addLayout(self._workflow_stage_row())
         layout.addWidget(self.queue_status_label)
         layout.addWidget(self.dependency_status_label)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self._pipeline_board_widget())
         splitter.addWidget(self.table)
         splitter.addWidget(self.log)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 4)
+        splitter.setStretchFactor(2, 1)
+        splitter.setSizes([240, 330, 120])
+        layout.addWidget(splitter)
+        return root
+
+    def _workflow_stage_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        stages = (
+            ("pending", "추가"),
+            ("metadata", "분석"),
+            ("review", "검수"),
+            ("approved", "준비"),
+            ("active", "다운로드"),
+            ("done", "완료"),
+            ("failed", "실패"),
+        )
+        for key, title in stages:
+            label = QLabel(f"{title}\n0")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setMinimumHeight(44)
+            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            label.setStyleSheet("QLabel { border: 1px solid #c8ccd2; background: #f6f7f9; padding: 4px; }")
+            self.workflow_stage_labels[key] = label
+            row.addWidget(label)
+        return row
+
+    def _pipeline_board_widget(self) -> QWidget:
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        board = QWidget()
+        board_layout = QGridLayout(board)
+        board_layout.setContentsMargins(0, 0, 0, 0)
+        board_layout.setHorizontalSpacing(8)
+        board_layout.setVerticalSpacing(8)
+        for index, status in enumerate(_PIPELINE_STATUSES):
+            group = QGroupBox(_pipeline_status_label(status))
+            group_layout = QVBoxLayout(group)
+            table = QTableWidget(0, 2)
+            table.setHorizontalHeaderLabels(("트랙", "URL"))
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            table.verticalHeader().setVisible(False)
+            table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+            table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            table.itemSelectionChanged.connect(self._load_selected_pipeline_job)
+            self.pipeline_tables[status] = table
+            group_layout.addWidget(table)
+            board_layout.addWidget(group, index // 4, index % 4)
+        splitter.addWidget(board)
+
+        detail_group = QGroupBox("선택 작업")
+        detail_layout = QVBoxLayout(detail_group)
+        self.pipeline_detail.setMinimumWidth(260)
+        detail_layout.addWidget(self.pipeline_detail)
+        splitter.addWidget(detail_group)
+        splitter.setStretchFactor(0, 5)
+        splitter.setStretchFactor(1, 1)
+        return splitter
+
+    def _pipeline_tab(self) -> QWidget:
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        action_row = QHBoxLayout()
+        self.pipeline_start_button = QPushButton("파이프라인 시작")
+        self.pipeline_start_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.pipeline_start_button.clicked.connect(self._start_pipeline)
+        action_row.addWidget(self.pipeline_start_button)
+        self.pipeline_download_button = QPushButton("승인 항목 다운로드")
+        self.pipeline_download_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.pipeline_download_button.clicked.connect(self._schedule_approved_downloads)
+        action_row.addWidget(self.pipeline_download_button)
+        self.pipeline_retry_button = QPushButton("실패 재시도")
+        self.pipeline_retry_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.pipeline_retry_button.clicked.connect(self._retry_failed)
+        action_row.addWidget(self.pipeline_retry_button)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        board = QWidget()
+        board_layout = QHBoxLayout(board)
+        board_layout.setContentsMargins(0, 0, 0, 0)
+        for status in _PIPELINE_STATUSES:
+            group = QGroupBox(_pipeline_status_label(status))
+            group_layout = QVBoxLayout(group)
+            table = QTableWidget(0, 3)
+            table.setHorizontalHeaderLabels(("제목", "아티스트", "URL"))
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+            table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            table.itemSelectionChanged.connect(self._load_selected_pipeline_job)
+            self.pipeline_tables[status] = table
+            group_layout.addWidget(table)
+            board_layout.addWidget(group)
+        splitter.addWidget(board)
+
+        detail_group = QGroupBox("작업 상세")
+        detail_layout = QVBoxLayout(detail_group)
+        self.pipeline_detail.setMinimumWidth(300)
+        detail_layout.addWidget(self.pipeline_detail)
+        splitter.addWidget(detail_group)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter)
+        return root
+
+    def _history_tab(self) -> QWidget:
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        action_row = QHBoxLayout()
+        action_row.addStretch(1)
+        self.clear_history_button = QPushButton("완료/실패 이력 삭제")
+        self.clear_history_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.clear_history_button.clicked.connect(self._clear_history)
+        action_row.addWidget(self.clear_history_button)
+        layout.addLayout(action_row)
+        self.history_table.setHorizontalHeaderLabels(("상태", "제목", "아티스트", "오류", "출력"))
+        self.history_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.history_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.history_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.history_table.itemSelectionChanged.connect(self._load_selected_history_job)
+        layout.addWidget(self.history_table)
         return root
 
     def _review_tab(self) -> QWidget:
@@ -735,8 +944,7 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(output_button, 0, 1)
         form.addRow("출력 폴더", output_row)
 
-        form.addRow("브라우저 쿠키", self.cookie_combo)
-        form.addRow(self.cookie_unlock_checkbox)
+        form.addRow("쿠키 파일", self._path_row(self.cookie_file_input, self._browse_cookie_file))
         form.addRow("YTMusic 인증 JSON (고급)", self._path_row(self.auth_path_input, self._browse_auth_file))
         form.addRow("ffmpeg 경로", self._path_row(self.ffmpeg_path_input, self._browse_ffmpeg))
 
@@ -747,6 +955,12 @@ class MainWindow(QMainWindow):
         recognition_form.addRow("AcoustID 클라이언트 키", self.acoustid_key_input)
         recognition_form.addRow("fpcalc 경로", self._path_row(self.fpcalc_path_input, self._browse_fpcalc))
 
+        scheduler_group = QGroupBox("병렬 처리")
+        scheduler_form = QFormLayout(scheduler_group)
+        scheduler_form.addRow("메타데이터 동시 작업", self.metadata_parallel_spin)
+        scheduler_form.addRow("다운로드 동시 작업", self.download_parallel_spin)
+        scheduler_form.addRow("태깅 동시 작업", self.tagging_parallel_spin)
+
         self.open_onboarding_button = QPushButton("초기 설정 다시 열기")
         self.open_onboarding_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation))
         self.open_onboarding_button.clicked.connect(self._open_onboarding)
@@ -756,6 +970,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(paths_group)
         layout.addWidget(recognition_group)
+        layout.addWidget(scheduler_group)
         layout.addWidget(self.open_onboarding_button)
         layout.addWidget(diagnostics_button)
         layout.addStretch()
@@ -773,8 +988,9 @@ class MainWindow(QMainWindow):
         return row
 
     def _load_settings(self) -> None:
-        self.output_dir_input.setText(str(self._settings.value("paths/output_dir", self.output_dir_input.text())))
+        self.output_dir_input.setText(str(self._saved_output_dir_or_default()))
         self.auth_path_input.setText(str(self._settings.value("paths/ytmusic_auth", "")))
+        self.cookie_file_input.setText(str(self._settings.value("auth/cookie_file", "")))
         self.ffmpeg_path_input.setText(str(self._settings.value("paths/ffmpeg", "")))
         self.fpcalc_path_input.setText(str(self._settings.value("paths/fpcalc", "")))
         self.acoustid_key_input.setText(str(self._settings.value("acoustid/client_key", "")))
@@ -782,47 +998,95 @@ class MainWindow(QMainWindow):
         self.verify_auto_approved_checkbox.setChecked(
             _settings_bool(self._settings.value("acoustid/verify_auto_approved", False), default=False)
         )
-        self._set_cookie_browser(str(self._settings.value("auth/cookie_browser", "")))
-        self.cookie_unlock_checkbox.setChecked(
-            _settings_bool(self._settings.value("auth/unlock_browser_cookie_database", False), default=False)
-        )
+        self.metadata_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/metadata_parallel", 3), default=3))
+        self.download_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/download_parallel", 2), default=2))
+        self.tagging_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/tagging_parallel", 1), default=1))
+
+    def _saved_output_dir_or_default(self) -> Path:
+        fallback = default_output_dir()
+        saved = str(self._settings.value("paths/output_dir", "") or "").strip()
+        if not saved:
+            return fallback
+        saved_path = Path(saved)
+        if _same_path(saved_path, legacy_cwd_output_dir()):
+            self._settings.setValue("paths/output_dir", str(fallback))
+            self._settings.sync()
+            return fallback
+        return saved_path
 
     def save_settings(self) -> None:
         self._settings.setValue("paths/output_dir", self.output_dir_input.text().strip())
         self._settings.setValue("paths/ytmusic_auth", self.auth_path_input.text().strip())
+        self._settings.setValue("auth/cookie_file", self.cookie_file_input.text().strip())
         self._settings.setValue("paths/ffmpeg", self.ffmpeg_path_input.text().strip())
         self._settings.setValue("paths/fpcalc", self.fpcalc_path_input.text().strip())
         self._settings.setValue("acoustid/client_key", self.acoustid_key_input.text().strip())
         self._settings.setValue("acoustid/enabled", self.audio_recognition_checkbox.isChecked())
         self._settings.setValue("acoustid/verify_auto_approved", self.verify_auto_approved_checkbox.isChecked())
-        cookie_browser = self.cookie_combo.currentData()
-        self._settings.setValue("auth/cookie_browser", _cookie_browser_value(cookie_browser))
-        self._settings.setValue("auth/unlock_browser_cookie_database", self.cookie_unlock_checkbox.isChecked())
+        self._settings.remove("auth/cookie_browser")
+        self._settings.remove("auth/unlock_browser_cookie_database")
+        self._settings.setValue("scheduler/metadata_parallel", self.metadata_parallel_spin.value())
+        self._settings.setValue("scheduler/download_parallel", self.download_parallel_spin.value())
+        self._settings.setValue("scheduler/tagging_parallel", self.tagging_parallel_spin.value())
         self._settings.sync()
+        self._dependency_status_cache_key = None
+        if self.scheduler:
+            self.scheduler.set_limits(self._scheduler_limits())
         if hasattr(self, "dependency_status_label"):
             self.dependency_status_label.setText(self._settings_status_text())
 
-    def _set_cookie_browser(self, value: str) -> None:
-        for index in range(self.cookie_combo.count()):
-            item = self.cookie_combo.itemData(index)
-            item_value = _cookie_browser_value(item)
-            if item_value == value:
-                self.cookie_combo.setCurrentIndex(index)
-                return
-
     def _settings_status_text(self) -> str:
+        cache_key = (
+            self.ffmpeg_path_input.text().strip(),
+            self.fpcalc_path_input.text().strip(),
+            self.acoustid_key_input.text().strip(),
+            self.cookie_file_input.text().strip(),
+            str(self.metadata_parallel_spin.value()),
+            str(self.download_parallel_spin.value()),
+            str(self.tagging_parallel_spin.value()),
+        )
+        if self._dependency_status_cache_key == cache_key and self._dependency_status_cache:
+            return self._dependency_status_cache
         ffmpeg = find_executable("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text()))
         fpcalc = find_executable("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))
         acoustid = "설정됨" if self.acoustid_key_input.text().strip() else "미설정"
-        cookies = _cookie_browser_value(self.cookie_combo.currentData()) or "없음"
-        cookie_unlock = "켜짐" if self.cookie_unlock_checkbox.isChecked() else "꺼짐"
-        ytmusic_auth = "수동 JSON" if self.auth_path_input.text().strip() else ("브라우저 쿠키 자동" if cookies != "없음" else "미설정")
-        return (
+        cookie_file = "설정됨" if self.cookie_file_input.text().strip() else "미설정"
+        ytmusic_auth = (
+            "수동 JSON"
+            if self.auth_path_input.text().strip()
+            else "쿠키 파일"
+            if self.cookie_file_input.text().strip()
+            else "미설정"
+        )
+        text = (
             f"설정: ffmpeg {ffmpeg.source if ffmpeg.available else '없음'}; "
             f"fpcalc {fpcalc.source if fpcalc.available else '없음'}; "
-            f"AcoustID {acoustid}; 브라우저 쿠키 {cookies}; 쿠키 잠금 해제 {cookie_unlock}; "
-            f"YTMusic 인증 {ytmusic_auth}."
+            f"AcoustID {acoustid}; 쿠키 파일 {cookie_file}; "
+            f"YTMusic 인증 {ytmusic_auth}; 병렬 {self.metadata_parallel_spin.value()}/{self.download_parallel_spin.value()}/{self.tagging_parallel_spin.value()}."
         )
+        self._dependency_status_cache_key = cache_key
+        self._dependency_status_cache = text
+        return text
+
+    def _connect_settings_status_updates(self) -> None:
+        for line_edit in (
+            self.auth_path_input,
+            self.cookie_file_input,
+            self.ffmpeg_path_input,
+            self.fpcalc_path_input,
+            self.acoustid_key_input,
+        ):
+            line_edit.textChanged.connect(self._refresh_settings_status_label)
+        self.metadata_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
+        self.download_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
+        self.tagging_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
+
+    def _refresh_settings_status_label(self, *args: Any) -> None:
+        self._dependency_status_cache_key = None
+        if self.scheduler:
+            self.scheduler.set_limits(self._scheduler_limits())
+        if hasattr(self, "dependency_status_label"):
+            self.dependency_status_label.setText(self._settings_status_text())
 
     def _open_onboarding(self) -> None:
         if self.onboarding_dialog and self.onboarding_dialog.isVisible():
@@ -856,18 +1120,37 @@ class MainWindow(QMainWindow):
         ]
 
     def _onboarding_optional_rows(self) -> list[tuple[str, str]]:
-        cookie = _cookie_browser_value(self.cookie_combo.currentData()) or "사용 안 함"
-        cookie_unlock = "켜짐" if self.cookie_unlock_checkbox.isChecked() else "꺼짐"
-        ytmusic_auth = "수동 JSON" if self.auth_path_input.text().strip() else ("브라우저 쿠키 자동" if cookie != "사용 안 함" else "미설정")
+        cookie_file = "설정됨" if self.cookie_file_input.text().strip() else "미설정"
+        ytmusic_auth = (
+            "수동 JSON"
+            if self.auth_path_input.text().strip()
+            else "쿠키 파일"
+            if self.cookie_file_input.text().strip()
+            else "미설정"
+        )
         return [
-            ("브라우저 쿠키", cookie),
+            ("쿠키 파일", cookie_file),
             ("YTMusic 인증", ytmusic_auth),
             ("YTMusic 인증 JSON", "고급 fallback 설정됨" if self.auth_path_input.text().strip() else "고급 fallback 미설정"),
-            ("쿠키 잠금 해제", cookie_unlock),
             ("AcoustID 클라이언트 키", "설정됨" if self.acoustid_key_input.text().strip() else "미설정"),
         ]
 
     def closeEvent(self, event: Any) -> None:
+        if self._work_running():
+            if QApplication.platformName() != "offscreen":
+                result = QMessageBox.question(
+                    self,
+                    "작업 실행 중",
+                    "진행 중인 작업이 있습니다. 작업을 취소하고 종료할까요?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if result != QMessageBox.StandardButton.Yes:
+                    event.ignore()
+                    return
+            self._cancel_all_work()
+            self._wait_for_workers(3000)
+        self._stop_cover_preview_workers()
         self.save_settings()
         super().closeEvent(event)
 
@@ -875,23 +1158,112 @@ class MainWindow(QMainWindow):
         urls = _extract_urls(self.url_input.text())
         if not urls:
             return
-        output_dir = Path(self.output_dir_input.text().strip() or "downloads")
+        supported, unsupported = _supported_urls(urls)
+        if unsupported:
+            message = "\n".join(unsupported[:5])
+            if QApplication.platformName() == "offscreen":
+                self._append_log("system", f"지원하지 않는 URL: {message}")
+            else:
+                QMessageBox.warning(self, "지원하지 않는 URL", message)
+        duplicates = [url for url in supported if self._has_existing_url(url)]
+        if duplicates and not self._should_add_duplicates(duplicates):
+            supported = [url for url in supported if url not in set(duplicates)]
+        if not supported:
+            self.url_input.clear()
+            return
+        output_dir = Path(self.output_dir_input.text().strip()) if self.output_dir_input.text().strip() else default_output_dir()
         last_row = -1
-        for url in urls:
-            job = DownloadJob(url=url, output_dir=output_dir)
-            self.jobs[job.id] = job
-            self.row_job_ids.append(job.id)
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            for col in range(len(self.COLUMNS)):
-                self.table.setItem(row, col, QTableWidgetItem(""))
-            self._update_row(job)
-            self._append_log(job.id, "큐에 추가됨")
+        for url in supported:
+            _job, row = self._insert_job(url, output_dir=output_dir)
             last_row = row
         self.url_input.clear()
         if last_row >= 0:
             self.table.selectRow(last_row)
         self._refresh_actions()
+
+    def _insert_job(self, url: str, *, output_dir: Path, row: int | None = None, message: str = "큐에 추가됨") -> tuple[DownloadJob, int]:
+        job = DownloadJob(url=url, output_dir=output_dir)
+        job.platform = detect_source_platform(url).value
+        insert_row = self.table.rowCount() if row is None else max(0, min(row, self.table.rowCount()))
+        self.jobs[job.id] = job
+        self.row_job_ids.insert(insert_row, job.id)
+        self.table.insertRow(insert_row)
+        for col in range(len(self.COLUMNS)):
+            self.table.setItem(insert_row, col, QTableWidgetItem(""))
+        self._update_row(job)
+        self._append_log(job.id, message)
+        self._store_job(job)
+        return job, insert_row
+
+    def _expand_playlist(self, url: str, *, output_dir: Path) -> PlaylistExpansionResult:
+        if self._playlist_expander:
+            return self._playlist_expander(url)
+        try:
+            result = self._expand_playlist_with_ytdlp(url, output_dir=output_dir)
+        except Exception as exc:
+            if _is_youtube_music_playlist_url(url):
+                try:
+                    return self._expand_playlist_with_ytmusicapi(url)
+                except Exception as fallback_exc:
+                    raise RuntimeError(f"{exc}\nYouTube Music 전체 펼치기 실패: {fallback_exc}") from fallback_exc
+            raise
+        if _should_retry_with_ytmusicapi_playlist_expansion(url, result):
+            try:
+                fallback = self._expand_playlist_with_ytmusicapi(url)
+            except Exception as exc:
+                self._append_log("system", f"YouTube Music 전체 펼치기 보강 실패: {exc}")
+            else:
+                if len(fallback.urls) > len(result.urls):
+                    self._append_log(
+                        "system",
+                        f"YouTube Music 전체 펼치기 보강: yt-dlp {len(result.urls)}개 -> 전체 {len(fallback.urls)}개",
+                    )
+                    return fallback
+        return result
+
+    def _expand_playlist_with_ytdlp(self, url: str, *, output_dir: Path) -> PlaylistExpansionResult:
+        downloader = YTDLPDownloader(
+            DownloadConfig(
+                output_dir=output_dir,
+                cookie_file=_optional_path(self.cookie_file_input.text()),
+            )
+        )
+        return downloader.expand_playlist(url)
+
+    def _expand_playlist_with_ytmusicapi(self, url: str) -> PlaylistExpansionResult:
+        playlist_id = _youtube_playlist_id(url)
+        if not playlist_id:
+            raise ValueError("YouTube playlist ID를 찾을 수 없습니다.")
+        client = self._create_ytmusic_client()
+        playlist = client.get_playlist(playlist_id, limit=None)
+        tracks = playlist.get("tracks") if isinstance(playlist, dict) else None
+        if not isinstance(tracks, list):
+            raise ValueError("YouTube Music playlist tracks를 읽을 수 없습니다.")
+        urls: list[str] = []
+        skipped_count = 0
+        for track in tracks:
+            video_id = str(track.get("videoId") or "").strip() if isinstance(track, dict) else ""
+            if video_id:
+                urls.append(_ytmusic_track_url(video_id))
+            else:
+                skipped_count += 1
+        return PlaylistExpansionResult(urls=urls, skipped_count=skipped_count, expected_count=len(tracks))
+
+    def _create_ytmusic_client(self) -> Any:
+        from ytmusicapi import YTMusic
+
+        auth_path = _optional_path(self.auth_path_input.text())
+        if auth_path and auth_path.exists():
+            return YTMusic(str(auth_path))
+
+        cookie_file = _optional_path(self.cookie_file_input.text())
+        if cookie_file and cookie_file.exists():
+            from cueforge.metadata.ytmusic_auth import YTMusicCookieAuthConfig, build_ytmusic_cookie_auth
+
+            auth = build_ytmusic_cookie_auth(YTMusicCookieAuthConfig(cookie_file=cookie_file))
+            return YTMusic(auth)
+
+        return YTMusic()
 
     def _start_next(self) -> None:
         self._analyze_next()
@@ -900,11 +1272,20 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self._refresh_actions()
             return
-        for job_id in self.row_job_ids:
+        index = 0
+        while index < len(self.row_job_ids):
+            job_id = self.row_job_ids[index]
             job = self.jobs[job_id]
             if job.status == DownloadStatus.PENDING:
+                if _is_playlist_url(job.url):
+                    replacement_jobs = self._prepare_playlist_job_for_analysis(job)
+                    if not replacement_jobs:
+                        index += 1
+                        continue
+                    job = replacement_jobs[0]
                 self._run_worker(job, analyze_only=True)
                 return
+            index += 1
         self._refresh_actions()
 
     def _analyze_selected(self) -> None:
@@ -914,6 +1295,16 @@ class MainWindow(QMainWindow):
         job = self._selected_job()
         if not job or job.status not in _ANALYZABLE_STATUSES:
             self._refresh_actions()
+            return
+        if _is_playlist_url(job.url):
+            replacement_jobs = self._prepare_playlist_job_for_analysis(job)
+            if replacement_jobs:
+                first_job = replacement_jobs[0]
+                row = self.row_job_ids.index(first_job.id)
+                self.table.selectRow(row)
+                self._run_worker(first_job, analyze_only=True, continue_queue=False)
+            else:
+                self._refresh_actions()
             return
         self._prepare_job_retry(job, message="선택 항목 분석 시작")
         self._run_worker(job, analyze_only=True, continue_queue=False)
@@ -944,12 +1335,22 @@ class MainWindow(QMainWindow):
             self._refresh_actions()
             return
         retried = 0
-        for job in self.jobs.values():
+        for job in list(self.jobs.values()):
             if job.status != DownloadStatus.FAILED:
+                continue
+            if _is_playlist_url(job.url):
+                if self._prepare_playlist_job_for_analysis(job):
+                    retried += 1
+                continue
+            if self._prepare_playlist_job_for_analysis(job):
+                retried += 1
                 continue
             job.status = DownloadStatus.PENDING
             job.progress = 0.0
             job.error = ""
+            job.error_message = ""
+            job.error_category = ""
+            job.retry_count += 1
             self._update_row(job)
             self._append_log(job.id, "재시도를 위해 큐에 추가됨")
             retried += 1
@@ -965,18 +1366,122 @@ class MainWindow(QMainWindow):
         if not job or job.status not in {DownloadStatus.FAILED, DownloadStatus.CANCELED}:
             self._refresh_actions()
             return
+        if _is_playlist_url(job.url):
+            replacement_jobs = self._prepare_playlist_job_for_analysis(job)
+            if replacement_jobs:
+                first_job = replacement_jobs[0]
+                row = self.row_job_ids.index(first_job.id)
+                self.table.selectRow(row)
+                self._run_worker(first_job, analyze_only=True, continue_queue=False)
+            else:
+                self._refresh_actions()
+            return
         self._prepare_job_retry(job, message="선택 항목 재시도 시작")
         self._run_worker(job, analyze_only=True, continue_queue=False)
 
     def _prepare_job_retry(self, job: DownloadJob, *, message: str) -> None:
         _cleanup_temp_download(job)
+        fallback_url = _single_video_url_from_playlist_url(job.url)
+        if fallback_url:
+            self._append_log(job.id, f"플레이리스트 매개변수 제거: {fallback_url}")
+            job.url = fallback_url
+            job.platform = detect_source_platform(job.url).value
         job.status = DownloadStatus.PENDING
         job.progress = 0.0
         job.error = ""
+        job.error_message = ""
+        job.error_category = ""
+        job.retry_count += 1
         self._update_row(job)
         self._append_log(job.id, message)
 
+    def _prepare_playlist_job_for_analysis(self, job: DownloadJob) -> list[DownloadJob]:
+        if not _is_playlist_url(job.url):
+            return []
+        fallback_url = _single_video_url_from_playlist_url(job.url)
+        if fallback_url:
+            self._prepare_job_retry(job, message="플레이리스트 매개변수를 제거하고 분석 시작")
+            return [job]
+
+        row = self.row_job_ids.index(job.id)
+        self._append_log(job.id, "플레이리스트 분석 준비: 개별 항목으로 펼치는 중")
+        try:
+            result = self._expand_playlist(job.url, output_dir=job.output_dir)
+        except Exception as exc:
+            message = _playlist_expansion_failure_message(
+                job.url,
+                exc,
+                cookie_diagnostic=self._liked_music_cookie_diagnostic() if _is_liked_music_playlist(job.url) else "",
+            )
+            category, text = user_facing_error(message)
+            job.status = DownloadStatus.FAILED
+            job.error_category = category.value
+            job.error_message = message
+            job.error = text
+            self._update_row(job)
+            self._append_log(job.id, f"플레이리스트 펼치기 실패: {message}")
+            return []
+
+        urls = [url for url in _dedupe_preserving_order(result.urls) if not self._has_existing_url(url)]
+        if not urls:
+            message = "플레이리스트에서 새로 추가할 수 있는 항목이 없습니다."
+            job.status = DownloadStatus.FAILED
+            job.error_message = message
+            job.error = message
+            self._update_row(job)
+            self._append_log(job.id, message)
+            return []
+        if _is_incomplete_playlist_expansion(result):
+            message = _playlist_incomplete_message(job.url, result)
+            category, text = user_facing_error(message)
+            job.status = DownloadStatus.FAILED
+            job.error_category = category.value
+            job.error_message = message
+            job.error = text
+            self._update_row(job)
+            self._append_log(job.id, message)
+            return []
+
+        self._remove_job(job)
+        inserted: list[DownloadJob] = []
+        for offset, url in enumerate(urls):
+            new_job, _row = self._insert_job(
+                url,
+                output_dir=job.output_dir,
+                row=row + offset,
+                message="플레이리스트에서 큐에 추가됨",
+            )
+            inserted.append(new_job)
+        skipped = f", {result.skipped_count}개 건너뜀" if result.skipped_count else ""
+        self._append_log("system", f"플레이리스트 분석 준비 완료: {len(inserted)}개 추가{skipped}")
+        return inserted
+
+    def _prepare_playlist_job_retry(self, job: DownloadJob) -> list[DownloadJob]:
+        return self._prepare_playlist_job_for_analysis(job)
+
+    def _liked_music_cookie_diagnostic(self) -> str:
+        cookie_file = _optional_path(self.cookie_file_input.text())
+        if not cookie_file:
+            return "현재 설정에 쿠키 파일이 없습니다."
+        if not cookie_file.exists():
+            return "설정된 쿠키 파일을 찾을 수 없습니다."
+        try:
+            from cueforge.metadata.ytmusic_auth import YTMusicCookieAuthConfig, YTMusicCookieAuthError, build_ytmusic_cookie_auth
+
+            build_ytmusic_cookie_auth(YTMusicCookieAuthConfig(cookie_file=cookie_file))
+        except YTMusicCookieAuthError as exc:
+            return f"쿠키 파일은 설정됐지만 music.youtube.com 인증 쿠키를 만들 수 없습니다: {exc}"
+        except Exception as exc:
+            return f"쿠키 파일을 확인할 수 없습니다: {exc}"
+        return "쿠키 파일에 music.youtube.com 인증 쿠키는 있지만, 세션 만료 또는 계정 권한 문제일 수 있습니다."
+
     def _cancel_current_job(self) -> None:
+        if self.scheduler and self.scheduler.is_running():
+            self.cancel_requested = True
+            self.scheduler.cancel_all()
+            self._append_log("system", "실행 중인 작업 취소 요청됨")
+            self._refresh_actions()
+            return
         if not self.worker or not self.worker.isRunning():
             self._refresh_actions()
             return
@@ -1000,12 +1505,12 @@ class MainWindow(QMainWindow):
         self.save_settings()
         self.cancel_requested = False
         job.status = DownloadStatus.DOWNLOADING if approved_metadata else DownloadStatus.METADATA
+        job.platform = detect_source_platform(job.url).value
         self._update_row(job)
         self.worker_mode = ("analysis" if analyze_only else "download") if continue_queue else "single"
         self.worker = JobWorker(
             job,
-            cookie_browser=self.cookie_combo.currentData(),
-            unlock_browser_cookie_database=self.cookie_unlock_checkbox.isChecked(),
+            cookie_file=_optional_path(self.cookie_file_input.text()),
             ytmusic_auth_path=_optional_path(self.auth_path_input.text()),
             ffmpeg_location=_optional_path(self.ffmpeg_path_input.text()),
             acoustid_config=AcoustIDConfig(
@@ -1016,6 +1521,7 @@ class MainWindow(QMainWindow):
             verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
             approved_metadata=approved_metadata,
             analyze_only=analyze_only,
+            tag_semaphore=self.scheduler.tag_semaphore if self.scheduler else None,
         )
         self.worker.progress_changed.connect(self._on_progress)
         self.worker.metadata_ready.connect(self._on_metadata_ready)
@@ -1045,6 +1551,7 @@ class MainWindow(QMainWindow):
         job = self.jobs[job_id]
         job.selected_metadata = metadata
         job.candidates = candidates
+        job.candidate_summaries = []
         if review_state == ReviewState.AUTO_APPROVED:
             job.status = DownloadStatus.APPROVED
         else:
@@ -1055,6 +1562,8 @@ class MainWindow(QMainWindow):
         self._update_row(job)
         if review_state == ReviewState.AUTO_APPROVED:
             self._append_log(job_id, "메타데이터 자동 승인됨; 다운로드 준비 완료")
+            if self.scheduler and self.scheduler.is_running():
+                self.scheduler.enqueue_downloads([job])
         else:
             self._append_log(job_id, f"메타데이터 검수 필요: {_review_state_label(review_state)}")
         self._refresh_actions()
@@ -1064,16 +1573,22 @@ class MainWindow(QMainWindow):
         job.status = DownloadStatus.DONE
         job.progress = 100.0
         job.final_path = Path(final_path)
+        job.error = ""
+        job.error_message = ""
+        job.error_category = ""
         self._update_row(job)
         self._append_log(job_id, f"완료: {final_path}")
         self._refresh_actions()
 
     def _on_job_failed(self, job_id: str, error: str) -> None:
         job = self.jobs[job_id]
+        category, friendly = user_facing_error(error)
         job.status = DownloadStatus.FAILED
-        job.error = error
+        job.error = friendly
+        job.error_message = str(error)
+        job.error_category = category.value
         self._update_row(job)
-        self._append_log(job_id, f"실패: {error}")
+        self._append_log(job_id, f"실패: {friendly}")
         self._refresh_actions()
 
     def _on_job_canceled(self, job_id: str) -> None:
@@ -1081,6 +1596,8 @@ class MainWindow(QMainWindow):
         job.status = DownloadStatus.CANCELED
         job.progress = 0.0
         job.error = ""
+        job.error_message = ""
+        job.error_category = ""
         self.worker_mode = "canceled"
         self._update_row(job)
         self._append_log(job_id, "작업이 취소됨")
@@ -1104,6 +1621,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "트랙 없음", "승인하기 전에 검수 탭에서 트랙을 로드하세요.")
             return
         metadata = self._metadata_from_review_fields(job.selected_metadata)
+        if not metadata.is_minimum_viable():
+            QMessageBox.warning(self, "필수 태그 누락", "제목과 아티스트를 입력한 뒤 승인하세요.")
+            return
         job.selected_metadata = metadata
         job.status = DownloadStatus.APPROVED
         self._update_row(job)
@@ -1141,18 +1661,30 @@ class MainWindow(QMainWindow):
         self._refresh_actions()
 
     def _remove_selected(self) -> None:
-        row = self.table.currentRow()
-        if row < 0:
+        jobs = self._selected_jobs()
+        if not jobs:
             return
-        job_id = self.row_job_ids[row]
-        job = self.jobs[job_id]
-        if job.status in {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}:
+        removable = [job for job in jobs if job.status not in _ACTIVE_STATUSES]
+        active_count = len(jobs) - len(removable)
+        if not removable:
             QMessageBox.warning(self, "삭제할 수 없음", "실행 중인 작업은 삭제할 수 없습니다.")
             return
+        for job in sorted(removable, key=lambda item: self.row_job_ids.index(item.id), reverse=True):
+            self._remove_job(job)
+        if active_count:
+            self._append_log("system", f"실행 중인 작업 {active_count}개는 삭제하지 않음")
+        self._refresh_actions()
+
+    def _remove_job(self, job: DownloadJob) -> None:
+        job_id = job.id
+        if job_id not in self.jobs:
+            return
+        row = self.row_job_ids.index(job_id)
         _cleanup_temp_download(job)
         self.table.removeRow(row)
         self.row_job_ids.pop(row)
         del self.jobs[job_id]
+        self.job_store.delete_job(job_id)
         if self.active_review_job_id == job_id:
             self.active_review_job_id = None
             next_review = self._next_review_job()
@@ -1160,7 +1692,6 @@ class MainWindow(QMainWindow):
                 self._load_job_for_review(next_review, select_row=False)
             else:
                 self._clear_review_panel()
-        self._refresh_actions()
 
     def _load_selected_job(self) -> None:
         job = self._selected_job()
@@ -1391,6 +1922,8 @@ class MainWindow(QMainWindow):
             album_artist=self.review_fields["album_artist"].text().strip(),
             genre=self.review_fields["genre"].text().strip(),
             release_date=self.review_fields["release_date"].text().strip(),
+            track_number=base.track_number,
+            disc_number=base.disc_number,
             label=self.review_fields["label"].text().strip(),
             isrc=self.review_fields["isrc"].text().strip(),
             cover_url=cover_url,
@@ -1403,6 +1936,7 @@ class MainWindow(QMainWindow):
 
     def _update_row(self, job: DownloadJob) -> None:
         row = self.row_job_ids.index(job.id)
+        job.platform = job.platform or detect_source_platform(job.url).value
         values = (
             _download_status_label(job.status),
             f"{job.progress:.0f}%",
@@ -1414,12 +1948,22 @@ class MainWindow(QMainWindow):
         )
         for col, value in enumerate(values):
             self.table.item(row, col).setText(value)
+        self._store_job(job)
+        self._refresh_pipeline_board()
+        self._refresh_history()
 
     def _selected_job(self) -> DownloadJob | None:
         row = self.table.currentRow()
         if row < 0 or row >= len(self.row_job_ids):
             return None
         return self.jobs[self.row_job_ids[row]]
+
+    def _selected_jobs(self) -> list[DownloadJob]:
+        selection = self.table.selectionModel()
+        rows = sorted({index.row() for index in selection.selectedRows()}) if selection else []
+        if not rows and 0 <= self.table.currentRow() < len(self.row_job_ids):
+            rows = [self.table.currentRow()]
+        return [self.jobs[self.row_job_ids[row]] for row in rows if 0 <= row < len(self.row_job_ids)]
 
     def _active_review_job(self) -> DownloadJob | None:
         if self.active_review_job_id:
@@ -1451,15 +1995,304 @@ class MainWindow(QMainWindow):
         self.table.selectRow(row)
         self.table.blockSignals(False)
 
+    def _scheduler_limits(self) -> SchedulerLimits:
+        return SchedulerLimits(
+            metadata=self.metadata_parallel_spin.value(),
+            download=self.download_parallel_spin.value(),
+            tagging=self.tagging_parallel_spin.value(),
+        ).normalized()
+
+    def _start_pipeline(self) -> None:
+        self.save_settings()
+        self._schedule_pending_analysis()
+        self._schedule_approved_downloads()
+
+    def _schedule_pending_analysis(self) -> None:
+        if not self.scheduler:
+            return
+        jobs: list[DownloadJob] = []
+        for job_id in list(self.row_job_ids):
+            job = self.jobs.get(job_id)
+            if not job or job.status != DownloadStatus.PENDING:
+                continue
+            replacement_jobs = self._prepare_playlist_job_for_analysis(job)
+            jobs.extend(replacement_jobs or ([job] if job.status == DownloadStatus.PENDING else []))
+        self.scheduler.enqueue_analysis(jobs)
+        self._refresh_actions()
+
+    def _schedule_approved_downloads(self) -> None:
+        if not self.scheduler:
+            return
+        self.save_settings()
+        jobs = [self.jobs[job_id] for job_id in self.row_job_ids if self.jobs[job_id].status == DownloadStatus.APPROVED]
+        self.scheduler.enqueue_downloads(jobs)
+        self._refresh_actions()
+
+    def _create_scheduled_worker(
+        self,
+        job: DownloadJob,
+        stage: str,
+        tag_semaphore: threading.Semaphore,
+    ) -> JobWorker:
+        self.cancel_requested = False
+        approved_metadata = job.selected_metadata if stage == "download" else None
+        job.status = DownloadStatus.DOWNLOADING if approved_metadata else DownloadStatus.METADATA
+        job.platform = detect_source_platform(job.url).value
+        self._update_row(job)
+        worker = JobWorker(
+            job,
+            cookie_file=_optional_path(self.cookie_file_input.text()),
+            ytmusic_auth_path=_optional_path(self.auth_path_input.text()),
+            ffmpeg_location=_optional_path(self.ffmpeg_path_input.text()),
+            acoustid_config=AcoustIDConfig(
+                client_key=self.acoustid_key_input.text().strip(),
+                fpcalc_path=_optional_path(self.fpcalc_path_input.text()),
+            ),
+            audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
+            verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
+            approved_metadata=approved_metadata,
+            analyze_only=stage == "metadata",
+            tag_semaphore=tag_semaphore,
+        )
+        worker.progress_changed.connect(self._on_progress)
+        worker.metadata_ready.connect(self._on_metadata_ready)
+        worker.job_done.connect(self._on_job_done)
+        worker.job_failed.connect(self._on_job_failed)
+        worker.job_canceled.connect(self._on_job_canceled)
+        worker.log_message.connect(self._append_log)
+        return worker
+
+    def _on_scheduled_job_started(self, job_id: str, stage: str) -> None:
+        self._record_event(job_id, "started", f"{stage} 작업 시작")
+        self._refresh_actions()
+
+    def _on_scheduler_idle(self) -> None:
+        self.cancel_requested = False
+        self._refresh_actions()
+
+    def _work_running(self) -> bool:
+        legacy_running = bool(self.worker and self.worker.isRunning())
+        scheduler_running = bool(self.scheduler and self.scheduler.is_running())
+        return legacy_running or scheduler_running
+
+    def _cancel_all_work(self) -> None:
+        if self.scheduler and self.scheduler.is_running():
+            self.scheduler.cancel_all()
+        if self.worker and self.worker.isRunning():
+            cancel = getattr(self.worker, "cancel", None)
+            if callable(cancel):
+                cancel()
+            elif hasattr(self.worker, "requestInterruption"):
+                self.worker.requestInterruption()
+            else:
+                self.worker = None
+        self.cancel_requested = True
+
+    def _wait_for_workers(self, timeout_ms: int) -> None:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while time.monotonic() < deadline and self._work_running():
+            QApplication.processEvents()
+            time.sleep(0.05)
+
+    def _stop_cover_preview_workers(self) -> None:
+        for worker in list(self._cover_preview_workers):
+            if worker.isRunning():
+                worker.requestInterruption()
+                worker.wait(500)
+            worker.deleteLater()
+        self._cover_preview_workers.clear()
+
+    def _store_job(self, job: DownloadJob) -> None:
+        try:
+            self.job_store.upsert_job(job)
+        except Exception as exc:
+            self.log.appendPlainText(f"[store] 저장 실패: {exc}")
+
+    def _record_event(self, job_id: str, event_type: str, message: str, category: str = "") -> None:
+        if job_id not in self.jobs:
+            return
+        try:
+            self.job_store.record_event(JobEvent(job_id=job_id, event_type=event_type, category=category, message=message))
+        except Exception as exc:
+            self.log.appendPlainText(f"[store] 이벤트 저장 실패: {exc}")
+
+    def _load_jobs_from_store(self) -> None:
+        try:
+            stored_jobs = self.job_store.load_jobs()
+        except Exception as exc:
+            self.log.appendPlainText(f"[store] 이력 로드 실패: {exc}")
+            return
+        for job in stored_jobs:
+            if job.id in self.jobs:
+                continue
+            self.jobs[job.id] = job
+            self.row_job_ids.append(job.id)
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            for col in range(len(self.COLUMNS)):
+                self.table.setItem(row, col, QTableWidgetItem(""))
+            self._update_row(job)
+        self._refresh_actions()
+
+    def _refresh_pipeline_board(self) -> None:
+        if not self.pipeline_tables or self._loading_pipeline:
+            return
+        self._loading_pipeline = True
+        try:
+            for table in self.pipeline_tables.values():
+                table.setRowCount(0)
+            for job_id in self.row_job_ids:
+                job = self.jobs[job_id]
+                status = _pipeline_status(job.status)
+                table = self.pipeline_tables.get(status)
+                if not table:
+                    continue
+                row = table.rowCount()
+                table.insertRow(row)
+                track_label = job.selected_metadata.title or _download_status_label(job.status)
+                if job.selected_metadata.artist:
+                    track_label = f"{job.selected_metadata.artist} - {track_label}"
+                values = (
+                    track_label,
+                    job.url,
+                )
+                for col, value in enumerate(values):
+                    item = QTableWidgetItem(str(value or ""))
+                    item.setData(Qt.ItemDataRole.UserRole, job.id)
+                    table.setItem(row, col, item)
+            for status, table in self.pipeline_tables.items():
+                table.parentWidget().setTitle(f"{_pipeline_status_label(status)} ({table.rowCount()})")
+        finally:
+            self._loading_pipeline = False
+
+    def _load_selected_pipeline_job(self) -> None:
+        if self._loading_pipeline:
+            return
+        job = self._selected_pipeline_job()
+        if not job:
+            return
+        self._select_job_row(job)
+        self._load_job_for_review(job, select_row=False)
+        self.pipeline_detail.setPlainText(self._job_detail_text(job))
+
+    def _selected_pipeline_job(self) -> DownloadJob | None:
+        for table in self.pipeline_tables.values():
+            row = table.currentRow()
+            if row < 0:
+                continue
+            item = table.item(row, 0)
+            if not item:
+                continue
+            job_id = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(job_id, str):
+                return self.jobs.get(job_id)
+        return None
+
+    def _refresh_history(self) -> None:
+        if self._loading_history:
+            return
+        self._loading_history = True
+        try:
+            history_jobs = [
+                self.jobs[job_id]
+                for job_id in self.row_job_ids
+                if self.jobs[job_id].status in _TERMINAL_STATUSES
+            ]
+            self.history_table.setRowCount(len(history_jobs))
+            for row, job in enumerate(history_jobs):
+                values = (
+                    _download_status_label(job.status),
+                    job.selected_metadata.title,
+                    job.selected_metadata.artist,
+                    job.error_category or job.error,
+                    str(job.final_path or ""),
+                )
+                for col, value in enumerate(values):
+                    item = QTableWidgetItem(str(value or ""))
+                    item.setData(Qt.ItemDataRole.UserRole, job.id)
+                    self.history_table.setItem(row, col, item)
+        finally:
+            self._loading_history = False
+
+    def _load_selected_history_job(self) -> None:
+        if self._loading_history:
+            return
+        row = self.history_table.currentRow()
+        if row < 0:
+            return
+        item = self.history_table.item(row, 0)
+        if not item:
+            return
+        job_id = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(job_id, str) and job_id in self.jobs:
+            self._load_job_for_review(self.jobs[job_id], select_row=False)
+
+    def _clear_history(self) -> None:
+        terminal_ids = [job_id for job_id in self.row_job_ids if self.jobs[job_id].status in _TERMINAL_STATUSES]
+        if not terminal_ids:
+            return
+        for job_id in terminal_ids:
+            row = self.row_job_ids.index(job_id)
+            self.table.removeRow(row)
+            self.row_job_ids.pop(row)
+            del self.jobs[job_id]
+        self.job_store.clear_history()
+        self._refresh_pipeline_board()
+        self._refresh_history()
+        self._refresh_actions()
+
+    def _job_detail_text(self, job: DownloadJob) -> str:
+        metadata = job.selected_metadata
+        lines = [
+            f"상태: {_download_status_label(job.status)}",
+            f"소스: {detect_source_platform(job.url).display_name}",
+            f"URL: {job.url}",
+            f"제목: {metadata.title}",
+            f"아티스트: {metadata.artist}",
+            f"앨범: {metadata.album}",
+            f"출력: {job.final_path or job.output_dir}",
+            f"재시도: {job.retry_count}",
+        ]
+        if job.error_category or job.error:
+            lines.append(f"오류: {job.error_category or 'unknown'}")
+            lines.append(job.error or action_hint(job.error_category))
+        events = self.job_store.list_events(job.id, limit=8)
+        if events:
+            lines.append("")
+            lines.append("최근 이벤트")
+            lines.extend(f"- {event.event_type}: {event.message}" for event in events)
+        return "\n".join(lines)
+
+    def _has_existing_url(self, url: str) -> bool:
+        return any(job.url == url for job in self.jobs.values())
+
+    def _should_add_duplicates(self, duplicates: list[str]) -> bool:
+        if QApplication.platformName() == "offscreen":
+            return False
+        text = "이미 큐 또는 이력에 있는 URL입니다. 다시 추가할까요?\n" + "\n".join(duplicates[:5])
+        result = QMessageBox.question(
+            self,
+            "중복 URL",
+            text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return result == QMessageBox.StandardButton.Yes
+
     def _refresh_actions(self) -> None:
-        running = bool(self.worker and self.worker.isRunning())
+        running = self._work_running()
         pending_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.PENDING)
+        metadata_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.METADATA)
         approved_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.APPROVED)
         review_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.REVIEW_REQUIRED)
+        downloading_count = sum(1 for job in self.jobs.values() if job.status in {DownloadStatus.DOWNLOADING, DownloadStatus.TAGGING})
+        done_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.DONE)
         failed_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.FAILED)
+        canceled_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.CANCELED)
         selected_job = self._selected_job()
         active_review = self._active_review_job()
         can_analyze = pending_count > 0 and not running
+        can_start_pipeline = (pending_count > 0 or approved_count > 0) and not running
         can_download = approved_count > 0 and not running
         can_retry = failed_count > 0 and not running
         can_approve = bool(active_review and active_review.status == DownloadStatus.REVIEW_REQUIRED)
@@ -1468,18 +2301,29 @@ class MainWindow(QMainWindow):
         can_analyze_selected = bool(selected_job and selected_job.status in _ANALYZABLE_STATUSES and not running)
         can_download_selected = bool(selected_job and selected_job.status == DownloadStatus.APPROVED and not running)
         can_retry_selected = bool(selected_job and selected_job.status in {DownloadStatus.FAILED, DownloadStatus.CANCELED} and not running)
-        can_remove_selected = bool(selected_job and selected_job.status not in _ACTIVE_STATUSES)
+        selected_jobs = self._selected_jobs()
+        can_remove_selected = any(job.status not in _ACTIVE_STATUSES for job in selected_jobs)
         can_cancel_current = running and not self.cancel_requested
         self._refresh_review_queue()
+        self._refresh_workflow_stage_labels(
+            pending_count=pending_count,
+            metadata_count=metadata_count,
+            review_count=review_count,
+            approved_count=approved_count,
+            downloading_count=downloading_count,
+            done_count=done_count,
+            failed_count=failed_count,
+            canceled_count=canceled_count,
+        )
 
         if self.start_action:
-            self.start_action.setEnabled(can_analyze)
+            self.start_action.setEnabled(can_start_pipeline)
         if self.download_action:
             self.download_action.setEnabled(can_download)
         if self.retry_action:
             self.retry_action.setEnabled(can_retry)
         if self.start_queue_button:
-            self.start_queue_button.setEnabled(can_analyze)
+            self.start_queue_button.setEnabled(can_start_pipeline)
         if self.download_approved_button:
             self.download_approved_button.setEnabled(can_download)
         if self.review_selected_button:
@@ -1500,23 +2344,31 @@ class MainWindow(QMainWindow):
             self.approve_button.setEnabled(can_approve)
         if self.reopen_review_button:
             self.reopen_review_button.setEnabled(can_move_active_to_review)
+        if self.pipeline_start_button:
+            self.pipeline_start_button.setEnabled((pending_count > 0 or approved_count > 0) and not running)
+        if self.pipeline_download_button:
+            self.pipeline_download_button.setEnabled(can_download)
+        if self.pipeline_retry_button:
+            self.pipeline_retry_button.setEnabled(can_retry)
+        if self.clear_history_button:
+            self.clear_history_button.setEnabled(any(job.status in _TERMINAL_STATUSES for job in self.jobs.values()))
         if self.tabs:
             self.tabs.setTabText(self.review_tab_index, f"검수 ({review_count})" if review_count else "검수")
 
         if running and review_count:
-            text = f"처리는 계속 진행 중입니다. {review_count}개 트랙은 메타데이터 검수가 필요합니다."
+            text = f"처리는 계속 진행 중입니다. 검수가 필요한 {review_count}개 트랙은 검수 탭에서 확인하세요."
         elif running:
             text = "현재 트랙을 처리 중입니다."
         elif approved_count and pending_count:
-            text = f"승인된 {approved_count}개 트랙은 다운로드 준비 완료, {pending_count}개 트랙은 아직 분석이 필요합니다."
+            text = f"{pending_count}개는 분석 대기, {approved_count}개는 다운로드 준비 완료입니다. 전체 처리 시작으로 이어서 진행할 수 있습니다."
         elif approved_count:
-            text = f"승인된 {approved_count}개 트랙이 다운로드 준비 완료 상태입니다."
+            text = f"{approved_count}개 트랙이 다운로드 준비 완료 상태입니다. 전체 처리 시작 또는 승인 항목 다운로드로 마무리하세요."
         elif review_count and pending_count:
-            text = f"{review_count}개 트랙은 검수가 필요하고, {pending_count}개 트랙은 처리 대기 중입니다."
+            text = f"{review_count}개는 검수가 필요하고 {pending_count}개는 분석 대기 중입니다. 검수와 처리를 병행할 수 있습니다."
         elif review_count:
             text = f"{review_count}개 트랙은 메타데이터 검수가 필요합니다."
         elif pending_count:
-            text = f"{pending_count}개 트랙이 준비되었습니다. 먼저 메타데이터를 분석하세요."
+            text = f"{pending_count}개 트랙이 추가되었습니다. 전체 처리 시작으로 분석을 시작하세요."
         elif failed_count:
             text = f"{failed_count}개 트랙이 실패했습니다. 실패 재시도로 다시 분석할 수 있습니다."
         elif self.jobs:
@@ -1525,6 +2377,39 @@ class MainWindow(QMainWindow):
             text = "URL을 추가한 뒤 큐를 처리하세요."
         self.queue_status_label.setText(text)
         self.dependency_status_label.setText(self._settings_status_text())
+
+    def _refresh_workflow_stage_labels(
+        self,
+        *,
+        pending_count: int,
+        metadata_count: int,
+        review_count: int,
+        approved_count: int,
+        downloading_count: int,
+        done_count: int,
+        failed_count: int,
+        canceled_count: int,
+    ) -> None:
+        if not self.workflow_stage_labels:
+            return
+        stage_values = {
+            "pending": ("추가", pending_count, "#f6f7f9", "#c8ccd2"),
+            "metadata": ("분석", metadata_count, "#e8f2ff", "#6aa6d8"),
+            "review": ("검수", review_count, "#fff4cc", "#d6a329"),
+            "approved": ("준비", approved_count, "#eaf7ee", "#5aa76a"),
+            "active": ("다운로드", downloading_count, "#edf0ff", "#7b86d8"),
+            "done": ("완료", done_count, "#e9f6f0", "#4f9d7a"),
+            "failed": ("실패", failed_count + canceled_count, "#ffecec", "#d66f6f"),
+        }
+        for key, (title, count, background, border) in stage_values.items():
+            label = self.workflow_stage_labels.get(key)
+            if not label:
+                continue
+            label.setText(f"{title}\n{count}")
+            label.setStyleSheet(
+                f"QLabel {{ border: 1px solid {border if count else '#c8ccd2'}; "
+                f"background: {background if count else '#f6f7f9'}; padding: 4px; }}"
+            )
 
     def _refresh_review_queue(self) -> None:
         review_jobs = [self.jobs[job_id] for job_id in self.row_job_ids if self.jobs[job_id].status == DownloadStatus.REVIEW_REQUIRED]
@@ -1553,6 +2438,10 @@ class MainWindow(QMainWindow):
         self._loading_review_queue = False
 
     def _on_tab_changed(self, index: int) -> None:
+        previous_index = self._last_tab_index
+        self._last_tab_index = index
+        if previous_index == self.settings_tab_index and index != self.settings_tab_index:
+            self.save_settings()
         if index != self.review_tab_index:
             return
         loaded_review = self._loaded_review_job()
@@ -1565,6 +2454,14 @@ class MainWindow(QMainWindow):
     def _append_log(self, job_id: str, message: str) -> None:
         short_id = job_id[:8]
         self.log.appendPlainText(f"[{short_id}] {message}")
+        event_type = _event_type_for_log(message)
+        if event_type:
+            category = self.jobs[job_id].error_category if job_id in self.jobs else ""
+            self._record_event(job_id, event_type, message, category)
+            if job_id in self.jobs and self.pipeline_detail.toPlainText():
+                active = self._active_review_job()
+                if active and active.id == job_id:
+                    self.pipeline_detail.setPlainText(self._job_detail_text(active))
 
     def _browse_output_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "출력 폴더", self.output_dir_input.text())
@@ -1575,6 +2472,11 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "YTMusic 인증 JSON", "", "JSON 파일 (*.json);;모든 파일 (*)")
         if path:
             self.auth_path_input.setText(path)
+
+    def _browse_cookie_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "쿠키 파일", "", "쿠키 파일 (*.txt *.cookies);;모든 파일 (*)")
+        if path:
+            self.cookie_file_input.setText(path)
 
     def _browse_ffmpeg(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "ffmpeg 실행 파일", "", "실행 파일 (*.exe);;모든 파일 (*)")
@@ -1769,6 +2671,24 @@ def _download_status_label(status: DownloadStatus | str) -> str:
     }.get(status, str(status))
 
 
+def _pipeline_status(status: DownloadStatus) -> DownloadStatus:
+    if status == DownloadStatus.TAGGING:
+        return DownloadStatus.DOWNLOADING
+    if status == DownloadStatus.CANCELED:
+        return DownloadStatus.FAILED
+    return status if status in _PIPELINE_STATUSES else DownloadStatus.PENDING
+
+
+def _pipeline_status_label(status: DownloadStatus) -> str:
+    if status == DownloadStatus.METADATA:
+        return "분석 중"
+    if status == DownloadStatus.DOWNLOADING:
+        return "다운로드/태깅 중"
+    if status == DownloadStatus.FAILED:
+        return "실패"
+    return _download_status_label(status)
+
+
 def _review_state_label(state: ReviewState | str) -> str:
     if isinstance(state, str) and state in ReviewState._value2member_map_:
         state = ReviewState(state)
@@ -1862,6 +2782,110 @@ _URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+", flags=re.IGNORECASE)
 _ADJACENT_URL_SEPARATOR_PATTERN = re.compile(r"(?<=[^\s,;])[,;](?=https?://)", flags=re.IGNORECASE)
 
 
+def _is_playlist_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.netloc.casefold()
+    query = parse_qs(parsed.query)
+    if "youtube.com" in host or "youtu.be" in host:
+        return bool(query.get("list")) or parsed.path.rstrip("/").endswith("/playlist")
+    if "soundcloud.com" in host:
+        return "/sets/" in parsed.path
+    return False
+
+
+def _is_liked_music_playlist(url: str) -> bool:
+    return _youtube_playlist_id(url) == "LM"
+
+
+def _is_youtube_music_playlist_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.netloc.casefold() == "music.youtube.com" and bool(_youtube_playlist_id(url))
+
+
+def _youtube_playlist_id(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.casefold()
+    if "youtube.com" not in host and "youtu.be" not in host:
+        return ""
+    return (parse_qs(parsed.query).get("list") or [""])[0].strip()
+
+
+def _ytmusic_track_url(video_id: str) -> str:
+    return f"https://music.youtube.com/watch?v={video_id}"
+
+
+def _is_incomplete_playlist_expansion(result: PlaylistExpansionResult) -> bool:
+    if result.expected_count is None:
+        return False
+    return len(result.urls) + result.skipped_count < result.expected_count
+
+
+def _is_youtube_playlist_url(url: str) -> bool:
+    return bool(_youtube_playlist_id(url))
+
+
+def _should_retry_with_ytmusicapi_playlist_expansion(url: str, result: PlaylistExpansionResult) -> bool:
+    if not _is_youtube_playlist_url(url):
+        return False
+    if _is_incomplete_playlist_expansion(result):
+        return True
+    return _is_youtube_music_playlist_url(url) and len(result.urls) == 100 and result.expected_count in (None, 100)
+
+
+def _playlist_incomplete_message(url: str, result: PlaylistExpansionResult) -> str:
+    expected = result.expected_count if result.expected_count is not None else "알 수 없음"
+    extracted = len(result.urls) + result.skipped_count
+    if _is_youtube_music_playlist_url(url):
+        return (
+            "YouTube Music 플레이리스트 전체를 가져오지 못했습니다. "
+            f"확인된 항목 {expected}개 중 {extracted}개만 읽었습니다. "
+            "쿠키 파일이 최신 로그인 세션인지 확인한 뒤 다시 시도하세요."
+        )
+    return (
+        "yt-dlp가 플레이리스트 전체를 가져오지 못했습니다. "
+        f"확인된 항목 {expected}개 중 {extracted}개만 읽었습니다. "
+        "YouTube playlist pagination 제한/변경으로 보이며, yt-dlp 업데이트 후 다시 시도하세요."
+    )
+
+
+def _playlist_expansion_failure_message(url: str, error: object, *, cookie_diagnostic: str = "") -> str:
+    message = str(error or "").strip() or "알 수 없는 오류"
+    if _is_liked_music_playlist(url):
+        parts = [
+            f"{message}\n"
+            "YouTube Music 좋아요 표시한 음악(LM)은 로그인 세션이 담긴 Netscape 형식 cookies.txt가 필요합니다. "
+            "설정의 쿠키 파일을 최신 파일로 지정한 뒤 playlist URL을 다시 추가하세요."
+        ]
+        if cookie_diagnostic:
+            parts.append(cookie_diagnostic)
+        return "\n".join(parts)
+    return message
+
+
+def _single_video_url_from_playlist_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.casefold()
+    query = parse_qs(parsed.query)
+    video_id = (query.get("v") or [""])[0].strip()
+    if not video_id and "youtu.be" in host:
+        video_id = parsed.path.strip("/").split("/")[0]
+    if not video_id or ("youtube.com" not in host and "youtu.be" not in host):
+        return ""
+    fallback_host = "music.youtube.com" if host == "music.youtube.com" else "www.youtube.com"
+    return urlunparse((parsed.scheme or "https", fallback_host, "/watch", "", urlencode({"v": video_id}), ""))
+
+
+def _dedupe_preserving_order(urls: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for url in urls:
+        if url in seen:
+            continue
+        deduped.append(url)
+        seen.add(url)
+    return deduped
+
+
 def _extract_urls(value: str) -> list[str]:
     normalized = _ADJACENT_URL_SEPARATOR_PATTERN.sub(" ", value.strip())
     matches = _URL_PATTERN.findall(normalized)
@@ -1872,11 +2896,23 @@ def _extract_urls(value: str) -> list[str]:
     for candidate in candidates:
         url = candidate.strip().strip("<>()[]{}\"'")
         url = url.rstrip(".,;")
-        if not url or url in seen:
+        parsed = urlparse(url)
+        if not url or parsed.scheme not in {"http", "https"} or url in seen:
             continue
         urls.append(url)
         seen.add(url)
     return urls
+
+
+def _supported_urls(urls: list[str]) -> tuple[list[str], list[str]]:
+    supported: list[str] = []
+    unsupported: list[str] = []
+    for url in urls:
+        if detect_source_platform(url) in {SourcePlatform.YOUTUBE, SourcePlatform.YOUTUBE_MUSIC, SourcePlatform.SOUNDCLOUD}:
+            supported.append(url)
+        else:
+            unsupported.append(url)
+    return supported, unsupported
 
 
 def _metadata_conflicts(left: TrackMetadata, right: TrackMetadata) -> bool:
@@ -1899,10 +2935,15 @@ def _settings_bool(value: Any, *, default: bool) -> bool:
     return default
 
 
-def _cookie_browser_value(value: Any) -> str:
-    if isinstance(value, CookieBrowser):
-        return value.value
-    return str(value or "")
+def _settings_int(value: Any, *, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return str(left.expanduser()).casefold().rstrip("\\/") == str(right.expanduser()).casefold().rstrip("\\/")
 
 
 def _review_state_value(value: ReviewState | str) -> ReviewState:
@@ -1911,3 +2952,30 @@ def _review_state_value(value: ReviewState | str) -> ReviewState:
     if isinstance(value, str) and value in ReviewState._value2member_map_:
         return ReviewState(value)
     return ReviewState.REVIEW_REQUIRED
+
+
+def _event_type_for_log(message: str) -> str:
+    if message.startswith("큐에 추가"):
+        return "queued"
+    if "메타데이터 자동 승인" in message:
+        return "approved_auto"
+    if "메타데이터 승인" in message:
+        return "approved"
+    if "검수 필요" in message:
+        return "review_required"
+    if message.startswith("완료:"):
+        return "done"
+    if message.startswith("실패:"):
+        return "failed"
+    if "취소" in message:
+        return "canceled"
+    if "재시도" in message:
+        return "retry"
+    return ""
+
+
+def _job_store_path_for_settings(settings: QSettings) -> Path | None:
+    file_name = settings.fileName()
+    if file_name:
+        return Path(file_name).with_suffix(".jobs.sqlite")
+    return None

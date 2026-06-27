@@ -14,6 +14,7 @@ from platformdirs import user_cache_path
 from cueforge.metadata.matching import score_candidate
 from cueforge.metadata.normalize import clean_metadata
 from cueforge.models import MetadataCandidate, TrackMetadata
+from cueforge.rate_limit import ProviderRateLimiter, global_rate_limiter
 
 
 class HTTPSessionLike(Protocol):
@@ -47,6 +48,7 @@ class MusicBrainzProvider:
         session: HTTPSessionLike | None = None,
         sleeper: Any = time.sleep,
         clock: Any = time.monotonic,
+        rate_limiter: ProviderRateLimiter | None = None,
     ) -> None:
         self.config = config or MusicBrainzConfig()
         self.session = session or self._create_session()
@@ -54,7 +56,7 @@ class MusicBrainzProvider:
         self.cache = _JsonCache(self.config.cache_path or user_cache_path("CueForge") / "musicbrainz.sqlite")
         self._sleeper = sleeper
         self._clock = clock
-        self._last_request_at = 0.0
+        self._rate_limiter = rate_limiter or global_rate_limiter("musicbrainz")
 
     def lookup(self, reference: TrackMetadata, *, duration_ms: int | None = None) -> list[MetadataCandidate]:
         if not reference.title:
@@ -78,17 +80,13 @@ class MusicBrainzProvider:
         if cached is not None:
             return cached
 
-        now = self._clock()
-        wait = self.config.rate_limit_seconds - (now - self._last_request_at)
-        if wait > 0:
-            self._sleeper(wait)
+        self._rate_limiter.wait(self.config.rate_limit_seconds, sleeper=self._sleeper, clock=self._clock)
         response = self.session.get(
             f"{self.API_ROOT}/{resource}",
             params=params,
             timeout=self.config.timeout_seconds,
         )
         response.raise_for_status()
-        self._last_request_at = self._clock()
         payload = response.json()
         if not isinstance(payload, dict):
             payload = {}
@@ -223,4 +221,3 @@ def _to_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-

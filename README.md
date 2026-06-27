@@ -29,7 +29,7 @@ python -m venv .venv
 ```
 
 The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings.
-For account-scoped YouTube access, select Chrome or Edge browser cookies in Settings. The same browser cookie selection is reused for YouTube Music metadata when the browser has a valid `music.youtube.com` session cookie, so manual YTMusic auth JSON is only an advanced fallback. If yt-dlp cannot copy the locked Chromium cookie database, the optional Chrome/Edge cookie unlock setting applies bundled logic adapted from `seproDev/yt-dlp-ChromeCookieUnlock`; keep it off unless that specific cookie-copy failure occurs because it may close the browser process holding the database lock.
+For account-scoped YouTube access, Settings can point CueForge at a Netscape-format cookies.txt file. CueForge passes that file to yt-dlp and reuses it for YouTube Music metadata. Direct browser-cookie extraction is intentionally not exposed because Chromium-based browser cookie decryption is unreliable on current Windows builds. Manual YTMusic auth JSON remains available as an advanced fallback.
 Use `python -m cueforge --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
 
 ## Windows Packaging

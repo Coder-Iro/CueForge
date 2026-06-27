@@ -3,13 +3,19 @@ from pathlib import Path
 from mutagen.id3 import ID3
 
 from cueforge.models import TrackMetadata
-from cueforge.tags import RekordboxTagWriter, safe_track_filename
+from cueforge.tags import MAX_COVER_BYTES, RekordboxTagWriter, safe_track_filename
 
 
 def test_safe_track_filename_removes_windows_invalid_chars() -> None:
     filename = safe_track_filename(TrackMetadata(artist='A/B', title='T: "Mix"'))
 
     assert filename == "A_B - T_ _Mix_.mp3"
+
+
+def test_safe_track_filename_limits_length() -> None:
+    long_name = safe_track_filename(TrackMetadata(artist="A" * 300, title="Title"))
+
+    assert len(long_name) <= 184
 
 
 def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
@@ -72,3 +78,23 @@ def test_writer_skips_non_image_cover_response(tmp_path: Path) -> None:
     assert not tags.getall("APIC")
     assert "cover" in result.skipped_fields
     assert result.warnings == ("cover fetch returned non-image content type: text/html",)
+
+
+def test_writer_skips_oversized_cover_response(tmp_path: Path) -> None:
+    target = tmp_path / "track.mp3"
+    target.write_bytes(b"")
+    writer = RekordboxTagWriter(cover_fetcher=lambda url: (b"x" * (MAX_COVER_BYTES + 1), "image/jpeg"))
+
+    result = writer.write(
+        target,
+        TrackMetadata(
+            title="Song",
+            artist="Artist",
+            cover_url="https://example.com/cover.jpg",
+        ),
+    )
+
+    tags = ID3(target)
+    assert not tags.getall("APIC")
+    assert "cover" in result.skipped_fields
+    assert result.warnings == ("cover fetch returned image larger than 8 MiB",)

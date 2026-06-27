@@ -2,16 +2,27 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QRect, QSettings, Qt
+from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, Qt
 from PySide6.QtWidgets import QApplication
 
-from cueforge.gui.main_window import MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls
+from cueforge.download import PlaylistExpansionResult
+from cueforge.gui.main_window import MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls, _supported_urls
 from cueforge.models import DownloadStatus, MetadataCandidate, TrackMetadata
 from cueforge.runtime import DependencyStatus
 
 
 def _test_settings(tmp_path) -> QSettings:
     return QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+
+
+class _FakeYTMusicPlaylistClient:
+    def __init__(self, *, track_count: int) -> None:
+        self.track_count = track_count
+
+    def get_playlist(self, playlist_id: str, limit: int | None = 100) -> dict:
+        assert playlist_id == "PLBIG"
+        assert limit is None
+        return {"tracks": [{"videoId": f"ytmusic-{index}"} for index in range(self.track_count)]}
 
 
 def test_main_window_can_queue_url(tmp_path) -> None:
@@ -53,6 +64,244 @@ def test_main_window_can_queue_multiple_pasted_urls(tmp_path) -> None:
         assert window.table.item(2, 3).text() == "https://soundcloud.com/artist/track"
         assert window.table.item(3, 3).text() == "https://music.youtube.com/watch?v=abc"
         assert window.queue_status_label.text().startswith("4개 트랙")
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_queues_playlist_without_expanding(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    calls: list[str] = []
+
+    def expand_playlist(url: str) -> PlaylistExpansionResult:
+        calls.append(url)
+        return PlaylistExpansionResult(
+            urls=[
+                "https://www.youtube.com/watch?v=abc",
+                "https://www.youtube.com/watch?v=def",
+            ],
+            skipped_count=1,
+        )
+
+    window = MainWindow(settings=_test_settings(tmp_path), playlist_expander=expand_playlist)
+    try:
+        window.url_input.setText("https://www.youtube.com/playlist?list=PL123")
+        window._add_url()
+
+        assert calls == []
+        assert window.table.rowCount() == 1
+        assert window.table.item(0, 3).text() == "https://www.youtube.com/playlist?list=PL123"
+        assert window.queue_status_label.text().startswith("1개 트랙")
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_flattens_playlist_when_analysis_starts(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    calls: list[str] = []
+    analyzed: list[str] = []
+
+    def expand_playlist(url: str) -> PlaylistExpansionResult:
+        calls.append(url)
+        return PlaylistExpansionResult(
+            urls=[
+                "https://www.youtube.com/watch?v=abc",
+                "https://www.youtube.com/watch?v=def",
+            ],
+            skipped_count=1,
+        )
+
+    window = MainWindow(settings=_test_settings(tmp_path), playlist_expander=expand_playlist)
+    try:
+        window.url_input.setText("https://www.youtube.com/playlist?list=PL123")
+        window._add_url()
+
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, continue_queue=True):
+            analyzed.append(job.url)
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+        window._analyze_next()
+
+        assert calls == ["https://www.youtube.com/playlist?list=PL123"]
+        assert analyzed == ["https://www.youtube.com/watch?v=abc"]
+        assert window.table.rowCount() == 2
+        assert window.table.item(0, 3).text() == "https://www.youtube.com/watch?v=abc"
+        assert window.table.item(1, 3).text() == "https://www.youtube.com/watch?v=def"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_replaces_existing_playlist_job_on_retry(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    def expand_playlist(url: str) -> PlaylistExpansionResult:
+        assert url == "https://music.youtube.com/playlist?list=LM"
+        return PlaylistExpansionResult(
+            urls=[
+                "https://music.youtube.com/watch?v=abc",
+                "https://music.youtube.com/watch?v=def",
+            ],
+        )
+
+    window = MainWindow(settings=_test_settings(tmp_path), playlist_expander=expand_playlist)
+    try:
+        playlist_job, _row = window._insert_job("https://music.youtube.com/playlist?list=LM", output_dir=tmp_path)
+        playlist_job.status = DownloadStatus.FAILED
+        window._update_row(playlist_job)
+
+        replacement_jobs = window._prepare_playlist_job_for_analysis(playlist_job)
+
+        assert playlist_job.id not in window.jobs
+        assert [job.url for job in replacement_jobs] == [
+            "https://music.youtube.com/watch?v=abc",
+            "https://music.youtube.com/watch?v=def",
+        ]
+        assert window.table.rowCount() == 2
+        assert window.table.item(0, 3).text() == "https://music.youtube.com/watch?v=abc"
+        assert window.table.item(1, 3).text() == "https://music.youtube.com/watch?v=def"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_liked_music_playlist_failure_mentions_cookie_file(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    def expand_playlist(url: str) -> PlaylistExpansionResult:
+        raise RuntimeError("ERROR: [youtube:tab] LM: YouTube said: The playlist does not exist.")
+
+    window = MainWindow(settings=_test_settings(tmp_path), playlist_expander=expand_playlist)
+    try:
+        playlist_job, _row = window._insert_job("https://music.youtube.com/playlist?list=LM", output_dir=tmp_path)
+        playlist_job.status = DownloadStatus.FAILED
+        window._update_row(playlist_job)
+
+        replacement_jobs = window._prepare_playlist_job_for_analysis(playlist_job)
+
+        assert replacement_jobs == []
+        assert playlist_job.id in window.jobs
+        assert "좋아요 표시한 음악" in playlist_job.error
+        assert "cookies.txt" in playlist_job.error
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_liked_music_playlist_uses_ytdlp_expander(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    calls: list[str] = []
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        def expand_with_ytdlp(url: str, *, output_dir: object) -> PlaylistExpansionResult:
+            calls.append(url)
+            return PlaylistExpansionResult(urls=[f"https://music.youtube.com/watch?v=video-{index}" for index in range(483)])
+
+        window._expand_playlist_with_ytdlp = expand_with_ytdlp
+
+        result = window._expand_playlist("https://music.youtube.com/playlist?list=LM", output_dir=tmp_path)
+
+        assert calls == ["https://music.youtube.com/playlist?list=LM"]
+        assert len(result.urls) == 483
+        assert result.urls[0] == "https://music.youtube.com/watch?v=video-0"
+        assert result.urls[-1] == "https://music.youtube.com/watch?v=video-482"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_youtube_music_playlist_falls_back_when_ytdlp_result_count_is_100(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._expand_playlist_with_ytdlp = lambda url, output_dir: PlaylistExpansionResult(
+            urls=[f"https://music.youtube.com/watch?v=track-{index}" for index in range(100)]
+        )
+        window._create_ytmusic_client = lambda: _FakeYTMusicPlaylistClient(track_count=483)
+
+        result = window._expand_playlist("https://music.youtube.com/playlist?list=PLBIG", output_dir=tmp_path)
+
+        assert len(result.urls) == 483
+        assert result.urls[0] == "https://music.youtube.com/watch?v=ytmusic-0"
+        assert result.urls[-1] == "https://music.youtube.com/watch?v=ytmusic-482"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_regular_youtube_playlist_can_use_ytmusicapi_fallback_when_ytdlp_is_incomplete(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._expand_playlist_with_ytdlp = lambda url, output_dir: PlaylistExpansionResult(
+            urls=[f"https://www.youtube.com/watch?v=track-{index}" for index in range(100)],
+            expected_count=438,
+        )
+        window._create_ytmusic_client = lambda: _FakeYTMusicPlaylistClient(track_count=438)
+
+        result = window._expand_playlist("https://www.youtube.com/playlist?list=PLBIG", output_dir=tmp_path)
+
+        assert len(result.urls) == 438
+        assert result.urls[0] == "https://music.youtube.com/watch?v=ytmusic-0"
+        assert result.urls[-1] == "https://music.youtube.com/watch?v=ytmusic-437"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_keeps_incomplete_regular_youtube_playlist_as_failed(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    def expand_playlist(url: str) -> PlaylistExpansionResult:
+        return PlaylistExpansionResult(
+            urls=[f"https://www.youtube.com/watch?v=video-{index}" for index in range(100)],
+            expected_count=303,
+        )
+
+    window = MainWindow(settings=_test_settings(tmp_path), playlist_expander=expand_playlist)
+    try:
+        playlist_job, _row = window._insert_job("https://www.youtube.com/playlist?list=PLBIG", output_dir=tmp_path)
+
+        replacement_jobs = window._prepare_playlist_job_for_analysis(playlist_job)
+
+        assert replacement_jobs == []
+        assert playlist_job.id in window.jobs
+        assert playlist_job.status == DownloadStatus.FAILED
+        assert "303개 중 100개" in playlist_job.error
+        assert window.table.rowCount() == 1
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_does_not_analyze_original_playlist_after_expansion_failure(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    analyzed: list[str] = []
+
+    def expand_playlist(url: str) -> PlaylistExpansionResult:
+        return PlaylistExpansionResult(
+            urls=[f"https://www.youtube.com/watch?v=video-{index}" for index in range(100)],
+            expected_count=438,
+        )
+
+    window = MainWindow(settings=_test_settings(tmp_path), playlist_expander=expand_playlist)
+    try:
+        window._insert_job("https://www.youtube.com/playlist?list=PLBIG", output_dir=tmp_path)
+
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, continue_queue=True):
+            analyzed.append(job.url)
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+        window._analyze_next()
+
+        assert analyzed == []
+        job = next(iter(window.jobs.values()))
+        assert job.status == DownloadStatus.FAILED
+        assert "438개 중 100개" in job.error
     finally:
         window.close()
         app.processEvents()
@@ -173,12 +422,63 @@ def test_main_window_has_audio_recognition_settings(tmp_path) -> None:
     try:
         assert window.audio_recognition_checkbox.isChecked() is True
         assert window.verify_auto_approved_checkbox.isChecked() is False
-        assert window.cookie_unlock_checkbox.isChecked() is False
         window.acoustid_key_input.setText("client-key")
+        window.cookie_file_input.setText("C:\\cookies.txt")
         window.fpcalc_path_input.setText("C:\\tools\\fpcalc.exe")
 
         assert window.acoustid_key_input.text() == "client-key"
+        assert window.cookie_file_input.text() == "C:\\cookies.txt"
         assert window.fpcalc_path_input.text() == "C:\\tools\\fpcalc.exe"
+        assert "AcoustID 설정됨" in window.dependency_status_label.text()
+        assert "쿠키 파일 설정됨" in window.dependency_status_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_defaults_output_dir_to_user_downloads_cueforge(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    expected = tmp_path / "Downloads" / "CueForge"
+    monkeypatch.setattr("cueforge.gui.main_window.default_output_dir", lambda: expected)
+    monkeypatch.setattr("cueforge.gui.main_window.legacy_cwd_output_dir", lambda: tmp_path / "project" / "downloads")
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        assert window.output_dir_input.text() == str(expected)
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_migrates_legacy_cwd_download_default(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    legacy = tmp_path / "project" / "downloads"
+    expected = tmp_path / "Downloads" / "CueForge"
+    settings.setValue("paths/output_dir", str(legacy))
+    monkeypatch.setattr("cueforge.gui.main_window.default_output_dir", lambda: expected)
+    monkeypatch.setattr("cueforge.gui.main_window.legacy_cwd_output_dir", lambda: legacy)
+
+    window = MainWindow(settings=settings)
+    try:
+        assert window.output_dir_input.text() == str(expected)
+        assert settings.value("paths/output_dir") == str(expected)
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_keeps_custom_saved_output_dir(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    custom = tmp_path / "Music"
+    settings.setValue("paths/output_dir", str(custom))
+    monkeypatch.setattr("cueforge.gui.main_window.default_output_dir", lambda: tmp_path / "Downloads" / "CueForge")
+    monkeypatch.setattr("cueforge.gui.main_window.legacy_cwd_output_dir", lambda: tmp_path / "project" / "downloads")
+
+    window = MainWindow(settings=settings)
+    try:
+        assert window.output_dir_input.text() == str(custom)
     finally:
         window.close()
         app.processEvents()
@@ -187,11 +487,12 @@ def test_main_window_has_audio_recognition_settings(tmp_path) -> None:
 def test_main_window_persists_beta_settings(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     settings = _test_settings(tmp_path)
+    settings.setValue("auth/cookie_browser", "chrome")
+    settings.setValue("auth/unlock_browser_cookie_database", True)
     window = MainWindow(settings=settings)
     try:
         window.output_dir_input.setText("D:\\Music")
-        window.cookie_combo.setCurrentIndex(1)
-        window.cookie_unlock_checkbox.setChecked(True)
+        window.cookie_file_input.setText("D:\\cookies.txt")
         window.verify_auto_approved_checkbox.setChecked(True)
         window.acoustid_key_input.setText("client-key")
         window.save_settings()
@@ -202,12 +503,34 @@ def test_main_window_persists_beta_settings(tmp_path) -> None:
     restored = MainWindow(settings=settings)
     try:
         assert restored.output_dir_input.text() == "D:\\Music"
-        assert restored.cookie_combo.currentData() == "chrome"
-        assert restored.cookie_unlock_checkbox.isChecked() is True
+        assert restored.cookie_file_input.text() == "D:\\cookies.txt"
         assert restored.verify_auto_approved_checkbox.isChecked() is True
         assert restored.acoustid_key_input.text() == "client-key"
+        assert settings.value("auth/cookie_browser") is None
+        assert settings.value("auth/unlock_browser_cookie_database") is None
     finally:
         restored.close()
+        app.processEvents()
+
+
+def test_settings_are_saved_when_leaving_settings_tab(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    window = MainWindow(settings=settings)
+    try:
+        window.tabs.setCurrentIndex(window.settings_tab_index)
+        window.acoustid_key_input.setText("client-key")
+        window.cookie_file_input.setText("D:\\cookies.txt")
+        window.metadata_parallel_spin.setValue(4)
+
+        window.tabs.setCurrentIndex(window.queue_tab_index)
+        app.processEvents()
+
+        assert settings.value("acoustid/client_key") == "client-key"
+        assert settings.value("auth/cookie_file") == "D:\\cookies.txt"
+        assert settings.value("scheduler/metadata_parallel") == 4
+    finally:
+        window.close()
         app.processEvents()
 
 
@@ -223,6 +546,23 @@ def test_first_run_opens_onboarding_and_can_complete(tmp_path) -> None:
         app.processEvents()
 
         assert settings.value("onboarding/completed") is True
+        assert window.onboarding_dialog is None
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_first_run_onboarding_skip_does_not_mark_completed(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    window = MainWindow(settings=settings)
+    try:
+        assert window.onboarding_dialog is not None
+
+        window.onboarding_dialog.reject()
+        app.processEvents()
+
+        assert settings.value("onboarding/completed", False) is False
         assert window.onboarding_dialog is None
     finally:
         window.close()
@@ -366,6 +706,86 @@ def test_extract_urls_handles_pasted_text_and_de_duplicates() -> None:
         "https://youtu.be/b",
         "https://music.youtube.com/watch?v=c&si=d",
     ]
+
+
+def test_extract_urls_ignores_plain_text_and_supported_urls_split() -> None:
+    urls = _extract_urls("hello https://example.com https://soundcloud.com/artist/track")
+
+    supported, unsupported = _supported_urls(urls)
+
+    assert urls == ["https://example.com", "https://soundcloud.com/artist/track"]
+    assert supported == ["https://soundcloud.com/artist/track"]
+    assert unsupported == ["https://example.com"]
+
+
+def test_duplicate_url_is_skipped_in_offscreen_mode(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+
+        assert window.table.rowCount() == 1
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_remove_selected_deletes_multiple_selected_queue_rows(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        for url in ("https://youtu.be/one", "https://youtu.be/two", "https://youtu.be/three"):
+            window.url_input.setText(url)
+            window._add_url()
+
+        selection = window.table.selectionModel()
+        flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+        selection.select(window.table.model().index(0, 0), flags)
+        selection.select(window.table.model().index(2, 0), flags)
+        app.processEvents()
+
+        window._refresh_actions()
+        assert window.remove_selected_button.isEnabled() is True
+
+        window._remove_selected()
+
+        assert window.table.rowCount() == 1
+        assert window.table.item(0, 3).text() == "https://youtu.be/two"
+        assert [job.url for job in window.jobs.values()] == ["https://youtu.be/two"]
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_pipeline_board_and_history_tab_reflect_job_states(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+
+        assert window.pipeline_tables[DownloadStatus.PENDING].rowCount() == 1
+
+        job.status = DownloadStatus.DONE
+        job.selected_metadata = TrackMetadata(title="Done Song", artist="Done Artist")
+        job.final_path = tmp_path / "Done Artist - Done Song.mp3"
+        window._update_row(job)
+
+        assert window.pipeline_tables[DownloadStatus.DONE].rowCount() == 1
+        assert window.history_table.rowCount() == 1
+        assert window.history_table.item(0, 1).text() == "Done Song"
+
+        window._clear_history()
+
+        assert window.table.rowCount() == 0
+        assert window.history_table.rowCount() == 0
+    finally:
+        window.close()
+        app.processEvents()
 
 
 def test_copy_diagnostics_puts_report_on_clipboard(tmp_path, monkeypatch) -> None:

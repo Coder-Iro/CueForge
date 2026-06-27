@@ -30,11 +30,9 @@ Before each commit, run the most relevant test command and check `git status --s
 
 ## YouTube Music Authentication
 
-The app can run without browser cookies for public URLs. For account-scoped access, select a browser in Settings so yt-dlp can use `cookiesfrombrowser`.
-
-If Chrome or Edge cookies fail with a locked cookie database error, enable "Use Chrome/Edge cookie unlock if the browser database is locked" in Settings. This is an opt-in Windows-only fallback based on `seproDev/yt-dlp-ChromeCookieUnlock`; it asks Windows Restart Manager to release the lock and may close the browser process holding that cookie database.
-
-The same browser cookie selection is also used for YouTube Music metadata. CueForge reads the `music.youtube.com` cookie header through yt-dlp's browser cookie extractor and, when `__Secure-3PAPISID` is present, builds the browser auth payload expected by `ytmusicapi`. Manual `ytmusicapi` browser auth JSON remains available as an advanced fallback; do not commit auth JSON, copied request headers, or browser cookies.
+The app can run without cookies for public URLs. For account-scoped access, select a Netscape-format cookies.txt file in Settings so yt-dlp can use `cookiefile`.
+CueForge reuses that cookie file for YouTube Music metadata. When the file contains a valid `music.youtube.com` `__Secure-3PAPISID` cookie, CueForge builds the browser auth payload expected by `ytmusicapi`.
+Direct browser-cookie extraction through yt-dlp `cookiesfrombrowser` is not exposed because Chromium-based browser cookie decryption is unreliable on current Windows builds. Manual `ytmusicapi` browser auth JSON remains available as an advanced fallback; do not commit auth JSON, copied request headers, or cookies.txt files.
 
 ## Audio Recognition
 
@@ -61,7 +59,7 @@ The review tab shows a review queue, candidate metadata rows, matched fields, ca
 
 ## Beta Diagnostics
 
-The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, browser cookies, cookie unlock state, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, cover source, and written/skipped tag fields.
+The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, cookie file status, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, cover source, and written/skipped tag fields.
 
 For packaged or local metadata smoke checks without audio download:
 

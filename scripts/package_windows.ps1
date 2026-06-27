@@ -118,7 +118,7 @@ try {
     if (-not $SkipInstaller) {
         $resolvedDependencyInno = Join-Path $Root "build\dependencies.windows-x64.iss"
         $resolvedDependencyJson = Join-Path $Root "build\dependencies.windows-x64.resolved.json"
-        Invoke-Native $Python @(
+        $dependencyResolveArgs = @(
             "scripts\resolve_winget_dependencies.py",
             "--config",
             "packaging\dependencies.windows-x64.json",
@@ -127,6 +127,11 @@ try {
             "--inno-out",
             $resolvedDependencyInno
         )
+        $dependencyLock = Join-Path $Root "packaging\dependencies.windows-x64.lock.json"
+        if (Test-Path -LiteralPath $dependencyLock) {
+            $dependencyResolveArgs += @("--lock-file", $dependencyLock)
+        }
+        Invoke-Native $Python $dependencyResolveArgs
 
         $dependencyReport = Join-Path $Root "release\CueForge-$Version-windows-x64-dependencies.json"
 

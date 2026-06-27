@@ -4,29 +4,20 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
-
-from cueforge.chrome_cookie_unlock import set_chromium_cookie_unlock_enabled
-
-
-class CookieBrowser(str, Enum):
-    CHROME = "chrome"
-    EDGE = "edge"
-    FIREFOX = "firefox"
+from urllib.parse import quote, urlparse
 
 
 @dataclass(slots=True)
 class DownloadConfig:
     output_dir: Path
     ffmpeg_location: Path | None = None
-    cookie_browser: CookieBrowser | str | None = None
+    cookie_file: Path | None = None
     allow_playlists: bool = False
     audio_bitrate_kbps: int = 320
     keep_original: bool = False
     allow_remote_js_components: bool = True
-    unlock_browser_cookie_database: bool = False
     quiet: bool = True
 
 
@@ -43,6 +34,13 @@ class DownloadProgress:
 class DownloadResult:
     path: Path
     info: dict[str, Any]
+
+
+@dataclass(slots=True)
+class PlaylistExpansionResult:
+    urls: list[str]
+    skipped_count: int = 0
+    expected_count: int | None = None
 
 
 class DownloadCanceled(RuntimeError):
@@ -77,14 +75,35 @@ class YTDLPDownloader:
 
     def fetch_info(self, url: str) -> dict[str, Any]:
         options = self._base_options()
-        try:
-            with self._ydl_factory(options) as ydl:
-                return ydl.extract_info(url, download=False)
-        except Exception as exc:
-            if not _should_retry_without_browser_cookies(exc, options):
-                raise
-            with self._ydl_factory(_without_browser_cookies(options)) as ydl:
-                return ydl.extract_info(url, download=False)
+        with self._ydl_factory(options) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    def expand_playlist(self, url: str) -> PlaylistExpansionResult:
+        options = self._base_options()
+        options.update(
+            {
+                "extract_flat": "in_playlist",
+                "ignoreerrors": True,
+                "noplaylist": False,
+                "playlist_items": None,
+                "playlistend": None,
+                "playliststart": 1,
+                "skip_download": True,
+            }
+        )
+        result = self._expand_playlist_with_options(url, options)
+        if _is_incomplete_playlist_result(result) and _is_youtube_playlist_url(url):
+            retry_options = dict(options)
+            retry_options["extractor_args"] = {"youtubetab": {"skip": ["webpage"]}}
+            retry_result = self._expand_playlist_with_options(url, retry_options)
+            if len(retry_result.urls) > len(result.urls):
+                return retry_result
+        return result
+
+    def _expand_playlist_with_options(self, url: str, options: dict[str, Any]) -> PlaylistExpansionResult:
+        with self._ydl_factory(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+        return _playlist_expansion_result(info, source_url=url)
 
     def download_audio(self, url: str) -> DownloadResult:
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -105,12 +124,7 @@ class YTDLPDownloader:
             }
         )
 
-        try:
-            return self._download_with_options(url, options)
-        except Exception as exc:
-            if not _should_retry_without_browser_cookies(exc, options):
-                raise
-            return self._download_with_options(url, _without_browser_cookies(options))
+        return self._download_with_options(url, options)
 
     def _download_with_options(self, url: str, options: dict[str, Any]) -> DownloadResult:
         with self._ydl_factory(options) as ydl:
@@ -127,12 +141,8 @@ class YTDLPDownloader:
         }
         if self.config.ffmpeg_location:
             options["ffmpeg_location"] = str(self.config.ffmpeg_location)
-        cookie_browser = _cookie_browser_value(self.config.cookie_browser)
-        set_chromium_cookie_unlock_enabled(
-            bool(cookie_browser and self.config.unlock_browser_cookie_database and _is_chromium_cookie_browser(cookie_browser))
-        )
-        if cookie_browser:
-            options["cookiesfrombrowser"] = (cookie_browser,)
+        if self.config.cookie_file:
+            options["cookiefile"] = str(self.config.cookie_file)
         if self.config.allow_remote_js_components:
             options["remote_components"] = ["ejs:github"]
         return options
@@ -175,26 +185,59 @@ class YTDLPDownloader:
         return YoutubeDL(options)
 
 
-def _cookie_browser_value(cookie_browser: CookieBrowser | str | None) -> str:
-    if isinstance(cookie_browser, CookieBrowser):
-        return cookie_browser.value
-    if isinstance(cookie_browser, str):
-        return cookie_browser.strip()
+def _playlist_expansion_result(info: dict[str, Any] | None, *, source_url: str) -> PlaylistExpansionResult:
+    if not isinstance(info, dict):
+        return PlaylistExpansionResult(urls=[], skipped_count=1)
+    entries = info.get("entries")
+    if not entries:
+        return PlaylistExpansionResult(urls=[])
+
+    urls: list[str] = []
+    skipped_count = 0
+    for entry in entries:
+        url = _playlist_entry_url(entry, source_url=source_url)
+        if url:
+            urls.append(url)
+        else:
+            skipped_count += 1
+    return PlaylistExpansionResult(urls=urls, skipped_count=skipped_count, expected_count=_playlist_expected_count(info))
+
+
+def _playlist_entry_url(entry: Any, *, source_url: str) -> str:
+    if not isinstance(entry, dict):
+        return ""
+
+    for key in ("webpage_url", "original_url", "url"):
+        value = str(entry.get(key) or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+
+    video_id = str(entry.get("id") or "").strip()
+    ie_key = str(entry.get("ie_key") or entry.get("extractor_key") or "").casefold()
+    if video_id and ("youtube" in ie_key or _is_youtube_playlist_url(source_url)):
+        return _youtube_watch_url(video_id, source_url=source_url)
     return ""
 
 
-def _is_chromium_cookie_browser(cookie_browser: str) -> bool:
-    return cookie_browser.casefold() in {"chrome", "edge", "chromium", "brave", "vivaldi", "opera"}
+def _youtube_watch_url(video_id: str, *, source_url: str) -> str:
+    host = "music.youtube.com" if urlparse(source_url).netloc.casefold() == "music.youtube.com" else "www.youtube.com"
+    return f"https://{host}/watch?v={quote(video_id, safe='')}"
 
 
-def _should_retry_without_browser_cookies(exc: Exception, options: dict[str, Any]) -> bool:
-    if not options.get("cookiesfrombrowser"):
+def _is_youtube_playlist_url(url: str) -> bool:
+    host = urlparse(url).netloc.casefold()
+    return "youtube.com" in host or "youtu.be" in host
+
+
+def _playlist_expected_count(info: dict[str, Any]) -> int | None:
+    for key in ("playlist_count", "n_entries"):
+        value = info.get(key)
+        if isinstance(value, int) and value >= 0:
+            return value
+    return None
+
+
+def _is_incomplete_playlist_result(result: PlaylistExpansionResult) -> bool:
+    if result.expected_count is None:
         return False
-    message = str(exc).casefold()
-    return "could not copy" in message and "cookie" in message and "database" in message
-
-
-def _without_browser_cookies(options: dict[str, Any]) -> dict[str, Any]:
-    fallback = dict(options)
-    fallback.pop("cookiesfrombrowser", None)
-    return fallback
+    return len(result.urls) + result.skipped_count < result.expected_count

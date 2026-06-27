@@ -31,6 +31,16 @@ from cueforge.models import TagWriteResult, TrackMetadata
 CoverFetcher = Callable[[str], tuple[bytes, str]]
 
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+MAX_FILENAME_STEM_LENGTH = 180
+MAX_COVER_BYTES = 8 * 1024 * 1024
 
 
 class RekordboxTagWriter:
@@ -89,7 +99,10 @@ class RekordboxTagWriter:
             try:
                 data, mime = self._cover_fetcher(metadata.cover_url)
                 mime = _normalize_cover_mime(mime, metadata.cover_url)
-                if data and _is_image_mime(mime):
+                if data and len(data) > MAX_COVER_BYTES:
+                    skipped.append("cover")
+                    warnings.append("cover fetch returned image larger than 8 MiB")
+                elif data and _is_image_mime(mime):
                     tags.setall("APIC:", [APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data)])
                     written.append("cover")
                 elif data:
@@ -118,6 +131,10 @@ def safe_track_filename(metadata: TrackMetadata, suffix: str = ".mp3") -> str:
     stem = f"{artist} - {title}"
     stem = INVALID_FILENAME_CHARS.sub("_", stem)
     stem = re.sub(r"\s+", " ", stem).strip(" .")
+    if stem.upper() in WINDOWS_RESERVED_NAMES:
+        stem = f"_{stem}"
+    if len(stem) > MAX_FILENAME_STEM_LENGTH:
+        stem = stem[:MAX_FILENAME_STEM_LENGTH].rstrip(" .")
     return f"{stem or 'track'}{suffix}"
 
 
@@ -158,6 +175,16 @@ def _fetch_cover(url: str) -> tuple[bytes, str]:
 
     response = requests.get(url, timeout=15)
     response.raise_for_status()
+    length = response.headers.get("Content-Length")
+    if length:
+        try:
+            if int(length) > MAX_COVER_BYTES:
+                raise ValueError("cover image is too large")
+        except ValueError as exc:
+            if str(exc) == "cover image is too large":
+                raise
+    if len(response.content) > MAX_COVER_BYTES:
+        raise ValueError("cover image is too large")
     mime = _normalize_cover_mime(response.headers.get("Content-Type", ""), url)
     return response.content, mime
 

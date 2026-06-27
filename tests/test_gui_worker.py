@@ -99,7 +99,6 @@ def test_worker_downloads_temp_audio_for_low_confidence_youtube(tmp_path: Path) 
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
     worker = JobWorker(
         job,
-        cookie_browser=None,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
@@ -124,12 +123,12 @@ def test_worker_downloads_temp_audio_for_low_confidence_youtube(tmp_path: Path) 
     assert FakeDownloader.downloads == [downloaded_path]
 
 
-def test_worker_passes_cookie_unlock_setting_to_downloader(tmp_path: Path) -> None:
+def test_worker_passes_cookie_file_to_downloader(tmp_path: Path) -> None:
+    cookie_file = tmp_path / "cookies.txt"
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
     worker = JobWorker(
         job,
-        cookie_browser="chrome",
-        unlock_browser_cookie_database=True,
+        cookie_file=cookie_file,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
@@ -137,8 +136,7 @@ def test_worker_passes_cookie_unlock_setting_to_downloader(tmp_path: Path) -> No
 
     downloader = worker._new_downloader(tmp_path)
 
-    assert downloader.config.cookie_browser == "chrome"
-    assert downloader.config.unlock_browser_cookie_database is True
+    assert downloader.config.cookie_file == cookie_file
 
 
 def test_worker_skips_auto_approved_audio_recognition_by_default(tmp_path: Path) -> None:
@@ -146,7 +144,6 @@ def test_worker_skips_auto_approved_audio_recognition_by_default(tmp_path: Path)
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
     worker = JobWorker(
         job,
-        cookie_browser=None,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
@@ -174,7 +171,6 @@ def test_worker_can_verify_auto_approved_metadata_with_acoustid(tmp_path: Path) 
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
     worker = JobWorker(
         job,
-        cookie_browser=None,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
@@ -206,7 +202,6 @@ def test_worker_refreshes_cover_art_after_audio_recognition(tmp_path: Path) -> N
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
     worker = JobWorker(
         job,
-        cookie_browser=None,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
@@ -234,7 +229,6 @@ def test_worker_accepts_resolver_cover_hook_after_audio_recognition(tmp_path: Pa
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
     worker = JobWorker(
         job,
-        cookie_browser=None,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
@@ -262,7 +256,6 @@ def test_worker_skips_audio_recognition_for_soundcloud(tmp_path: Path) -> None:
     job = DownloadJob(url="https://soundcloud.com/a/b", output_dir=tmp_path)
     worker = JobWorker(
         job,
-        cookie_browser=None,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         acoustid_config=AcoustIDConfig(client_key="client-key", fpcalc_path=Path(__file__)),
@@ -295,7 +288,6 @@ def test_worker_reuses_prepared_download_after_review_approval(tmp_path: Path) -
     done: list[str] = []
     worker = JobWorker(
         job,
-        cookie_browser=None,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         approved_metadata=TrackMetadata(title="Title", artist="Artist"),
@@ -310,8 +302,37 @@ def test_worker_reuses_prepared_download_after_review_approval(tmp_path: Path) -
     assert final_path.exists()
     assert not prepared.exists()
     assert FakeDownloader.downloads == []
-    assert FakeTagWriter.writes == [final_path]
+    assert FakeTagWriter.writes == [prepared]
     assert done == [str(final_path)]
+
+
+def test_worker_leaves_no_final_file_when_tagging_fails(tmp_path: Path) -> None:
+    prepared = tmp_path / ".cueforge-temp" / "job" / "abc.mp3"
+    prepared.parent.mkdir(parents=True)
+    prepared.write_bytes(b"fake mp3")
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    job.downloaded_path = prepared
+
+    class FailingTagWriter:
+        def write(self, path: Path, metadata: TrackMetadata) -> TagWriteResult:
+            raise RuntimeError("tag failed")
+
+    failed: list[str] = []
+    worker = JobWorker(
+        job,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        approved_metadata=TrackMetadata(title="Title", artist="Artist"),
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+        tag_writer_factory=FailingTagWriter,
+    )
+    worker.job_failed.connect(lambda job_id, error: failed.append(error))
+
+    worker.run()
+
+    assert failed == ["tag failed"]
+    assert prepared.exists()
+    assert not (tmp_path / "Artist - Title.mp3").exists()
 
 
 def test_worker_cancellation_cleans_prepared_temp_download(tmp_path: Path) -> None:
@@ -323,7 +344,6 @@ def test_worker_cancellation_cleans_prepared_temp_download(tmp_path: Path) -> No
     canceled: list[str] = []
     worker = JobWorker(
         job,
-        cookie_browser=None,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         approved_metadata=TrackMetadata(title="Title", artist="Artist"),
@@ -344,7 +364,6 @@ def test_worker_progress_hook_raises_when_cancel_requested(tmp_path: Path) -> No
     job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
     worker = JobWorker(
         job,
-        cookie_browser=None,
         ytmusic_auth_path=None,
         ffmpeg_location=None,
         downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from cueforge.download import CookieBrowser, DownloadConfig, DownloadProgress, YTDLPDownloader
+from cueforge.download import DownloadConfig, DownloadProgress, YTDLPDownloader
 
 
 class FakeYDL:
@@ -39,90 +39,104 @@ class FakeYDL:
         return f"D:/music/{info['id']}.webm"
 
 
-class CookieCopyFailingYDL(FakeYDL):
+class PlaylistYDL(FakeYDL):
     calls: list[dict] = []
 
     def extract_info(self, url: str, download: bool = False) -> dict:
-        if self.options.get("cookiesfrombrowser"):
-            raise RuntimeError("ERROR: Could not copy Chrome cookie database")
-        return super().extract_info(url, download=download)
+        assert url == "https://www.youtube.com/playlist?list=PL123"
+        return {
+            "_type": "playlist",
+            "entries": [
+                {"id": "abc", "ie_key": "Youtube"},
+                None,
+                {"webpage_url": "https://www.youtube.com/watch?v=def"},
+                {"title": "unavailable"},
+            ],
+        }
+
+
+class IncompletePlaylistYDL(FakeYDL):
+    calls: list[dict] = []
+
+    def extract_info(self, url: str, download: bool = False) -> dict:
+        assert url == "https://www.youtube.com/playlist?list=PL123"
+        if self.options.get("extractor_args"):
+            entries = [{"id": f"retry-{index}", "ie_key": "Youtube"} for index in range(4)]
+        else:
+            entries = [{"id": "first-page", "ie_key": "Youtube"}]
+        return {"_type": "playlist", "playlist_count": 5, "entries": entries}
 
 
 def test_fetch_info_uses_ytdlp_without_download(tmp_path: Path) -> None:
     FakeYDL.calls.clear()
     downloader = YTDLPDownloader(
-        DownloadConfig(output_dir=tmp_path, cookie_browser=CookieBrowser.CHROME),
+        DownloadConfig(output_dir=tmp_path),
         ydl_factory=FakeYDL,
     )
 
     info = downloader.fetch_info("https://music.youtube.com/watch?v=abc")
 
     assert info["id"] == "abc"
-    assert FakeYDL.calls[-1]["cookiesfrombrowser"] == ("chrome",)
+    assert "cookiesfrombrowser" not in FakeYDL.calls[-1]
     assert FakeYDL.calls[-1]["remote_components"] == ["ejs:github"]
     assert FakeYDL.calls[-1]["noplaylist"] is True
 
 
-def test_fetch_info_accepts_cookie_browser_string_from_qt(tmp_path: Path) -> None:
+def test_expand_playlist_flattens_entries_and_skips_unavailable_items(tmp_path: Path) -> None:
+    PlaylistYDL.calls.clear()
+    downloader = YTDLPDownloader(
+        DownloadConfig(output_dir=tmp_path),
+        ydl_factory=PlaylistYDL,
+    )
+
+    result = downloader.expand_playlist("https://www.youtube.com/playlist?list=PL123")
+
+    assert PlaylistYDL.calls[-1]["extract_flat"] == "in_playlist"
+    assert PlaylistYDL.calls[-1]["ignoreerrors"] is True
+    assert PlaylistYDL.calls[-1]["noplaylist"] is False
+    assert PlaylistYDL.calls[-1]["playlist_items"] is None
+    assert PlaylistYDL.calls[-1]["playlistend"] is None
+    assert PlaylistYDL.calls[-1]["playliststart"] == 1
+    assert result.urls == [
+        "https://www.youtube.com/watch?v=abc",
+        "https://www.youtube.com/watch?v=def",
+    ]
+    assert result.skipped_count == 2
+
+
+def test_expand_playlist_retries_youtube_pagination_with_skip_webpage(tmp_path: Path) -> None:
+    IncompletePlaylistYDL.calls.clear()
+    downloader = YTDLPDownloader(
+        DownloadConfig(output_dir=tmp_path),
+        ydl_factory=IncompletePlaylistYDL,
+    )
+
+    result = downloader.expand_playlist("https://www.youtube.com/playlist?list=PL123")
+
+    assert len(IncompletePlaylistYDL.calls) == 2
+    assert IncompletePlaylistYDL.calls[-1]["extractor_args"] == {"youtubetab": {"skip": ["webpage"]}}
+    assert result.expected_count == 5
+    assert result.urls == [
+        "https://www.youtube.com/watch?v=retry-0",
+        "https://www.youtube.com/watch?v=retry-1",
+        "https://www.youtube.com/watch?v=retry-2",
+        "https://www.youtube.com/watch?v=retry-3",
+    ]
+
+
+def test_fetch_info_uses_cookie_file(tmp_path: Path) -> None:
     FakeYDL.calls.clear()
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
     downloader = YTDLPDownloader(
-        DownloadConfig(output_dir=tmp_path, cookie_browser="chrome"),
+        DownloadConfig(output_dir=tmp_path, cookie_file=cookie_file),
         ydl_factory=FakeYDL,
     )
 
     downloader.fetch_info("https://music.youtube.com/watch?v=abc")
 
-    assert FakeYDL.calls[-1]["cookiesfrombrowser"] == ("chrome",)
-
-
-def test_chromium_cookie_unlock_can_be_enabled_for_chrome(tmp_path: Path, monkeypatch) -> None:
-    FakeYDL.calls.clear()
-    unlock_calls: list[bool] = []
-    monkeypatch.setattr("cueforge.download.set_chromium_cookie_unlock_enabled", unlock_calls.append)
-    downloader = YTDLPDownloader(
-        DownloadConfig(
-            output_dir=tmp_path,
-            cookie_browser=CookieBrowser.CHROME,
-            unlock_browser_cookie_database=True,
-        ),
-        ydl_factory=FakeYDL,
-    )
-
-    downloader.fetch_info("https://music.youtube.com/watch?v=abc")
-
-    assert unlock_calls == [True]
-    assert FakeYDL.calls[-1]["cookiesfrombrowser"] == ("chrome",)
-
-
-def test_cookie_unlock_is_not_enabled_for_firefox(tmp_path: Path, monkeypatch) -> None:
-    unlock_calls: list[bool] = []
-    monkeypatch.setattr("cueforge.download.set_chromium_cookie_unlock_enabled", unlock_calls.append)
-    downloader = YTDLPDownloader(
-        DownloadConfig(
-            output_dir=tmp_path,
-            cookie_browser=CookieBrowser.FIREFOX,
-            unlock_browser_cookie_database=True,
-        ),
-        ydl_factory=FakeYDL,
-    )
-
-    downloader.fetch_info("https://music.youtube.com/watch?v=abc")
-
-    assert unlock_calls == [False]
-
-
-def test_fetch_info_retries_without_browser_cookies_when_cookie_copy_fails(tmp_path: Path) -> None:
-    CookieCopyFailingYDL.calls.clear()
-    downloader = YTDLPDownloader(
-        DownloadConfig(output_dir=tmp_path, cookie_browser=CookieBrowser.CHROME),
-        ydl_factory=CookieCopyFailingYDL,
-    )
-
-    info = downloader.fetch_info("https://music.youtube.com/watch?v=abc")
-
-    assert info["id"] == "abc"
-    assert CookieCopyFailingYDL.calls[0]["cookiesfrombrowser"] == ("chrome",)
-    assert "cookiesfrombrowser" not in CookieCopyFailingYDL.calls[1]
+    assert FakeYDL.calls[-1]["cookiefile"] == str(cookie_file)
+    assert "cookiesfrombrowser" not in FakeYDL.calls[-1]
 
 
 def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
@@ -142,18 +156,18 @@ def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
     assert progresses[0].percent == 50.0
 
 
-def test_download_audio_retries_without_browser_cookies_when_cookie_copy_fails(tmp_path: Path) -> None:
-    CookieCopyFailingYDL.calls.clear()
+def test_download_audio_uses_cookie_file(tmp_path: Path) -> None:
+    FakeYDL.calls.clear()
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
     downloader = YTDLPDownloader(
-        DownloadConfig(output_dir=tmp_path, cookie_browser=CookieBrowser.CHROME),
-        ydl_factory=CookieCopyFailingYDL,
+        DownloadConfig(output_dir=tmp_path, cookie_file=cookie_file),
+        ydl_factory=FakeYDL,
     )
 
-    result = downloader.download_audio("https://music.youtube.com/watch?v=abc")
+    downloader.download_audio("https://music.youtube.com/watch?v=abc")
 
-    assert result.path == Path("D:/music/abc.mp3")
-    assert CookieCopyFailingYDL.calls[0]["cookiesfrombrowser"] == ("chrome",)
-    assert "cookiesfrombrowser" not in CookieCopyFailingYDL.calls[1]
+    assert FakeYDL.calls[-1]["cookiefile"] == str(cookie_file)
 
 
 def test_download_can_disable_remote_js_components(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+import time
 
 
 class DownloadStatus(str, Enum):
@@ -25,6 +26,19 @@ class ReviewState(str, Enum):
     AUTO_APPROVED = "auto_approved"
     REVIEW_REQUIRED = "review_required"
     MANUAL_REQUIRED = "manual_required"
+
+
+class ErrorCategory(str, Enum):
+    UNSUPPORTED_URL = "unsupported_url"
+    MISSING_DEPENDENCY = "missing_dependency"
+    AUTH_REQUIRED = "auth_required"
+    COOKIE_COPY_FAILED = "cookie_copy_failed"
+    NETWORK_TIMEOUT = "network_timeout"
+    RATE_LIMITED = "rate_limited"
+    DOWNLOAD_FAILED = "download_failed"
+    TAG_FAILED = "tag_failed"
+    FILE_CONFLICT = "file_conflict"
+    UNKNOWN = "unknown"
 
 
 @dataclass(slots=True)
@@ -91,6 +105,50 @@ class MetadataCandidate:
 
 
 @dataclass(slots=True)
+class StoredCandidateSummary:
+    provider: str
+    score: float
+    title: str = ""
+    artist: str = ""
+    album: str = ""
+    matched_fields: tuple[str, ...] = ()
+
+    @classmethod
+    def from_candidate(cls, candidate: MetadataCandidate) -> "StoredCandidateSummary":
+        return cls(
+            provider=candidate.provider,
+            score=candidate.score,
+            title=candidate.metadata.title,
+            artist=candidate.metadata.artist,
+            album=candidate.metadata.album,
+            matched_fields=tuple(candidate.matched_fields),
+        )
+
+
+@dataclass(slots=True)
+class JobEvent:
+    job_id: str
+    event_type: str
+    message: str
+    category: str = ""
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulerLimits:
+    metadata: int = 3
+    download: int = 2
+    tagging: int = 1
+
+    def normalized(self) -> "SchedulerLimits":
+        return SchedulerLimits(
+            metadata=max(1, int(self.metadata)),
+            download=max(1, int(self.download)),
+            tagging=max(1, int(self.tagging)),
+        )
+
+
+@dataclass(slots=True)
 class DownloadJob:
     url: str
     output_dir: Path
@@ -102,6 +160,13 @@ class DownloadJob:
     downloaded_path: Path | None = None
     final_path: Path | None = None
     error: str = ""
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    platform: str = ""
+    retry_count: int = 0
+    error_category: str = ""
+    error_message: str = ""
+    candidate_summaries: list[StoredCandidateSummary] = field(default_factory=list)
 
     def transition(
         self,
@@ -109,12 +174,16 @@ class DownloadJob:
         *,
         progress: float | None = None,
         error: str = "",
+        error_category: str = "",
     ) -> "DownloadJob":
         return replace(
             self,
             status=status,
             progress=self.progress if progress is None else progress,
             error=error,
+            error_message=error,
+            error_category=error_category,
+            updated_at=time.time(),
         )
 
 

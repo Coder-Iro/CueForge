@@ -8,9 +8,9 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
 from cueforge.metadata.ytmusic_auth import (
-    YTMusicBrowserAuthConfig,
-    YTMusicBrowserAuthError,
-    build_ytmusic_browser_auth,
+    YTMusicCookieAuthConfig,
+    YTMusicCookieAuthError,
+    build_ytmusic_cookie_auth,
 )
 from cueforge.metadata.normalize import clean_metadata, clean_title, parse_artist_title
 from cueforge.models import TrackMetadata
@@ -27,16 +27,14 @@ class YouTubeMusicProvider:
         self,
         *,
         auth_path: Path | None = None,
-        cookie_browser: str | None = None,
-        unlock_browser_cookie_database: bool = False,
+        cookie_file: Path | None = None,
         client: YTMusicLike | None = None,
         client_factory: Callable[[Any], YTMusicLike] | None = None,
         browser_auth_builder: Callable[[], dict[str, str] | None] | None = None,
         log: Callable[[str], None] | None = None,
     ) -> None:
         self.auth_path = auth_path
-        self.cookie_browser = cookie_browser or ""
-        self.unlock_browser_cookie_database = unlock_browser_cookie_database
+        self.cookie_file = cookie_file
         self._client = client
         self._client_factory = client_factory
         self._browser_auth_builder = browser_auth_builder
@@ -71,29 +69,25 @@ class YouTubeMusicProvider:
             self._emit("YTMusic 인증: 수동 JSON 사용")
             return str(self.auth_path)
 
-        if not self.cookie_browser:
-            self._emit("YTMusic 인증: 브라우저 쿠키 미설정, 무인증 조회 사용")
-            return None
+        if self.cookie_file and self.cookie_file.exists():
+            builder = self._browser_auth_builder or self._build_browser_auth
+            try:
+                self._emit("YTMusic 인증: 쿠키 파일 읽는 중")
+                auth = builder()
+            except YTMusicCookieAuthError as exc:
+                self._emit(f"YTMusic 쿠키 파일 인증 생략: {exc}")
+                return None
+            if auth:
+                self._emit("YTMusic 인증: 쿠키 파일 사용")
+            return auth
 
-        builder = self._browser_auth_builder or self._build_browser_auth
-        try:
-            self._emit(f"YTMusic 인증: {self.cookie_browser} 브라우저 쿠키 읽는 중")
-            auth = builder()
-        except YTMusicBrowserAuthError as exc:
-            self._emit(f"YTMusic 브라우저 쿠키 인증 생략: {exc}")
-            return None
-
-        if auth:
-            self._emit(f"YTMusic 인증: {self.cookie_browser} 브라우저 쿠키 사용")
-        return auth
+        self._emit("YTMusic 인증: 무인증 조회 사용")
+        return None
 
     def _build_browser_auth(self) -> dict[str, str] | None:
-        return build_ytmusic_browser_auth(
-            YTMusicBrowserAuthConfig(
-                cookie_browser=self.cookie_browser,
-                unlock_browser_cookie_database=self.unlock_browser_cookie_database,
-            )
-        )
+        if not self.cookie_file:
+            return None
+        return build_ytmusic_cookie_auth(YTMusicCookieAuthConfig(cookie_file=self.cookie_file))
 
     def _emit(self, message: str) -> None:
         if self._log:

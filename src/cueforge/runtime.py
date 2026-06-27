@@ -114,6 +114,23 @@ def format_diagnostics(root: Path | None = None) -> str:
         path = str(status.path) if status.path else "<missing>"
         suffix = f" :: {status.version}" if status.version else ""
         lines.append(f"{status.name}: {status.source}: {path}{suffix}")
+    try:
+        from cueforge.models import SchedulerLimits
+        from cueforge.store import JobStore, default_job_store_path
+
+        store_path = default_job_store_path()
+        lines.append(f"job_store: {store_path}")
+        if store_path.exists():
+            store = JobStore(store_path)
+            failures = store.recent_failure_summary(limit=3)
+            lines.append(f"job_store_schema: {store.schema_version}")
+            lines.append(f"recent_failures: {len(failures)}")
+            for failure in failures:
+                lines.append(f"recent_failure: {failure}")
+        limits = SchedulerLimits()
+        lines.append(f"scheduler_limits: metadata={limits.metadata}, download={limits.download}, tagging={limits.tagging}")
+    except Exception as exc:
+        lines.append(f"job_store: unavailable ({exc})")
     return "\n".join(lines)
 
 

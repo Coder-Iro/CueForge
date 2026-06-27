@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from cueforge.metadata.normalize import clean_metadata
 from cueforge.models import MetadataCandidate, TrackMetadata
+from cueforge.rate_limit import ProviderRateLimiter, global_rate_limiter
 from cueforge.runtime import find_executable
 
 
@@ -107,6 +108,7 @@ class AcoustIDProvider:
         fingerprinter: FingerprinterLike | None = None,
         sleeper: Any = time.sleep,
         clock: Any = time.monotonic,
+        rate_limiter: ProviderRateLimiter | None = None,
     ) -> None:
         self.config = config or AcoustIDConfig()
         self.session = session or self._create_session()
@@ -114,7 +116,7 @@ class AcoustIDProvider:
         self.fingerprinter = fingerprinter or FpcalcFingerprinter(self.config.fpcalc_path)
         self._sleeper = sleeper
         self._clock = clock
-        self._last_request_at = 0.0
+        self._rate_limiter = rate_limiter or global_rate_limiter("acoustid")
 
     def lookup(self, audio_path: Path) -> list[MetadataCandidate]:
         if not self.config.client_key.strip():
@@ -130,10 +132,7 @@ class AcoustIDProvider:
         return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
 
     def _lookup_fingerprint(self, fingerprint: AudioFingerprint) -> dict[str, Any]:
-        now = self._clock()
-        wait = self.config.rate_limit_seconds - (now - self._last_request_at)
-        if wait > 0:
-            self._sleeper(wait)
+        self._rate_limiter.wait(self.config.rate_limit_seconds, sleeper=self._sleeper, clock=self._clock)
         response = self.session.post(
             f"{self.API_ROOT}/lookup",
             data={
@@ -146,7 +145,6 @@ class AcoustIDProvider:
             timeout=self.config.timeout_seconds,
         )
         response.raise_for_status()
-        self._last_request_at = self._clock()
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 

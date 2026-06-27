@@ -73,7 +73,12 @@ class ResolveError(RuntimeError):
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     config = json.loads(args.config.read_text(encoding="utf-8"))
-    resolved = resolve_dependencies(config, ref=args.ref)
+    if args.lock_file and args.lock_file.exists() and not args.update_lock:
+        resolved = json.loads(args.lock_file.read_text(encoding="utf-8"))
+    else:
+        resolved = resolve_dependencies(config, ref=args.ref)
+        if args.lock_file:
+            write_resolved_json(resolved, args.lock_file)
     write_resolved_json(resolved, args.json_out)
     write_inno_include(resolved, args.inno_out)
     print(f"Resolved {len(resolved['dependencies'])} winget dependencies")
@@ -288,6 +293,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--json-out", type=Path, default=Path("build/dependencies.windows-x64.resolved.json"))
     parser.add_argument("--inno-out", type=Path, default=Path("build/dependencies.windows-x64.iss"))
     parser.add_argument("--ref", default=None)
+    parser.add_argument("--lock-file", type=Path, default=None)
+    parser.add_argument("--update-lock", action="store_true")
     return parser.parse_args(argv)
 
 

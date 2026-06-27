@@ -47,8 +47,7 @@ class MetadataResolver:
         url: str,
         info: dict[str, Any],
         ytmusic_auth_path: Path | None = None,
-        ytmusic_cookie_browser: str | None = None,
-        unlock_browser_cookie_database: bool = False,
+        ytmusic_cookie_file: Path | None = None,
         log: Callable[[str], None] | None = None,
     ) -> MetadataResolution:
         platform = detect_source_platform(url, info)
@@ -63,8 +62,7 @@ class MetadataResolver:
             _log(log, "YouTube Music 메타데이터 조회 준비")
             youtube = self._new_ytmusic_provider(
                 auth_path=ytmusic_auth_path,
-                cookie_browser=ytmusic_cookie_browser,
-                unlock_browser_cookie_database=unlock_browser_cookie_database,
+                cookie_file=ytmusic_cookie_file,
                 log=log,
             ).lookup(url)
             if youtube.title or youtube.artist:
@@ -86,15 +84,13 @@ class MetadataResolver:
         self,
         *,
         auth_path: Path | None,
-        cookie_browser: str | None,
-        unlock_browser_cookie_database: bool,
+        cookie_file: Path | None,
         log: Callable[[str], None] | None,
     ) -> Any:
         try:
             return self._ytmusic_provider_factory(
                 auth_path=auth_path,
-                cookie_browser=cookie_browser,
-                unlock_browser_cookie_database=unlock_browser_cookie_database,
+                cookie_file=cookie_file,
                 log=log,
             )
         except TypeError:

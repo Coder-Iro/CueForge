@@ -127,14 +127,13 @@ def _smoke_metadata(
     downloader_factory: object | None = None,
     resolver_factory: object | None = None,
 ) -> dict:
-    from pathlib import Path
-
     from cueforge.download import DownloadConfig, YTDLPDownloader
     from cueforge.metadata.resolver import MetadataResolver
+    from cueforge.paths import default_output_dir
 
     downloader_cls = downloader_factory or YTDLPDownloader
     resolver_cls = resolver_factory or MetadataResolver
-    downloader = downloader_cls(DownloadConfig(output_dir=Path("downloads"), quiet=True))
+    downloader = downloader_cls(DownloadConfig(output_dir=default_output_dir(), quiet=True))
     info = downloader.fetch_info(url)
     logs: list[str] = []
     resolution = resolver_cls().resolve(url=url, info=info, log=logs.append)

@@ -441,7 +441,6 @@ class MainWindow(QMainWindow):
         self.history_tab_index = 0
         self.settings_tab_index = 0
         self._last_tab_index = 0
-        self.workflow_stage_labels: dict[str, QLabel] = {}
         self.start_action: QAction | None = None
         self.download_action: QAction | None = None
         self.retry_action: QAction | None = None
@@ -607,7 +606,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.queue_tab_index = self.tabs.addTab(self._queue_tab(), "작업")
-        self.pipeline_tab_index = self.queue_tab_index
+        self.pipeline_tab_index = self.tabs.addTab(self._pipeline_tab(), "상태")
         self.review_tab_index = self.tabs.addTab(self._review_tab(), "검수")
         self.history_tab_index = self.tabs.addTab(self._history_tab(), "이력")
         self.settings_tab_index = self.tabs.addTab(self._settings_tab(), "설정")
@@ -630,81 +629,60 @@ class MainWindow(QMainWindow):
         url_row.setColumnStretch(1, 1)
         layout.addLayout(url_row)
 
-        action_row = QGridLayout()
+        primary_action_row = QHBoxLayout()
         self.start_queue_button = QPushButton("전체 처리 시작")
         self.start_queue_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.start_queue_button.clicked.connect(self._start_pipeline)
-        action_row.addWidget(self.start_queue_button, 0, 0)
+        primary_action_row.addWidget(self.start_queue_button)
         self.download_approved_button = QPushButton("승인 항목 다운로드")
         self.download_approved_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.download_approved_button.clicked.connect(self._schedule_approved_downloads)
-        action_row.addWidget(self.download_approved_button, 0, 1)
-        self.cancel_current_button = QPushButton("현재 작업 취소")
-        self.cancel_current_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
-        self.cancel_current_button.clicked.connect(self._cancel_current_job)
-        action_row.addWidget(self.cancel_current_button, 0, 2)
-        self.analyze_selected_button = QPushButton("선택 항목 분석")
-        self.analyze_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.analyze_selected_button.clicked.connect(self._analyze_selected)
-        action_row.addWidget(self.analyze_selected_button, 1, 0)
-        self.download_selected_button = QPushButton("선택 항목 다운로드")
-        self.download_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
-        self.download_selected_button.clicked.connect(self._download_selected_approved)
-        action_row.addWidget(self.download_selected_button, 1, 1)
-        self.retry_selected_button = QPushButton("선택 항목 재시도")
-        self.retry_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
-        self.retry_selected_button.clicked.connect(self._retry_selected)
-        action_row.addWidget(self.retry_selected_button, 1, 2)
-        self.review_selected_button = QPushButton("선택 항목 검수로 이동")
-        self.review_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
-        self.review_selected_button.clicked.connect(self._move_selected_to_review_queue)
-        action_row.addWidget(self.review_selected_button, 2, 0)
+        primary_action_row.addWidget(self.download_approved_button)
         self.retry_failed_button = QPushButton("실패 재시도")
         self.retry_failed_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.retry_failed_button.clicked.connect(self._retry_failed)
-        action_row.addWidget(self.retry_failed_button, 2, 1)
-        self.remove_selected_button = QPushButton("선택 항목 삭제")
+        primary_action_row.addWidget(self.retry_failed_button)
+        self.cancel_current_button = QPushButton("현재 작업 취소")
+        self.cancel_current_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
+        self.cancel_current_button.clicked.connect(self._cancel_current_job)
+        primary_action_row.addWidget(self.cancel_current_button)
+        primary_action_row.addStretch(1)
+        layout.addLayout(primary_action_row)
+
+        selection_group = QGroupBox("선택 항목")
+        selection_layout = QHBoxLayout(selection_group)
+        self.analyze_selected_button = QPushButton("분석")
+        self.analyze_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.analyze_selected_button.clicked.connect(self._analyze_selected)
+        selection_layout.addWidget(self.analyze_selected_button)
+        self.download_selected_button = QPushButton("다운로드")
+        self.download_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.download_selected_button.clicked.connect(self._download_selected_approved)
+        selection_layout.addWidget(self.download_selected_button)
+        self.review_selected_button = QPushButton("검수로 이동")
+        self.review_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
+        self.review_selected_button.clicked.connect(self._move_selected_to_review_queue)
+        selection_layout.addWidget(self.review_selected_button)
+        self.retry_selected_button = QPushButton("재시도")
+        self.retry_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.retry_selected_button.clicked.connect(self._retry_selected)
+        selection_layout.addWidget(self.retry_selected_button)
+        self.remove_selected_button = QPushButton("큐에서 삭제")
         self.remove_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
         self.remove_selected_button.clicked.connect(self._remove_selected)
-        action_row.addWidget(self.remove_selected_button, 2, 2)
-        for column in range(3):
-            action_row.setColumnStretch(column, 1)
-        layout.addLayout(action_row)
-        layout.addLayout(self._workflow_stage_row())
+        selection_layout.addWidget(self.remove_selected_button)
+        selection_layout.addStretch(1)
+        layout.addWidget(selection_group)
         layout.addWidget(self.queue_status_label)
-        layout.addWidget(self.dependency_status_label)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(self._pipeline_board_widget())
         splitter.addWidget(self.table)
         splitter.addWidget(self.log)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 4)
-        splitter.setStretchFactor(2, 1)
-        splitter.setSizes([240, 330, 120])
+        splitter.setStretchFactor(0, 5)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([520, 140])
         layout.addWidget(splitter)
         return root
-
-    def _workflow_stage_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        stages = (
-            ("pending", "추가"),
-            ("metadata", "분석"),
-            ("review", "검수"),
-            ("approved", "준비"),
-            ("active", "다운로드"),
-            ("done", "완료"),
-            ("failed", "실패"),
-        )
-        for key, title in stages:
-            label = QLabel(f"{title}\n0")
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setMinimumHeight(44)
-            label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            label.setStyleSheet("QLabel { border: 1px solid #c8ccd2; background: #f6f7f9; padding: 4px; }")
-            self.workflow_stage_labels[key] = label
-            row.addWidget(label)
-        return row
 
     def _pipeline_board_widget(self) -> QWidget:
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -743,7 +721,7 @@ class MainWindow(QMainWindow):
         root = QWidget()
         layout = QVBoxLayout(root)
         action_row = QHBoxLayout()
-        self.pipeline_start_button = QPushButton("파이프라인 시작")
+        self.pipeline_start_button = QPushButton("전체 처리 시작")
         self.pipeline_start_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.pipeline_start_button.clicked.connect(self._start_pipeline)
         action_row.addWidget(self.pipeline_start_button)
@@ -757,36 +735,7 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.pipeline_retry_button)
         action_row.addStretch(1)
         layout.addLayout(action_row)
-
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        board = QWidget()
-        board_layout = QHBoxLayout(board)
-        board_layout.setContentsMargins(0, 0, 0, 0)
-        for status in _PIPELINE_STATUSES:
-            group = QGroupBox(_pipeline_status_label(status))
-            group_layout = QVBoxLayout(group)
-            table = QTableWidget(0, 3)
-            table.setHorizontalHeaderLabels(("제목", "아티스트", "URL"))
-            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-            table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-            table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-            table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-            table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-            table.itemSelectionChanged.connect(self._load_selected_pipeline_job)
-            self.pipeline_tables[status] = table
-            group_layout.addWidget(table)
-            board_layout.addWidget(group)
-        splitter.addWidget(board)
-
-        detail_group = QGroupBox("작업 상세")
-        detail_layout = QVBoxLayout(detail_group)
-        self.pipeline_detail.setMinimumWidth(300)
-        detail_layout.addWidget(self.pipeline_detail)
-        splitter.addWidget(detail_group)
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 1)
-        layout.addWidget(splitter)
+        layout.addWidget(self._pipeline_board_widget())
         return root
 
     def _history_tab(self) -> QWidget:
@@ -827,18 +776,6 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(12)
-        splitter.setStyleSheet(
-            """
-            QSplitter::handle:vertical {
-                background: #c9ced6;
-                border: 1px solid #aeb5c0;
-                margin: 3px 0;
-            }
-            QSplitter::handle:vertical:hover {
-                background: #8f9bad;
-            }
-            """
-        )
         self.review_splitter = splitter
 
         review_queue_group = QGroupBox("검수 큐")
@@ -1851,6 +1788,7 @@ class MainWindow(QMainWindow):
                 item = QTableWidgetItem(str(value or ""))
                 if current_value != applied_value:
                     item.setBackground(conflict_color if field_key in conflict_fields else changed_color)
+                    item.setForeground(QColor("#202124"))
                 self.candidate_preview_table.setItem(row, col, item)
         self.candidate_preview_table.resizeRowsToContents()
 
@@ -2282,16 +2220,11 @@ class MainWindow(QMainWindow):
     def _refresh_actions(self) -> None:
         running = self._work_running()
         pending_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.PENDING)
-        metadata_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.METADATA)
         approved_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.APPROVED)
         review_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.REVIEW_REQUIRED)
-        downloading_count = sum(1 for job in self.jobs.values() if job.status in {DownloadStatus.DOWNLOADING, DownloadStatus.TAGGING})
-        done_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.DONE)
         failed_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.FAILED)
-        canceled_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.CANCELED)
         selected_job = self._selected_job()
         active_review = self._active_review_job()
-        can_analyze = pending_count > 0 and not running
         can_start_pipeline = (pending_count > 0 or approved_count > 0) and not running
         can_download = approved_count > 0 and not running
         can_retry = failed_count > 0 and not running
@@ -2305,16 +2238,6 @@ class MainWindow(QMainWindow):
         can_remove_selected = any(job.status not in _ACTIVE_STATUSES for job in selected_jobs)
         can_cancel_current = running and not self.cancel_requested
         self._refresh_review_queue()
-        self._refresh_workflow_stage_labels(
-            pending_count=pending_count,
-            metadata_count=metadata_count,
-            review_count=review_count,
-            approved_count=approved_count,
-            downloading_count=downloading_count,
-            done_count=done_count,
-            failed_count=failed_count,
-            canceled_count=canceled_count,
-        )
 
         if self.start_action:
             self.start_action.setEnabled(can_start_pipeline)
@@ -2377,39 +2300,6 @@ class MainWindow(QMainWindow):
             text = "URL을 추가한 뒤 큐를 처리하세요."
         self.queue_status_label.setText(text)
         self.dependency_status_label.setText(self._settings_status_text())
-
-    def _refresh_workflow_stage_labels(
-        self,
-        *,
-        pending_count: int,
-        metadata_count: int,
-        review_count: int,
-        approved_count: int,
-        downloading_count: int,
-        done_count: int,
-        failed_count: int,
-        canceled_count: int,
-    ) -> None:
-        if not self.workflow_stage_labels:
-            return
-        stage_values = {
-            "pending": ("추가", pending_count, "#f6f7f9", "#c8ccd2"),
-            "metadata": ("분석", metadata_count, "#e8f2ff", "#6aa6d8"),
-            "review": ("검수", review_count, "#fff4cc", "#d6a329"),
-            "approved": ("준비", approved_count, "#eaf7ee", "#5aa76a"),
-            "active": ("다운로드", downloading_count, "#edf0ff", "#7b86d8"),
-            "done": ("완료", done_count, "#e9f6f0", "#4f9d7a"),
-            "failed": ("실패", failed_count + canceled_count, "#ffecec", "#d66f6f"),
-        }
-        for key, (title, count, background, border) in stage_values.items():
-            label = self.workflow_stage_labels.get(key)
-            if not label:
-                continue
-            label.setText(f"{title}\n{count}")
-            label.setStyleSheet(
-                f"QLabel {{ border: 1px solid {border if count else '#c8ccd2'}; "
-                f"background: {background if count else '#f6f7f9'}; padding: 4px; }}"
-            )
 
     def _refresh_review_queue(self) -> None:
         review_jobs = [self.jobs[job_id] for job_id in self.row_job_ids if self.jobs[job_id].status == DownloadStatus.REVIEW_REQUIRED]

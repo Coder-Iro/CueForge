@@ -1324,7 +1324,7 @@ class MainWindow(QMainWindow):
         try:
             result = self._expand_playlist_with_ytdlp(url, output_dir=output_dir)
         except Exception as exc:
-            if _is_youtube_music_playlist_url(url):
+            if _should_try_ytmusicapi_playlist_expansion(url):
                 try:
                     return self._expand_playlist_with_ytmusicapi(url)
                 except Exception as fallback_exc:
@@ -1358,7 +1358,10 @@ class MainWindow(QMainWindow):
         if not playlist_id:
             raise ValueError("YouTube playlist ID를 찾을 수 없습니다.")
         client = self._create_ytmusic_client()
-        playlist = client.get_playlist(playlist_id, limit=None)
+        if playlist_id == "LM" and hasattr(client, "get_liked_songs"):
+            playlist = client.get_liked_songs(limit=None)
+        else:
+            playlist = client.get_playlist(playlist_id, limit=None)
         tracks = playlist.get("tracks") if isinstance(playlist, dict) else None
         if not isinstance(tracks, list):
             raise ValueError("YouTube Music playlist tracks를 읽을 수 없습니다.")
@@ -2964,7 +2967,13 @@ def _should_retry_with_ytmusicapi_playlist_expansion(url: str, result: PlaylistE
         return False
     if _is_incomplete_playlist_expansion(result):
         return True
-    return _is_youtube_music_playlist_url(url) and len(result.urls) == 100 and result.expected_count in (None, 100)
+    if len(result.urls) == 100 and result.expected_count in (None, 100):
+        return _is_youtube_music_playlist_url(url) or _is_liked_music_playlist(url)
+    return _is_liked_music_playlist(url) and not result.urls
+
+
+def _should_try_ytmusicapi_playlist_expansion(url: str) -> bool:
+    return _is_youtube_music_playlist_url(url) or _is_liked_music_playlist(url)
 
 
 def _playlist_incomplete_message(url: str, result: PlaylistExpansionResult) -> str:

@@ -25,6 +25,20 @@ class _FakeYTMusicPlaylistClient:
         return {"tracks": [{"videoId": f"ytmusic-{index}"} for index in range(self.track_count)]}
 
 
+class _FakeYTMusicLikedClient:
+    def __init__(self, *, track_count: int) -> None:
+        self.track_count = track_count
+        self.get_playlist_calls: list[str] = []
+
+    def get_liked_songs(self, limit: int | None = 100) -> dict:
+        assert limit is None
+        return {"tracks": [{"videoId": f"liked-{index}"} for index in range(self.track_count)]}
+
+    def get_playlist(self, playlist_id: str, limit: int | None = 100) -> dict:
+        self.get_playlist_calls.append(playlist_id)
+        return {"tracks": []}
+
+
 def test_main_window_can_queue_url(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
@@ -208,6 +222,55 @@ def test_main_window_liked_music_playlist_uses_ytdlp_expander(tmp_path) -> None:
         assert len(result.urls) == 483
         assert result.urls[0] == "https://music.youtube.com/watch?v=video-0"
         assert result.urls[-1] == "https://music.youtube.com/watch?v=video-482"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_www_liked_music_playlist_falls_back_to_ytmusicapi_on_ytdlp_error(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    calls: list[str] = []
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        def expand_with_ytdlp(url: str, *, output_dir: object) -> PlaylistExpansionResult:
+            calls.append(url)
+            raise RuntimeError("ERROR: [youtube:tab] LM: YouTube said: The playlist does not exist.")
+
+        liked_client = _FakeYTMusicLikedClient(track_count=3)
+        window._expand_playlist_with_ytdlp = expand_with_ytdlp
+        window._create_ytmusic_client = lambda: liked_client
+
+        result = window._expand_playlist("https://www.youtube.com/playlist?list=LM", output_dir=tmp_path)
+
+        assert calls == ["https://www.youtube.com/playlist?list=LM"]
+        assert result.urls == [
+            "https://music.youtube.com/watch?v=liked-0",
+            "https://music.youtube.com/watch?v=liked-1",
+            "https://music.youtube.com/watch?v=liked-2",
+        ]
+        assert liked_client.get_playlist_calls == []
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_www_liked_music_playlist_falls_back_when_ytdlp_caps_at_100(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._expand_playlist_with_ytdlp = lambda url, output_dir: PlaylistExpansionResult(
+            urls=[f"https://www.youtube.com/watch?v=track-{index}" for index in range(100)],
+            expected_count=100,
+        )
+        window._create_ytmusic_client = lambda: _FakeYTMusicLikedClient(track_count=438)
+
+        result = window._expand_playlist("https://www.youtube.com/playlist?list=LM", output_dir=tmp_path)
+
+        assert len(result.urls) == 438
+        assert result.urls[0] == "https://music.youtube.com/watch?v=liked-0"
+        assert result.urls[-1] == "https://music.youtube.com/watch?v=liked-437"
     finally:
         window.close()
         app.processEvents()

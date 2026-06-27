@@ -18,3 +18,4 @@ downloads/
 *.db
 browser.json
 auth.json
+config/google_oauth_client.json

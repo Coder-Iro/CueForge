@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 import time
+import webbrowser
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -45,13 +46,24 @@ from PySide6.QtWidgets import (
 from cueforge.download import DownloadCanceled, DownloadConfig, DownloadProgress, PlaylistExpansionResult, YTDLPDownloader
 from cueforge.errors import action_hint, user_facing_error
 from cueforge.gui.scheduler import JobScheduler
-from cueforge.metadata import AcoustIDConfig, AcoustIDProvider, CoverArtProvider, MetadataResolver
+from cueforge.metadata import (
+    AcoustIDConfig,
+    AcoustIDProvider,
+    CoverArtProvider,
+    MetadataResolver,
+    YTMusicOAuthError,
+    build_ytmusic_oauth_credentials,
+    default_ytmusic_oauth_token_path,
+    find_ytmusic_oauth_client_file,
+    load_ytmusic_oauth_client,
+    write_ytmusic_oauth_token,
+)
 from cueforge.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from cueforge.metadata.matching import text_similarity
 from cueforge.metadata.normalize import merge_metadata
 from cueforge.models import DownloadJob, DownloadStatus, JobEvent, MetadataCandidate, ReviewState, SchedulerLimits, TagWriteResult, TrackMetadata
 from cueforge.paths import default_output_dir, legacy_cwd_output_dir
-from cueforge.runtime import find_executable, format_diagnostics
+from cueforge.runtime import app_root, find_executable, format_diagnostics
 from cueforge.sources import SourcePlatform, detect_source_platform
 from cueforge.store import JobStore
 from cueforge.tags import MAX_COVER_BYTES, RekordboxTagWriter, safe_track_filename
@@ -96,6 +108,8 @@ class JobWorker(QThread):
         *,
         cookie_file: Path | None = None,
         ytmusic_auth_path: Path | None = None,
+        ytmusic_oauth_client_file: Path | None = None,
+        ytmusic_oauth_token_file: Path | None = None,
         ffmpeg_location: Path | None = None,
         acoustid_config: AcoustIDConfig | None = None,
         audio_recognition_enabled: bool = True,
@@ -113,6 +127,8 @@ class JobWorker(QThread):
         self.job = job
         self.cookie_file = cookie_file
         self.ytmusic_auth_path = ytmusic_auth_path
+        self.ytmusic_oauth_client_file = ytmusic_oauth_client_file
+        self.ytmusic_oauth_token_file = ytmusic_oauth_token_file
         self.ffmpeg_location = ffmpeg_location
         self.acoustid_config = acoustid_config or AcoustIDConfig()
         self.audio_recognition_enabled = audio_recognition_enabled
@@ -222,6 +238,8 @@ class JobWorker(QThread):
             info=info,
             ytmusic_auth_path=self.ytmusic_auth_path,
             ytmusic_cookie_file=self.cookie_file,
+            ytmusic_oauth_client_file=self.ytmusic_oauth_client_file,
+            ytmusic_oauth_token_file=self.ytmusic_oauth_token_file,
             log=lambda message: self.log_message.emit(self.job.id, message),
         )
         self.log_message.emit(self.job.id, f"메타데이터 공급자 조회 완료 ({_elapsed(started_at)})")
@@ -457,6 +475,8 @@ class MainWindow(QMainWindow):
         self.approve_button: QPushButton | None = None
         self.reopen_review_button: QPushButton | None = None
         self.open_onboarding_button: QPushButton | None = None
+        self.google_oauth_connect_button: QPushButton | None = None
+        self.google_oauth_disconnect_button: QPushButton | None = None
         self.onboarding_dialog: OnboardingDialog | None = None
         self.apply_candidate_button: QPushButton | None = None
         self.pending_candidate_index: int | None = None
@@ -478,6 +498,8 @@ class MainWindow(QMainWindow):
         self.cookie_file_input = QLineEdit()
         self.auth_path_input = QLineEdit()
         self.ffmpeg_path_input = QLineEdit()
+        self.google_oauth_status_label = QLabel("")
+        self.google_oauth_status_label.setWordWrap(True)
         self.audio_recognition_checkbox = QCheckBox("메타데이터 신뢰도가 낮으면 AcoustID 사용")
         self.audio_recognition_checkbox.setChecked(True)
         self.verify_auto_approved_checkbox = QCheckBox("YouTube 자동 승인 메타데이터를 AcoustID로 검증")
@@ -577,6 +599,7 @@ class MainWindow(QMainWindow):
         self._load_settings()
         self._build_ui()
         self._connect_settings_status_updates()
+        self._refresh_google_oauth_status()
         self.scheduler = JobScheduler(worker_factory=self._create_scheduled_worker, limits=self._scheduler_limits(), parent=self)
         self.scheduler.job_started.connect(self._on_scheduled_job_started)
         self.scheduler.idle.connect(self._on_scheduler_idle)
@@ -885,6 +908,21 @@ class MainWindow(QMainWindow):
         form.addRow("YTMusic 인증 JSON (고급)", self._path_row(self.auth_path_input, self._browse_auth_file))
         form.addRow("ffmpeg 경로", self._path_row(self.ffmpeg_path_input, self._browse_ffmpeg))
 
+        google_group = QGroupBox("Google 계정")
+        google_layout = QVBoxLayout(google_group)
+        google_layout.addWidget(self.google_oauth_status_label)
+        google_action_row = QHBoxLayout()
+        self.google_oauth_connect_button = QPushButton("Google 계정 연결")
+        self.google_oauth_connect_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.google_oauth_connect_button.clicked.connect(self._connect_google_oauth)
+        google_action_row.addWidget(self.google_oauth_connect_button)
+        self.google_oauth_disconnect_button = QPushButton("연결 해제")
+        self.google_oauth_disconnect_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
+        self.google_oauth_disconnect_button.clicked.connect(self._disconnect_google_oauth)
+        google_action_row.addWidget(self.google_oauth_disconnect_button)
+        google_action_row.addStretch(1)
+        google_layout.addLayout(google_action_row)
+
         recognition_group = QGroupBox("오디오 인식")
         recognition_form = QFormLayout(recognition_group)
         recognition_form.addRow(self.audio_recognition_checkbox)
@@ -906,6 +944,7 @@ class MainWindow(QMainWindow):
         diagnostics_button.clicked.connect(self._copy_diagnostics)
 
         layout.addWidget(paths_group)
+        layout.addWidget(google_group)
         layout.addWidget(recognition_group)
         layout.addWidget(scheduler_group)
         layout.addWidget(self.open_onboarding_button)
@@ -978,6 +1017,8 @@ class MainWindow(QMainWindow):
             self.fpcalc_path_input.text().strip(),
             self.acoustid_key_input.text().strip(),
             self.cookie_file_input.text().strip(),
+            str(self._ytmusic_oauth_client_file() or ""),
+            str(self._ytmusic_oauth_token_file().exists()),
             str(self.metadata_parallel_spin.value()),
             str(self.download_parallel_spin.value()),
             str(self.tagging_parallel_spin.value()),
@@ -988,8 +1029,17 @@ class MainWindow(QMainWindow):
         fpcalc = find_executable("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))
         acoustid = "설정됨" if self.acoustid_key_input.text().strip() else "미설정"
         cookie_file = "설정됨" if self.cookie_file_input.text().strip() else "미설정"
+        google_oauth = (
+            "연결됨"
+            if self._ytmusic_oauth_connected()
+            else "클라이언트 있음"
+            if self._ytmusic_oauth_client_file()
+            else "미설정"
+        )
         ytmusic_auth = (
-            "수동 JSON"
+            "Google OAuth"
+            if self._ytmusic_oauth_connected()
+            else "수동 JSON"
             if self.auth_path_input.text().strip()
             else "쿠키 파일"
             if self.cookie_file_input.text().strip()
@@ -999,7 +1049,8 @@ class MainWindow(QMainWindow):
             f"설정: ffmpeg {ffmpeg.source if ffmpeg.available else '없음'}; "
             f"fpcalc {fpcalc.source if fpcalc.available else '없음'}; "
             f"AcoustID {acoustid}; 쿠키 파일 {cookie_file}; "
-            f"YTMusic 인증 {ytmusic_auth}; 병렬 {self.metadata_parallel_spin.value()}/{self.download_parallel_spin.value()}/{self.tagging_parallel_spin.value()}."
+            f"Google OAuth {google_oauth}; YTMusic 인증 {ytmusic_auth}; "
+            f"병렬 {self.metadata_parallel_spin.value()}/{self.download_parallel_spin.value()}/{self.tagging_parallel_spin.value()}."
         )
         self._dependency_status_cache_key = cache_key
         self._dependency_status_cache = text
@@ -1024,6 +1075,86 @@ class MainWindow(QMainWindow):
             self.scheduler.set_limits(self._scheduler_limits())
         if hasattr(self, "dependency_status_label"):
             self.dependency_status_label.setText(self._settings_status_text())
+        self._refresh_google_oauth_status()
+
+    def _refresh_google_oauth_status(self) -> None:
+        client_file = self._ytmusic_oauth_client_file()
+        token_file = self._ytmusic_oauth_token_file()
+        if not client_file:
+            text = "배포 설정에 Google OAuth 클라이언트가 없습니다. config/google_oauth_client.json을 포함하면 계정 연결을 사용할 수 있습니다."
+        elif token_file.exists():
+            text = "Google 계정 연결됨. 비공개 YouTube Music 플레이리스트 조회에 OAuth를 우선 사용합니다."
+        else:
+            text = "Google OAuth 클라이언트 준비됨. 계정 연결 후 비공개 플레이리스트 조회에 OAuth를 사용합니다."
+        self.google_oauth_status_label.setText(text)
+        if self.google_oauth_connect_button:
+            self.google_oauth_connect_button.setEnabled(client_file is not None)
+        if self.google_oauth_disconnect_button:
+            self.google_oauth_disconnect_button.setEnabled(token_file.exists())
+
+    def _ytmusic_oauth_client_file(self) -> Path | None:
+        return find_ytmusic_oauth_client_file(app_root())
+
+    def _ytmusic_oauth_token_file(self) -> Path:
+        return default_ytmusic_oauth_token_path()
+
+    def _ytmusic_oauth_connected(self) -> bool:
+        return bool(self._ytmusic_oauth_client_file() and self._ytmusic_oauth_token_file().exists())
+
+    def _connect_google_oauth(self) -> None:
+        client_file = self._ytmusic_oauth_client_file()
+        if not client_file:
+            QMessageBox.warning(self, "OAuth 설정 없음", "배포 폴더의 config/google_oauth_client.json 파일을 찾을 수 없습니다.")
+            return
+        try:
+            client = load_ytmusic_oauth_client(client_file)
+            credentials = build_ytmusic_oauth_credentials(client)
+            code = credentials.get_code()
+        except Exception as exc:
+            QMessageBox.warning(self, "OAuth 시작 실패", str(exc))
+            return
+
+        user_code = str(code.get("user_code") or "")
+        verification_url = str(code.get("verification_url") or "")
+        device_code = str(code.get("device_code") or "")
+        if not user_code or not verification_url or not device_code:
+            QMessageBox.warning(self, "OAuth 시작 실패", "Google OAuth device code를 받을 수 없습니다.")
+            return
+
+        auth_url = f"{verification_url}?user_code={user_code}"
+        webbrowser.open(auth_url)
+        result = QMessageBox.question(
+            self,
+            "Google 계정 연결",
+            f"브라우저에서 Google 계정 승인을 마친 뒤 확인을 누르세요.\n\n코드: {user_code}\n주소: {auth_url}",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Ok,
+        )
+        if result != QMessageBox.StandardButton.Ok:
+            return
+        try:
+            token = credentials.token_from_code(device_code)
+            if token.get("error"):
+                raise YTMusicOAuthError(str(token.get("error_description") or token.get("error")))
+            write_ytmusic_oauth_token(token, self._ytmusic_oauth_token_file())
+        except Exception as exc:
+            QMessageBox.warning(self, "OAuth 연결 실패", str(exc))
+            return
+        self._append_log("system", "Google 계정 연결됨")
+        self._dependency_status_cache_key = None
+        self._refresh_settings_status_label()
+
+    def _disconnect_google_oauth(self) -> None:
+        token_file = self._ytmusic_oauth_token_file()
+        if token_file.exists():
+            try:
+                token_file.unlink()
+            except Exception as exc:
+                QMessageBox.warning(self, "연결 해제 실패", str(exc))
+                return
+        self._append_log("system", "Google 계정 연결 해제됨")
+        self._dependency_status_cache_key = None
+        self._refresh_settings_status_label()
 
     def _open_onboarding(self) -> None:
         if self.onboarding_dialog and self.onboarding_dialog.isVisible():
@@ -1058,14 +1189,18 @@ class MainWindow(QMainWindow):
 
     def _onboarding_optional_rows(self) -> list[tuple[str, str]]:
         cookie_file = "설정됨" if self.cookie_file_input.text().strip() else "미설정"
+        google_oauth = "연결됨" if self._ytmusic_oauth_connected() else "클라이언트 준비" if self._ytmusic_oauth_client_file() else "미설정"
         ytmusic_auth = (
-            "수동 JSON"
+            "Google OAuth"
+            if self._ytmusic_oauth_connected()
+            else "수동 JSON"
             if self.auth_path_input.text().strip()
             else "쿠키 파일"
             if self.cookie_file_input.text().strip()
             else "미설정"
         )
         return [
+            ("Google OAuth", google_oauth),
             ("쿠키 파일", cookie_file),
             ("YTMusic 인증", ytmusic_auth),
             ("YTMusic 인증 JSON", "고급 fallback 설정됨" if self.auth_path_input.text().strip() else "고급 fallback 미설정"),
@@ -1188,6 +1323,12 @@ class MainWindow(QMainWindow):
 
     def _create_ytmusic_client(self) -> Any:
         from ytmusicapi import YTMusic
+
+        oauth_client_file = self._ytmusic_oauth_client_file()
+        oauth_token_file = self._ytmusic_oauth_token_file()
+        if oauth_client_file and oauth_token_file.exists():
+            client = load_ytmusic_oauth_client(oauth_client_file)
+            return YTMusic(str(oauth_token_file), oauth_credentials=build_ytmusic_oauth_credentials(client))
 
         auth_path = _optional_path(self.auth_path_input.text())
         if auth_path and auth_path.exists():
@@ -1356,7 +1497,7 @@ class MainWindow(QMainWindow):
             message = _playlist_expansion_failure_message(
                 job.url,
                 exc,
-                cookie_diagnostic=self._liked_music_cookie_diagnostic() if _is_liked_music_playlist(job.url) else "",
+                auth_diagnostic=self._liked_music_auth_diagnostic() if _is_liked_music_playlist(job.url) else "",
             )
             category, text = user_facing_error(message)
             job.status = DownloadStatus.FAILED
@@ -1404,10 +1545,15 @@ class MainWindow(QMainWindow):
     def _prepare_playlist_job_retry(self, job: DownloadJob) -> list[DownloadJob]:
         return self._prepare_playlist_job_for_analysis(job)
 
-    def _liked_music_cookie_diagnostic(self) -> str:
+    def _liked_music_auth_diagnostic(self) -> str:
+        if self._ytmusic_oauth_connected():
+            return "Google OAuth 연결은 되어 있지만 YouTube Music API가 플레이리스트 접근을 거부했습니다. 연결 해제 후 다시 연결하거나 계정 권한을 확인하세요."
+        if self._ytmusic_oauth_client_file():
+            return "Google OAuth 클라이언트는 포함됐지만 아직 Google 계정 연결이 완료되지 않았습니다."
+
         cookie_file = _optional_path(self.cookie_file_input.text())
         if not cookie_file:
-            return "현재 설정에 쿠키 파일이 없습니다."
+            return "현재 설정에 Google OAuth 연결 또는 쿠키 파일이 없습니다."
         if not cookie_file.exists():
             return "설정된 쿠키 파일을 찾을 수 없습니다."
         try:
@@ -1458,6 +1604,8 @@ class MainWindow(QMainWindow):
             job,
             cookie_file=_optional_path(self.cookie_file_input.text()),
             ytmusic_auth_path=_optional_path(self.auth_path_input.text()),
+            ytmusic_oauth_client_file=self._ytmusic_oauth_client_file(),
+            ytmusic_oauth_token_file=self._ytmusic_oauth_token_file() if self._ytmusic_oauth_token_file().exists() else None,
             ffmpeg_location=_optional_path(self.ffmpeg_path_input.text()),
             acoustid_config=AcoustIDConfig(
                 client_key=self.acoustid_key_input.text().strip(),
@@ -2025,6 +2173,8 @@ class MainWindow(QMainWindow):
             job,
             cookie_file=_optional_path(self.cookie_file_input.text()),
             ytmusic_auth_path=_optional_path(self.auth_path_input.text()),
+            ytmusic_oauth_client_file=self._ytmusic_oauth_client_file(),
+            ytmusic_oauth_token_file=self._ytmusic_oauth_token_file() if self._ytmusic_oauth_token_file().exists() else None,
             ffmpeg_location=_optional_path(self.ffmpeg_path_input.text()),
             acoustid_config=AcoustIDConfig(
                 client_key=self.acoustid_key_input.text().strip(),
@@ -2773,7 +2923,7 @@ def _playlist_incomplete_message(url: str, result: PlaylistExpansionResult) -> s
         return (
             "YouTube Music 플레이리스트 전체를 가져오지 못했습니다. "
             f"확인된 항목 {expected}개 중 {extracted}개만 읽었습니다. "
-            "쿠키 파일이 최신 로그인 세션인지 확인한 뒤 다시 시도하세요."
+            "Google 계정 연결 또는 쿠키 파일 세션을 확인한 뒤 다시 시도하세요."
         )
     return (
         "yt-dlp가 플레이리스트 전체를 가져오지 못했습니다. "
@@ -2782,16 +2932,16 @@ def _playlist_incomplete_message(url: str, result: PlaylistExpansionResult) -> s
     )
 
 
-def _playlist_expansion_failure_message(url: str, error: object, *, cookie_diagnostic: str = "") -> str:
+def _playlist_expansion_failure_message(url: str, error: object, *, auth_diagnostic: str = "") -> str:
     message = str(error or "").strip() or "알 수 없는 오류"
     if _is_liked_music_playlist(url):
         parts = [
             f"{message}\n"
-            "YouTube Music 좋아요 표시한 음악(LM)은 로그인 세션이 담긴 Netscape 형식 cookies.txt가 필요합니다. "
-            "설정의 쿠키 파일을 최신 파일로 지정한 뒤 playlist URL을 다시 추가하세요."
+            "YouTube Music 좋아요 표시한 음악(LM)은 계정 접근이 필요합니다. "
+            "설정에서 Google 계정을 연결하거나 최신 Netscape 형식 cookies.txt를 지정한 뒤 playlist URL을 다시 추가하세요."
         ]
-        if cookie_diagnostic:
-            parts.append(cookie_diagnostic)
+        if auth_diagnostic:
+            parts.append(auth_diagnostic)
         return "\n".join(parts)
     return message
 

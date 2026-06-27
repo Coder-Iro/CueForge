@@ -5,8 +5,12 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 
 
-ROOT = Path(SPECPATH).parent
+SPEC_DIR = Path(SPECPATH).parent
+ROOT = SPEC_DIR.parent if SPEC_DIR.name == "packaging" else SPEC_DIR
 datas = collect_data_files("ytmusicapi", includes=["locales/**/*"])
+oauth_client_config = ROOT / "config" / "google_oauth_client.json"
+if oauth_client_config.exists():
+    datas.append((str(oauth_client_config), "config"))
 binaries = []
 hiddenimports = [
     "PySide6.QtCore",

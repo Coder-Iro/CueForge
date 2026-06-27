@@ -70,6 +70,8 @@ def test_pyinstaller_spec_bundles_ytmusicapi_locales() -> None:
     assert "collect_data_files" in spec
     assert '"ytmusicapi"' in spec
     assert "locales/**/*" in spec
+    assert 'ROOT / "config" / "google_oauth_client.json"' in spec
+    assert "datas.append((str(oauth_client_config), \"config\"))" in spec
 
 
 def test_packaging_script_times_out_packaged_diagnostics() -> None:

@@ -16,6 +16,8 @@ from cueforge.metadata.ytmusic_auth import (
     YTMusicCookieAuthConfig,
     YTMusicCookieAuthError,
     build_ytmusic_cookie_auth,
+    load_ytmusic_oauth_client,
+    write_ytmusic_oauth_token,
 )
 from cueforge.models import ReviewState, TrackMetadata
 
@@ -233,6 +235,68 @@ def test_youtube_music_provider_prefers_manual_auth_json(tmp_path: Path) -> None
     provider.lookup("abc")
 
     assert calls == [str(auth_path)]
+
+
+def test_youtube_music_provider_prefers_oauth_token(tmp_path: Path) -> None:
+    oauth_client_file = tmp_path / "google_oauth_client.json"
+    oauth_client_file.write_text(
+        '{"installed": {"client_id": "client.apps.googleusercontent.com", "client_secret": "secret"}}',
+        encoding="utf-8",
+    )
+    oauth_token_file = tmp_path / "ytmusic_oauth_token.json"
+    oauth_token_file.write_text(
+        '{"access_token": "token", "refresh_token": "refresh", "expires_in": 3600, "expires_at": 9999999999, "scope": "https://www.googleapis.com/auth/youtube", "token_type": "Bearer"}',
+        encoding="utf-8",
+    )
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    calls: list[tuple[object, object]] = []
+
+    provider = YouTubeMusicProvider(
+        oauth_client_file=oauth_client_file,
+        oauth_token_file=oauth_token_file,
+        cookie_file=cookie_file,
+        browser_auth_builder=lambda: {"Cookie": "__Secure-3PAPISID=sapisid"},
+        client_factory=lambda auth, oauth_credentials=None: calls.append((auth, oauth_credentials)) or FakeYTMusic(),
+    )
+
+    provider.lookup("abc")
+
+    assert calls[0][0] == str(oauth_token_file)
+    assert calls[0][1].client_id == "client.apps.googleusercontent.com"
+
+
+def test_youtube_music_oauth_client_loader_accepts_google_client_json(tmp_path: Path) -> None:
+    client_file = tmp_path / "google_oauth_client.json"
+    client_file.write_text(
+        '{"installed": {"client_id": "client.apps.googleusercontent.com", "client_secret": "secret"}}',
+        encoding="utf-8",
+    )
+
+    client = load_ytmusic_oauth_client(client_file)
+
+    assert client.client_id == "client.apps.googleusercontent.com"
+    assert client.client_secret == "secret"
+
+
+def test_youtube_music_oauth_token_writer_adds_expiration(tmp_path: Path) -> None:
+    token_file = tmp_path / "ytmusic_oauth_token.json"
+
+    write_ytmusic_oauth_token(
+        {
+            "access_token": "token",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+            "scope": "https://www.googleapis.com/auth/youtube",
+            "token_type": "Bearer",
+        },
+        token_file,
+    )
+
+    payload = token_file.read_text(encoding="utf-8")
+
+    assert '"expires_at"' in payload
+    assert '"refresh_token": "refresh"' in payload
 
 
 def test_youtube_music_provider_falls_back_when_cookie_file_auth_fails(tmp_path: Path) -> None:

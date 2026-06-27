@@ -166,7 +166,7 @@ def test_main_window_replaces_existing_playlist_job_on_retry(tmp_path) -> None:
         app.processEvents()
 
 
-def test_main_window_liked_music_playlist_failure_mentions_cookie_file(tmp_path) -> None:
+def test_main_window_liked_music_playlist_failure_mentions_account_auth(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
 
     def expand_playlist(url: str) -> PlaylistExpansionResult:
@@ -183,6 +183,7 @@ def test_main_window_liked_music_playlist_failure_mentions_cookie_file(tmp_path)
         assert replacement_jobs == []
         assert playlist_job.id in window.jobs
         assert "좋아요 표시한 음악" in playlist_job.error
+        assert "Google 계정" in playlist_job.error
         assert "cookies.txt" in playlist_job.error
     finally:
         window.close()

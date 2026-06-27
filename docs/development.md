@@ -30,9 +30,11 @@ Before each commit, run the most relevant test command and check `git status --s
 
 ## YouTube Music Authentication
 
-The app can run without cookies for public URLs. For account-scoped access, select a Netscape-format cookies.txt file in Settings so yt-dlp can use `cookiefile`.
-CueForge reuses that cookie file for YouTube Music metadata. When the file contains a valid `music.youtube.com` `__Secure-3PAPISID` cookie, CueForge builds the browser auth payload expected by `ytmusicapi`.
-Direct browser-cookie extraction through yt-dlp `cookiesfrombrowser` is not exposed because Chromium-based browser cookie decryption is unreliable on current Windows builds. Manual `ytmusicapi` browser auth JSON remains available as an advanced fallback; do not commit auth JSON, copied request headers, or cookies.txt files.
+The app can run without auth for public URLs. For account-scoped YouTube Music metadata and playlist expansion, place the distributor-owned Google OAuth client JSON at `config/google_oauth_client.json` before packaging. Packaged users can then press Settings > Google Account > Connect, complete the browser approval, and CueForge stores the user's OAuth token under the app data directory.
+
+OAuth is preferred for `ytmusicapi` metadata and YouTube Music playlist expansion. A Netscape-format cookies.txt file remains supported as a fallback and is still passed to yt-dlp as `cookiefile` when the actual media download needs a logged-in YouTube session. When a cookie file contains a valid `music.youtube.com` `__Secure-3PAPISID` cookie, CueForge can also build the browser auth payload expected by `ytmusicapi`.
+
+Direct browser-cookie extraction through yt-dlp `cookiesfrombrowser` is not exposed because Chromium-based browser cookie decryption is unreliable on current Windows builds. Manual `ytmusicapi` browser auth JSON remains available as an advanced fallback; do not commit the real OAuth client JSON, auth JSON, copied request headers, OAuth tokens, or cookies.txt files.
 
 ## Audio Recognition
 
@@ -59,7 +61,7 @@ The review tab shows a review queue, candidate metadata rows, matched fields, ca
 
 ## Beta Diagnostics
 
-The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, cookie file status, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, cover source, and written/skipped tag fields.
+The Queue tab shows a compact settings status banner for ffmpeg, fpcalc, AcoustID, cookie file status, Google OAuth status, and YouTube Music auth. The Settings tab has a Copy Diagnostics action that copies Python, PySide6, yt-dlp, and external dependency status to the clipboard. Job logs include best candidate, selected metadata, cover source, and written/skipped tag fields.
 
 For packaged or local metadata smoke checks without audio download:
 
@@ -80,6 +82,8 @@ Windows releases are built as a PyInstaller application plus an Inno Setup onlin
 ```
 
 The package script runs verification in this fixed order: full `pytest`, local GUI smoke, metadata regression fixture suite, packaged `--diagnose-file`, and packaged `--smoke-gui`. It then resolves external dependency URLs from `microsoft/winget-pkgs` and invokes Inno Setup if `ISCC.exe` is available. Use `-SkipInstaller` when only the PyInstaller app is needed, or `-SkipTests` for a repeat build after tests have already passed.
+
+If `config\google_oauth_client.json` exists when PyInstaller runs, the spec copies it into the packaged app under `config`. Keep the real file local and untracked; use `config\google_oauth_client.example.json` as the committed template.
 
 External dependency package IDs are configured in `packaging\dependencies.windows-x64.json`:
 

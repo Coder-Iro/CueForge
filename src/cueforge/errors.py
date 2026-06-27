@@ -37,7 +37,7 @@ def action_hint(category: ErrorCategory | str) -> str:
     return {
         ErrorCategory.UNSUPPORTED_URL: "지원하는 YouTube, YouTube Music, SoundCloud URL인지 확인하세요.",
         ErrorCategory.MISSING_DEPENDENCY: "설정에서 ffmpeg/fpcalc 경로를 확인하거나 초기 설정을 다시 열어 주세요.",
-        ErrorCategory.AUTH_REQUIRED: "계정 접근이 필요하면 설정에서 쿠키 파일 또는 YTMusic 인증 JSON을 지정한 뒤 재시도하세요.",
+        ErrorCategory.AUTH_REQUIRED: "계정 접근이 필요하면 설정에서 Google 계정을 연결하거나 쿠키 파일/YTMusic 인증 JSON을 지정한 뒤 재시도하세요.",
         ErrorCategory.COOKIE_COPY_FAILED: "브라우저 쿠키 직접 읽기는 지원하지 않습니다. Netscape 형식 쿠키 파일을 지정한 뒤 재시도하세요.",
         ErrorCategory.NETWORK_TIMEOUT: "네트워크 상태를 확인하고 잠시 뒤 재시도하세요.",
         ErrorCategory.RATE_LIMITED: "외부 서비스 제한에 걸렸습니다. 잠시 기다린 뒤 재시도하세요.",

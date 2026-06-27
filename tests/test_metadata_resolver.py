@@ -141,6 +141,31 @@ def test_youtube_resolver_passes_cookie_file_auth_option(tmp_path: Path) -> None
     assert calls[0]["cookie_file"] == cookie_file
 
 
+def test_youtube_resolver_passes_oauth_auth_options(tmp_path: Path) -> None:
+    calls: list[dict] = []
+    oauth_client_file = tmp_path / "google_oauth_client.json"
+    oauth_token_file = tmp_path / "ytmusic_oauth_token.json"
+
+    def factory(**kwargs: object) -> FakeYTMusicProvider:
+        calls.append(kwargs)
+        return FakeYTMusicProvider()
+
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=factory,
+        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
+    )
+
+    resolver.resolve(
+        url="https://music.youtube.com/watch?v=abc",
+        info={"extractor_key": "Youtube", "title": "Fallback"},
+        ytmusic_oauth_client_file=oauth_client_file,
+        ytmusic_oauth_token_file=oauth_token_file,
+    )
+
+    assert calls[0]["oauth_client_file"] == oauth_client_file
+    assert calls[0]["oauth_token_file"] == oauth_token_file
+
+
 def test_youtube_resolver_prefers_cover_art_archive_over_platform_thumbnail() -> None:
     calls: list[str] = []
 

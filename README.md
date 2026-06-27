@@ -29,7 +29,7 @@ python -m venv .venv
 ```
 
 The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings.
-For account-scoped YouTube access, Settings can point CueForge at a Netscape-format cookies.txt file. CueForge passes that file to yt-dlp and reuses it for YouTube Music metadata. Direct browser-cookie extraction is intentionally not exposed because Chromium-based browser cookie decryption is unreliable on current Windows builds. Manual YTMusic auth JSON remains available as an advanced fallback.
+For account-scoped YouTube Music metadata and playlist expansion, packaged builds can include `config/google_oauth_client.json`; end users then use Settings > Google Account to connect their Google account through the browser. CueForge stores only the user's refresh token under the app data directory and prefers OAuth over manual JSON or cookies for YouTube Music metadata. A Netscape-format cookies.txt file is still supported as a fallback and is still passed to yt-dlp for download authorization when a video itself requires a logged-in session. Direct browser-cookie extraction is intentionally not exposed because Chromium-based browser cookie decryption is unreliable on current Windows builds. Manual YTMusic auth JSON remains available as an advanced fallback.
 Use `python -m cueforge --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
 
 ## Windows Packaging
@@ -41,5 +41,6 @@ The release flow builds a PyInstaller app and an Inno Setup online installer. At
 ```
 
 Use `-SkipInstaller` to build only the PyInstaller app. External dependency package IDs are configured in `packaging/dependencies.windows-x64.json`; resolved versions, hashes, packaged diagnostics, installer SHA-256, and verification results are written to the release report during packaging.
+Copy your Google OAuth desktop/client JSON to `config/google_oauth_client.json` before packaging if you want the distributed app to expose the one-click Google account connection flow. The real client file is ignored by git; `config/google_oauth_client.example.json` documents the expected shape.
 
 See [docs/development.md](docs/development.md) for commit, authentication, and packaging notes.

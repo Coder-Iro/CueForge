@@ -17,7 +17,18 @@ from cueforge.metadata.soundcloud import (
     build_soundcloud_native_candidate,
 )
 from cueforge.metadata.ytmusic import YouTubeMusicProvider
-from cueforge.metadata.ytmusic_auth import YTMusicCookieAuthConfig, YTMusicCookieAuthError, build_ytmusic_cookie_auth
+from cueforge.metadata.ytmusic_auth import (
+    YTMusicCookieAuthConfig,
+    YTMusicCookieAuthError,
+    YTMusicOAuthClient,
+    YTMusicOAuthError,
+    build_ytmusic_cookie_auth,
+    build_ytmusic_oauth_credentials,
+    default_ytmusic_oauth_token_path,
+    find_ytmusic_oauth_client_file,
+    load_ytmusic_oauth_client,
+    write_ytmusic_oauth_token,
+)
 from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
 
 __all__ = [
@@ -38,14 +49,21 @@ __all__ = [
     "YouTubeMusicProvider",
     "YTMusicCookieAuthConfig",
     "YTMusicCookieAuthError",
+    "YTMusicOAuthClient",
+    "YTMusicOAuthError",
     "as_reference_candidate",
     "build_safe_fallback",
     "build_hint_candidates",
     "build_ytmusic_cookie_auth",
+    "build_ytmusic_oauth_credentials",
     "clean_metadata",
+    "default_ytmusic_oauth_token_path",
+    "find_ytmusic_oauth_client_file",
     "build_soundcloud_metadata",
     "build_soundcloud_native_candidate",
     "extract_metadata_hints",
+    "load_ytmusic_oauth_client",
     "merge_metadata",
     "parse_artist_title",
+    "write_ytmusic_oauth_token",
 ]

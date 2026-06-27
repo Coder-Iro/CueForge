@@ -10,7 +10,10 @@ from urllib.parse import parse_qs, urlparse
 from cueforge.metadata.ytmusic_auth import (
     YTMusicCookieAuthConfig,
     YTMusicCookieAuthError,
+    YTMusicOAuthError,
+    build_ytmusic_oauth_credentials,
     build_ytmusic_cookie_auth,
+    load_ytmusic_oauth_client,
 )
 from cueforge.metadata.normalize import clean_metadata, clean_title, parse_artist_title
 from cueforge.models import TrackMetadata
@@ -28,13 +31,17 @@ class YouTubeMusicProvider:
         *,
         auth_path: Path | None = None,
         cookie_file: Path | None = None,
+        oauth_client_file: Path | None = None,
+        oauth_token_file: Path | None = None,
         client: YTMusicLike | None = None,
-        client_factory: Callable[[Any], YTMusicLike] | None = None,
+        client_factory: Callable[..., YTMusicLike] | None = None,
         browser_auth_builder: Callable[[], dict[str, str] | None] | None = None,
         log: Callable[[str], None] | None = None,
     ) -> None:
         self.auth_path = auth_path
         self.cookie_file = cookie_file
+        self.oauth_client_file = oauth_client_file
+        self.oauth_token_file = oauth_token_file
         self._client = client
         self._client_factory = client_factory
         self._browser_auth_builder = browser_auth_builder
@@ -57,17 +64,30 @@ class YouTubeMusicProvider:
     def _create_client(self) -> YTMusicLike:
         from ytmusicapi import YTMusic
 
-        auth = self._resolve_auth()
+        auth, oauth_credentials = self._resolve_auth()
         if self._client_factory:
-            return self._client_factory(auth)
+            try:
+                return self._client_factory(auth, oauth_credentials=oauth_credentials)
+            except TypeError:
+                return self._client_factory(auth)
         if auth is None:
             return YTMusic()
+        if oauth_credentials is not None:
+            return YTMusic(auth, oauth_credentials=oauth_credentials)
         return YTMusic(auth)
 
-    def _resolve_auth(self) -> Any:
+    def _resolve_auth(self) -> tuple[Any, Any]:
+        if self.oauth_client_file and self.oauth_token_file and self.oauth_token_file.exists():
+            try:
+                client = load_ytmusic_oauth_client(self.oauth_client_file)
+                self._emit("YTMusic 인증: Google OAuth 사용")
+                return str(self.oauth_token_file), build_ytmusic_oauth_credentials(client)
+            except YTMusicOAuthError as exc:
+                self._emit(f"YTMusic OAuth 인증 생략: {exc}")
+
         if self.auth_path and self.auth_path.exists():
             self._emit("YTMusic 인증: 수동 JSON 사용")
-            return str(self.auth_path)
+            return str(self.auth_path), None
 
         if self.cookie_file and self.cookie_file.exists():
             builder = self._browser_auth_builder or self._build_browser_auth
@@ -76,13 +96,13 @@ class YouTubeMusicProvider:
                 auth = builder()
             except YTMusicCookieAuthError as exc:
                 self._emit(f"YTMusic 쿠키 파일 인증 생략: {exc}")
-                return None
+                return None, None
             if auth:
                 self._emit("YTMusic 인증: 쿠키 파일 사용")
-            return auth
+            return auth, None
 
         self._emit("YTMusic 인증: 무인증 조회 사용")
-        return None
+        return None, None
 
     def _build_browser_auth(self) -> dict[str, str] | None:
         if not self.cookie_file:

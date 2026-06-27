@@ -48,6 +48,8 @@ class MetadataResolver:
         info: dict[str, Any],
         ytmusic_auth_path: Path | None = None,
         ytmusic_cookie_file: Path | None = None,
+        ytmusic_oauth_client_file: Path | None = None,
+        ytmusic_oauth_token_file: Path | None = None,
         log: Callable[[str], None] | None = None,
     ) -> MetadataResolution:
         platform = detect_source_platform(url, info)
@@ -63,6 +65,8 @@ class MetadataResolver:
             youtube = self._new_ytmusic_provider(
                 auth_path=ytmusic_auth_path,
                 cookie_file=ytmusic_cookie_file,
+                oauth_client_file=ytmusic_oauth_client_file,
+                oauth_token_file=ytmusic_oauth_token_file,
                 log=log,
             ).lookup(url)
             if youtube.title or youtube.artist:
@@ -85,12 +89,16 @@ class MetadataResolver:
         *,
         auth_path: Path | None,
         cookie_file: Path | None,
+        oauth_client_file: Path | None,
+        oauth_token_file: Path | None,
         log: Callable[[str], None] | None,
     ) -> Any:
         try:
             return self._ytmusic_provider_factory(
                 auth_path=auth_path,
                 cookie_file=cookie_file,
+                oauth_client_file=oauth_client_file,
+                oauth_token_file=oauth_token_file,
                 log=log,
             )
         except TypeError:

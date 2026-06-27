@@ -6,7 +6,7 @@ import json
 import os
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -20,12 +20,15 @@ import requests
 YTMUSIC_ORIGIN = "https://music.youtube.com"
 YTMUSIC_COOKIE_URL = f"{YTMUSIC_ORIGIN}/"
 OAUTH_CLIENT_ENV_VAR = "CUEFORGE_GOOGLE_OAUTH_CLIENT"
+OAUTH_ACCOUNT_FILE_NAME = "ytmusic_oauth_account.json"
 OAUTH_TOKEN_FILE_NAME = "ytmusic_oauth_token.json"
-YTMUSIC_OAUTH_SCOPE = "https://www.googleapis.com/auth/youtube"
+YTMUSIC_OAUTH_SCOPE = "https://www.googleapis.com/auth/youtube openid email profile"
 GOOGLE_OAUTH_AUTH_URI = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_OAUTH_TOKEN_URI = "https://oauth2.googleapis.com/token"
+GOOGLE_OAUTH_USERINFO_URI = "https://openidconnect.googleapis.com/v1/userinfo"
 OAUTH_LOCAL_CALLBACK_PATH = "/oauth/callback"
 OAUTH_LOCAL_TIMEOUT_SECONDS = 180
+YTMUSIC_TOKEN_KEYS = ("access_token", "refresh_token", "expires_at", "expires_in", "scope", "token_type")
 
 
 @dataclass(slots=True, frozen=True)
@@ -40,6 +43,14 @@ class YTMusicOAuthClient:
     source_path: Path
     auth_uri: str = GOOGLE_OAUTH_AUTH_URI
     token_uri: str = GOOGLE_OAUTH_TOKEN_URI
+
+
+@dataclass(slots=True, frozen=True)
+class YTMusicOAuthAccount:
+    email: str = ""
+    name: str = ""
+    picture: str = ""
+    sub: str = ""
 
 
 class YTMusicCookieAuthError(RuntimeError):
@@ -62,6 +73,10 @@ def build_ytmusic_cookie_auth(config: YTMusicCookieAuthConfig) -> dict[str, str]
 
 def default_ytmusic_oauth_token_path() -> Path:
     return user_data_path("CueForge") / OAUTH_TOKEN_FILE_NAME
+
+
+def default_ytmusic_oauth_account_path() -> Path:
+    return user_data_path("CueForge") / OAUTH_ACCOUNT_FILE_NAME
 
 
 def ytmusic_oauth_client_candidates(root: Path) -> tuple[Path, ...]:
@@ -196,7 +211,71 @@ def run_ytmusic_oauth_desktop_flow(
     return exchange_ytmusic_oauth_code(client, code=code, redirect_uri=redirect_uri)
 
 
+def fetch_ytmusic_oauth_account(token: dict[str, Any], *, session: Any | None = None) -> YTMusicOAuthAccount:
+    access_token = str(token.get("access_token") or "")
+    if not access_token:
+        raise YTMusicOAuthError("OAuth access_token이 없어 Google 계정을 확인할 수 없습니다.")
+    http = session or requests
+    try:
+        response = http.get(
+            GOOGLE_OAUTH_USERINFO_URI,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=30,
+        )
+    except Exception as exc:
+        raise YTMusicOAuthError(f"Google 계정 정보 요청 실패: {exc}") from exc
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise YTMusicOAuthError(f"Google 계정 정보 응답을 읽을 수 없음: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise YTMusicOAuthError("Google 계정 정보 응답 형식이 올바르지 않음")
+    if response.status_code >= 400 or payload.get("error"):
+        message = payload.get("error_description") or payload.get("error") or response.text
+        raise YTMusicOAuthError(f"Google 계정 정보 확인 실패: {message}")
+    account = YTMusicOAuthAccount(
+        email=str(payload.get("email") or "").strip(),
+        name=str(payload.get("name") or "").strip(),
+        picture=str(payload.get("picture") or "").strip(),
+        sub=str(payload.get("sub") or "").strip(),
+    )
+    if not account.email and not account.name and not account.sub:
+        raise YTMusicOAuthError("Google 계정 정보에 식별할 수 있는 값이 없습니다.")
+    return account
+
+
+def google_oauth_account_label(account: YTMusicOAuthAccount | None) -> str:
+    if not account:
+        return ""
+    if account.email and account.name:
+        return f"{account.email} ({account.name})"
+    return account.email or account.name or account.sub
+
+
+def read_ytmusic_oauth_account(path: Path) -> YTMusicOAuthAccount | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return YTMusicOAuthAccount(
+        email=str(payload.get("email") or "").strip(),
+        name=str(payload.get("name") or "").strip(),
+        picture=str(payload.get("picture") or "").strip(),
+        sub=str(payload.get("sub") or "").strip(),
+    )
+
+
+def write_ytmusic_oauth_account(account: YTMusicOAuthAccount, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(account), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def write_ytmusic_oauth_token(token: dict[str, Any], path: Path) -> None:
+    token = {key: token[key] for key in YTMUSIC_TOKEN_KEYS if key in token}
     if "expires_at" not in token and token.get("expires_in"):
         token = {**token, "expires_at": int(time.time()) + int(token["expires_in"])}
     path.parent.mkdir(parents=True, exist_ok=True)

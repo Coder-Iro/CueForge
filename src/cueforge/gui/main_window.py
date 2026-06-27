@@ -50,11 +50,16 @@ from cueforge.metadata import (
     AcoustIDProvider,
     CoverArtProvider,
     MetadataResolver,
+    default_ytmusic_oauth_account_path,
     build_ytmusic_oauth_credentials,
     default_ytmusic_oauth_token_path,
+    fetch_ytmusic_oauth_account,
     find_ytmusic_oauth_client_file,
+    google_oauth_account_label,
     load_ytmusic_oauth_client,
+    read_ytmusic_oauth_account,
     run_ytmusic_oauth_desktop_flow,
+    write_ytmusic_oauth_account,
     write_ytmusic_oauth_token,
 )
 from cueforge.metadata.fingerprint import FingerprintError, FingerprintUnavailable
@@ -369,14 +374,15 @@ class CoverPreviewWorker(QThread):
 
 
 class GoogleOAuthWorker(QThread):
-    connected = Signal()
+    connected = Signal(str)
     failed = Signal(str)
     log_message = Signal(str)
 
-    def __init__(self, client_file: Path, token_file: Path) -> None:
+    def __init__(self, client_file: Path, token_file: Path, account_file: Path) -> None:
         super().__init__()
         self.client_file = client_file
         self.token_file = token_file
+        self.account_file = account_file
 
     def run(self) -> None:
         try:
@@ -384,7 +390,21 @@ class GoogleOAuthWorker(QThread):
             self.log_message.emit("Google OAuth 연결 시작: 브라우저에서 계정 승인을 완료하세요.")
             token = run_ytmusic_oauth_desktop_flow(client)
             write_ytmusic_oauth_token(token, self.token_file)
-            self.connected.emit()
+            account_label = ""
+            if self.account_file.exists():
+                try:
+                    self.account_file.unlink()
+                except OSError:
+                    pass
+            try:
+                account = fetch_ytmusic_oauth_account(token)
+                write_ytmusic_oauth_account(account, self.account_file)
+                account_label = google_oauth_account_label(account)
+                if account_label:
+                    self.log_message.emit(f"Google OAuth 계정 확인됨: {account_label}")
+            except Exception as exc:
+                self.log_message.emit(f"Google OAuth 계정 정보 확인 실패: {exc}")
+            self.connected.emit(account_label)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -1040,6 +1060,7 @@ class MainWindow(QMainWindow):
             self.cookie_file_input.text().strip(),
             str(self._ytmusic_oauth_client_file() or ""),
             str(self._ytmusic_oauth_token_file().exists()),
+            self._google_oauth_account_label(),
             str(self.metadata_parallel_spin.value()),
             str(self.download_parallel_spin.value()),
             str(self.tagging_parallel_spin.value()),
@@ -1051,7 +1072,9 @@ class MainWindow(QMainWindow):
         acoustid = "설정됨" if self.acoustid_key_input.text().strip() else "미설정"
         cookie_file = "설정됨" if self.cookie_file_input.text().strip() else "미설정"
         google_oauth = (
-            "연결됨"
+            f"연결됨: {self._google_oauth_account_label()}"
+            if self._ytmusic_oauth_connected() and self._google_oauth_account_label()
+            else "연결됨"
             if self._ytmusic_oauth_connected()
             else "클라이언트 있음"
             if self._ytmusic_oauth_client_file()
@@ -1107,7 +1130,11 @@ class MainWindow(QMainWindow):
         elif not client_file:
             text = "배포 설정에 Google OAuth 클라이언트가 없습니다. config/google_oauth_client.json을 포함하면 계정 연결을 사용할 수 있습니다."
         elif token_file.exists():
-            text = "Google 계정 연결됨. 비공개 YouTube Music 플레이리스트 조회에 OAuth를 우선 사용합니다."
+            account_label = self._google_oauth_account_label()
+            if account_label:
+                text = f"Google 계정 연결됨: {account_label}. 비공개 YouTube Music 플레이리스트 조회에 OAuth를 우선 사용합니다."
+            else:
+                text = "Google 계정 연결됨. 계정 정보를 표시하려면 Google 계정을 다시 연결하세요."
         else:
             text = "Google OAuth 클라이언트 준비됨. 계정 연결 후 비공개 플레이리스트 조회에 OAuth를 사용합니다."
         self.google_oauth_status_label.setText(text)
@@ -1122,6 +1149,12 @@ class MainWindow(QMainWindow):
     def _ytmusic_oauth_token_file(self) -> Path:
         return default_ytmusic_oauth_token_path()
 
+    def _ytmusic_oauth_account_file(self) -> Path:
+        return default_ytmusic_oauth_account_path()
+
+    def _google_oauth_account_label(self) -> str:
+        return google_oauth_account_label(read_ytmusic_oauth_account(self._ytmusic_oauth_account_file()))
+
     def _ytmusic_oauth_connected(self) -> bool:
         return bool(self._ytmusic_oauth_client_file() and self._ytmusic_oauth_token_file().exists())
 
@@ -1132,7 +1165,7 @@ class MainWindow(QMainWindow):
         if not client_file:
             QMessageBox.warning(self, "OAuth 설정 없음", "배포 폴더의 config/google_oauth_client.json 파일을 찾을 수 없습니다.")
             return
-        worker = GoogleOAuthWorker(client_file, self._ytmusic_oauth_token_file())
+        worker = GoogleOAuthWorker(client_file, self._ytmusic_oauth_token_file(), self._ytmusic_oauth_account_file())
         worker.log_message.connect(lambda message: self._append_log("system", message))
         worker.connected.connect(self._on_google_oauth_connected)
         worker.failed.connect(self._on_google_oauth_failed)
@@ -1141,8 +1174,9 @@ class MainWindow(QMainWindow):
         self._refresh_google_oauth_status()
         worker.start()
 
-    def _on_google_oauth_connected(self) -> None:
-        self._append_log("system", "Google 계정 연결됨")
+    def _on_google_oauth_connected(self, account_label: str) -> None:
+        suffix = f": {account_label}" if account_label else ""
+        self._append_log("system", f"Google 계정 연결됨{suffix}")
         self._dependency_status_cache_key = None
         self._refresh_settings_status_label()
 
@@ -1158,13 +1192,17 @@ class MainWindow(QMainWindow):
         self._refresh_google_oauth_status()
 
     def _disconnect_google_oauth(self) -> None:
-        token_file = self._ytmusic_oauth_token_file()
-        if token_file.exists():
+        failed: list[str] = []
+        for path in (self._ytmusic_oauth_token_file(), self._ytmusic_oauth_account_file()):
+            if not path.exists():
+                continue
             try:
-                token_file.unlink()
+                path.unlink()
             except Exception as exc:
-                QMessageBox.warning(self, "연결 해제 실패", str(exc))
-                return
+                failed.append(str(exc))
+        if failed:
+            QMessageBox.warning(self, "연결 해제 실패", "\n".join(failed))
+            return
         self._append_log("system", "Google 계정 연결 해제됨")
         self._dependency_status_cache_key = None
         self._refresh_settings_status_label()

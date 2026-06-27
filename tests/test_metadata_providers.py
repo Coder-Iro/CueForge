@@ -16,12 +16,17 @@ from cueforge.metadata.ytmusic import YouTubeMusicProvider, extract_video_id
 from cueforge.metadata.ytmusic_auth import (
     YTMusicCookieAuthConfig,
     YTMusicCookieAuthError,
+    YTMusicOAuthAccount,
     YTMusicOAuthClient,
     YTMusicOAuthError,
     build_ytmusic_oauth_authorization_url,
     build_ytmusic_cookie_auth,
     exchange_ytmusic_oauth_code,
+    fetch_ytmusic_oauth_account,
+    google_oauth_account_label,
     load_ytmusic_oauth_client,
+    read_ytmusic_oauth_account,
+    write_ytmusic_oauth_account,
     write_ytmusic_oauth_token,
 )
 from cueforge.models import ReviewState, TrackMetadata
@@ -304,7 +309,11 @@ def test_youtube_music_oauth_authorization_url_uses_desktop_callback() -> None:
     assert parsed.netloc == "accounts.google.com"
     assert query["client_id"] == ["client.apps.googleusercontent.com"]
     assert query["redirect_uri"] == ["http://127.0.0.1:12345/oauth/callback"]
-    assert query["scope"] == ["https://www.googleapis.com/auth/youtube"]
+    scopes = set(query["scope"][0].split())
+    assert "https://www.googleapis.com/auth/youtube" in scopes
+    assert "openid" in scopes
+    assert "email" in scopes
+    assert "profile" in scopes
     assert query["access_type"] == ["offline"]
     assert query["prompt"] == ["consent"]
     assert query["state"] == ["state-token"]
@@ -399,6 +408,64 @@ def test_youtube_music_oauth_token_writer_adds_expiration(tmp_path: Path) -> Non
 
     assert '"expires_at"' in payload
     assert '"refresh_token": "refresh"' in payload
+
+
+def test_youtube_music_oauth_token_writer_filters_openid_extras(tmp_path: Path) -> None:
+    token_file = tmp_path / "ytmusic_oauth_token.json"
+
+    write_ytmusic_oauth_token(
+        {
+            "access_token": "token",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+            "scope": "https://www.googleapis.com/auth/youtube openid email profile",
+            "token_type": "Bearer",
+            "id_token": "openid-token",
+        },
+        token_file,
+    )
+
+    payload = token_file.read_text(encoding="utf-8")
+
+    assert '"id_token"' not in payload
+    assert '"scope": "https://www.googleapis.com/auth/youtube openid email profile"' in payload
+
+
+def test_youtube_music_oauth_account_fetch_and_label() -> None:
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {
+                "email": "dj@example.com",
+                "name": "Cue DJ",
+                "picture": "https://example.com/avatar.png",
+                "sub": "123",
+            }
+
+    class Session:
+        def get(self, url: str, *, headers: dict[str, str], timeout: int) -> Response:
+            calls.append({"url": url, "headers": headers, "timeout": timeout})
+            return Response()
+
+    account = fetch_ytmusic_oauth_account({"access_token": "access"}, session=Session())
+
+    assert account.email == "dj@example.com"
+    assert google_oauth_account_label(account) == "dj@example.com (Cue DJ)"
+    assert calls[0]["headers"] == {"Authorization": "Bearer access"}
+
+
+def test_youtube_music_oauth_account_round_trip(tmp_path: Path) -> None:
+    account_file = tmp_path / "ytmusic_oauth_account.json"
+    account = YTMusicOAuthAccount(email="dj@example.com", name="Cue DJ", picture="", sub="123")
+
+    write_ytmusic_oauth_account(account, account_file)
+
+    loaded = read_ytmusic_oauth_account(account_file)
+    assert loaded == account
 
 
 def test_youtube_music_provider_falls_back_when_cookie_file_auth_fails(tmp_path: Path) -> None:

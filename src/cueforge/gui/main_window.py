@@ -651,7 +651,7 @@ class MainWindow(QMainWindow):
 
         selection_group = QGroupBox("선택 항목")
         selection_layout = QHBoxLayout(selection_group)
-        self.analyze_selected_button = QPushButton("분석")
+        self.analyze_selected_button = QPushButton("처리")
         self.analyze_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.analyze_selected_button.clicked.connect(self._analyze_selected)
         selection_layout.addWidget(self.analyze_selected_button)
@@ -1203,9 +1203,12 @@ class MainWindow(QMainWindow):
         return YTMusic()
 
     def _start_next(self) -> None:
-        self._analyze_next()
+        self._process_next()
 
     def _analyze_next(self) -> None:
+        self._process_next()
+
+    def _process_next(self) -> None:
         if self.worker and self.worker.isRunning():
             self._refresh_actions()
             return
@@ -1220,9 +1223,14 @@ class MainWindow(QMainWindow):
                         index += 1
                         continue
                     job = replacement_jobs[0]
-                self._run_worker(job, analyze_only=True)
+                self._run_worker(job, analyze_only=False, worker_mode="process")
                 return
             index += 1
+        for job_id in self.row_job_ids:
+            job = self.jobs[job_id]
+            if job.status == DownloadStatus.APPROVED:
+                self._run_worker(job, approved_metadata=job.selected_metadata, worker_mode="process")
+                return
         self._refresh_actions()
 
     def _analyze_selected(self) -> None:
@@ -1239,12 +1247,12 @@ class MainWindow(QMainWindow):
                 first_job = replacement_jobs[0]
                 row = self.row_job_ids.index(first_job.id)
                 self.table.selectRow(row)
-                self._run_worker(first_job, analyze_only=True, continue_queue=False)
+                self._run_worker(first_job, analyze_only=False, continue_queue=False)
             else:
                 self._refresh_actions()
             return
         self._prepare_job_retry(job, message="선택 항목 분석 시작")
-        self._run_worker(job, analyze_only=True, continue_queue=False)
+        self._run_worker(job, analyze_only=False, continue_queue=False)
 
     def _download_next_approved(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -1293,7 +1301,7 @@ class MainWindow(QMainWindow):
             retried += 1
         self._refresh_actions()
         if retried:
-            self._analyze_next()
+            self._process_next()
 
     def _retry_selected(self) -> None:
         if self.worker and self.worker.isRunning():
@@ -1309,12 +1317,12 @@ class MainWindow(QMainWindow):
                 first_job = replacement_jobs[0]
                 row = self.row_job_ids.index(first_job.id)
                 self.table.selectRow(row)
-                self._run_worker(first_job, analyze_only=True, continue_queue=False)
+                self._run_worker(first_job, analyze_only=False, continue_queue=False)
             else:
                 self._refresh_actions()
             return
         self._prepare_job_retry(job, message="선택 항목 재시도 시작")
-        self._run_worker(job, analyze_only=True, continue_queue=False)
+        self._run_worker(job, analyze_only=False, continue_queue=False)
 
     def _prepare_job_retry(self, job: DownloadJob, *, message: str) -> None:
         _cleanup_temp_download(job)
@@ -1438,13 +1446,14 @@ class MainWindow(QMainWindow):
         *,
         analyze_only: bool = False,
         continue_queue: bool = True,
+        worker_mode: str | None = None,
     ) -> None:
         self.save_settings()
         self.cancel_requested = False
         job.status = DownloadStatus.DOWNLOADING if approved_metadata else DownloadStatus.METADATA
         job.platform = detect_source_platform(job.url).value
         self._update_row(job)
-        self.worker_mode = ("analysis" if analyze_only else "download") if continue_queue else "single"
+        self.worker_mode = worker_mode or (("analysis" if analyze_only else "download") if continue_queue else "single")
         self.worker = JobWorker(
             job,
             cookie_file=_optional_path(self.cookie_file_input.text()),
@@ -1550,6 +1559,8 @@ class MainWindow(QMainWindow):
             self._analyze_next()
         elif mode == "download":
             self._download_next_approved()
+        elif mode == "process":
+            self._process_next()
 
     def _approve_selected(self) -> None:
         job = self._active_review_job()
@@ -1564,9 +1575,21 @@ class MainWindow(QMainWindow):
         job.selected_metadata = metadata
         job.status = DownloadStatus.APPROVED
         self._update_row(job)
-        self._append_log(job.id, "메타데이터 승인됨; 다운로드 준비 완료")
+        self._append_log(job.id, "메타데이터 승인됨; 다운로드 시작")
         self._load_next_review_or_current(job)
+        self._download_approved_job(job)
         self._refresh_actions()
+
+    def _download_approved_job(self, job: DownloadJob) -> None:
+        if job.status != DownloadStatus.APPROVED:
+            return
+        if self.scheduler and self.scheduler.is_running():
+            self.scheduler.enqueue_downloads([job])
+            return
+        if self.worker and self.worker.isRunning():
+            self._append_log(job.id, "현재 작업 뒤 다운로드 예정")
+            return
+        self._run_worker(job, approved_metadata=job.selected_metadata, continue_queue=False)
 
     def _move_selected_to_review_queue(self) -> None:
         job = self._selected_job()
@@ -1606,29 +1629,50 @@ class MainWindow(QMainWindow):
         if not removable:
             QMessageBox.warning(self, "삭제할 수 없음", "실행 중인 작업은 삭제할 수 없습니다.")
             return
-        for job in sorted(removable, key=lambda item: self.row_job_ids.index(item.id), reverse=True):
-            self._remove_job(job)
+        self._remove_jobs(removable)
         if active_count:
             self._append_log("system", f"실행 중인 작업 {active_count}개는 삭제하지 않음")
         self._refresh_actions()
 
     def _remove_job(self, job: DownloadJob) -> None:
-        job_id = job.id
-        if job_id not in self.jobs:
+        self._remove_jobs([job])
+
+    def _remove_jobs(self, jobs: list[DownloadJob]) -> None:
+        removable = [job for job in jobs if job.id in self.jobs]
+        if not removable:
             return
-        row = self.row_job_ids.index(job_id)
-        _cleanup_temp_download(job)
-        self.table.removeRow(row)
-        self.row_job_ids.pop(row)
-        del self.jobs[job_id]
-        self.job_store.delete_job(job_id)
-        if self.active_review_job_id == job_id:
+        row_by_job_id = {job_id: row for row, job_id in enumerate(self.row_job_ids)}
+        rows_and_jobs = sorted(
+            ((row_by_job_id[job.id], job) for job in removable),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        removed_ids = [job.id for _row, job in rows_and_jobs]
+        removed_id_set = set(removed_ids)
+        active_review_removed = bool(self.active_review_job_id and self.active_review_job_id in removed_id_set)
+        previous_signal_state = self.table.blockSignals(True)
+        self.table.setUpdatesEnabled(False)
+        try:
+            for _row, job in rows_and_jobs:
+                _cleanup_temp_download(job)
+            for row, job in rows_and_jobs:
+                self.table.removeRow(row)
+                self.row_job_ids.pop(row)
+                del self.jobs[job.id]
+            self.table.clearSelection()
+        finally:
+            self.table.setUpdatesEnabled(True)
+            self.table.blockSignals(previous_signal_state)
+        self.job_store.delete_jobs(removed_ids)
+        if active_review_removed:
             self.active_review_job_id = None
             next_review = self._next_review_job()
             if next_review:
                 self._load_job_for_review(next_review, select_row=False)
             else:
                 self._clear_review_panel()
+        self._refresh_pipeline_board()
+        self._refresh_history()
 
     def _load_selected_job(self) -> None:
         job = self._selected_job()

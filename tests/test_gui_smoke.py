@@ -117,7 +117,7 @@ def test_main_window_flattens_playlist_when_analysis_starts(tmp_path, monkeypatc
         window.url_input.setText("https://www.youtube.com/playlist?list=PL123")
         window._add_url()
 
-        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, continue_queue=True):
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, continue_queue=True, worker_mode=None):
             analyzed.append(job.url)
 
         monkeypatch.setattr(window, "_run_worker", fake_run_worker)
@@ -760,6 +760,34 @@ def test_remove_selected_deletes_multiple_selected_queue_rows(tmp_path) -> None:
         app.processEvents()
 
 
+def test_remove_selected_bulk_deletes_large_selection(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    delete_batches: list[list[str]] = []
+    original_delete_jobs = window.job_store.delete_jobs
+    monkeypatch.setattr(
+        window.job_store,
+        "delete_jobs",
+        lambda job_ids: (delete_batches.append(list(job_ids)), original_delete_jobs(job_ids)),
+    )
+    try:
+        for index in range(120):
+            window.url_input.setText(f"https://youtu.be/{index}")
+            window._add_url()
+
+        window.table.selectAll()
+        app.processEvents()
+        window._remove_selected()
+
+        assert window.table.rowCount() == 0
+        assert window.jobs == {}
+        assert len(delete_batches) == 1
+        assert len(delete_batches[0]) == 120
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_pipeline_board_and_history_tab_reflect_job_states(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
@@ -900,7 +928,7 @@ def test_loaded_approved_track_can_move_back_to_review_queue(tmp_path) -> None:
         app.processEvents()
 
 
-def test_analyze_and_download_buttons_are_separate(tmp_path, monkeypatch) -> None:
+def test_queue_processing_auto_downloads_approved_tracks(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -913,18 +941,18 @@ def test_analyze_and_download_buttons_are_separate(tmp_path, monkeypatch) -> Non
 
         started = []
 
-        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False):
-            started.append((job, approved_metadata, analyze_only))
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, worker_mode=None):
+            started.append((job, approved_metadata, analyze_only, worker_mode))
 
         monkeypatch.setattr(window, "_run_worker", fake_run_worker)
 
         window._analyze_next()
         window._download_next_approved()
 
-        assert started[0] == (pending, None, True)
+        assert started[0] == (pending, None, False, "process")
         assert started[1][0] is approved
         assert started[1][1].title == "Ready"
-        assert started[1][2] is False
+        assert started[1][2:] == (False, None)
     finally:
         window.close()
         app.processEvents()
@@ -957,11 +985,11 @@ def test_selected_queue_actions_start_selected_jobs(tmp_path, monkeypatch) -> No
         window.table.selectRow(0)
         window._retry_selected()
 
-        assert started[0] == (pending, None, True, False)
+        assert started[0] == (pending, None, False, False)
         assert started[1][0] is approved
         assert started[1][1].title == "Ready"
         assert started[1][2:] == (False, False)
-        assert started[2] == (failed, None, True, False)
+        assert started[2] == (failed, None, False, False)
         assert failed.status == DownloadStatus.PENDING
         assert failed.error == ""
     finally:
@@ -1058,7 +1086,7 @@ def test_selected_running_job_loads_review_panel_when_metadata_needs_review(tmp_
         app.processEvents()
 
 
-def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path) -> None:
+def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -1069,13 +1097,15 @@ def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path) -> Non
         job.selected_metadata = TrackMetadata(title="Review Title", artist="Review Artist")
         window._load_job_for_review(job)
         assert window.active_review_job_id == job.id
+        downloads = []
+        monkeypatch.setattr(window, "_download_approved_job", downloads.append)
 
         window._approve_selected()
 
         assert job.status == DownloadStatus.APPROVED
         assert job.selected_metadata.title == "Review Title"
         assert job.selected_metadata.artist == "Review Artist"
-        assert window.download_approved_button.isEnabled() is True
+        assert downloads == [job]
     finally:
         window.close()
         app.processEvents()
@@ -1118,8 +1148,8 @@ def test_review_required_does_not_block_pending_queue_items(tmp_path, monkeypatc
 
         started = []
 
-        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False):
-            started.append((job, approved_metadata, analyze_only))
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, worker_mode=None):
+            started.append((job, approved_metadata, analyze_only, worker_mode))
             job.status = DownloadStatus.DOWNLOADING
 
         monkeypatch.setattr(window, "_run_worker", fake_run_worker)
@@ -1130,7 +1160,7 @@ def test_review_required_does_not_block_pending_queue_items(tmp_path, monkeypatc
 
         assert first.status == DownloadStatus.REVIEW_REQUIRED
         assert second.status == DownloadStatus.DOWNLOADING
-        assert started == [(second, None, True)]
+        assert started == [(second, None, False, "process")]
         assert window.tabs.currentIndex() == window.queue_tab_index
         assert window.approve_button.isEnabled() is True
         assert window.tabs.tabText(window.review_tab_index) == "검수 (1)"

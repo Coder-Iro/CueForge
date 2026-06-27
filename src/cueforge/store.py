@@ -92,9 +92,15 @@ class JobStore:
             )
 
     def delete_job(self, job_id: str) -> None:
+        self.delete_jobs([job_id])
+
+    def delete_jobs(self, job_ids: list[str]) -> None:
+        unique_ids = [(job_id,) for job_id in dict.fromkeys(job_ids) if job_id]
+        if not unique_ids:
+            return
         with self._connect() as conn:
-            conn.execute("DELETE FROM job_events WHERE job_id = ?", (job_id,))
-            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            conn.executemany("DELETE FROM job_events WHERE job_id = ?", unique_ids)
+            conn.executemany("DELETE FROM jobs WHERE id = ?", unique_ids)
 
     def clear_history(self) -> int:
         terminal = tuple(status.value for status in (DownloadStatus.DONE, DownloadStatus.FAILED, DownloadStatus.CANCELED))

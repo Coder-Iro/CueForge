@@ -50,6 +50,20 @@ def test_job_store_keeps_active_queue_but_can_clear_terminal_history(tmp_path: P
     assert [job.url for job in loaded] == ["https://youtu.be/active"]
 
 
+def test_job_store_deletes_jobs_in_one_call(tmp_path: Path) -> None:
+    store = JobStore(tmp_path / "jobs.sqlite")
+    jobs = [DownloadJob(url=f"https://youtu.be/{index}", output_dir=tmp_path) for index in range(3)]
+    for job in jobs:
+        store.upsert_job(job)
+        store.record_event(JobEvent(job_id=job.id, event_type="queued", message="queued"))
+
+    store.delete_jobs([jobs[0].id, jobs[2].id])
+
+    assert [job.url for job in store.load_jobs()] == [jobs[1].url]
+    assert store.list_events(jobs[0].id) == []
+    assert store.list_events(jobs[2].id) == []
+
+
 def test_job_store_rejects_unknown_schema_version(tmp_path: Path) -> None:
     path = tmp_path / "jobs.sqlite"
     with sqlite3.connect(path) as conn:

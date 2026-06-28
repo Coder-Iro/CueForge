@@ -1323,6 +1323,43 @@ def test_auto_approved_metadata_waits_for_download_approved(tmp_path) -> None:
         app.processEvents()
 
 
+def test_scheduled_auto_approved_metadata_enqueues_download_after_scheduler_idle(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    queued: list[tuple[list[DownloadJob], bool]] = []
+
+    class IdleScheduler:
+        def is_running(self) -> bool:
+            return False
+
+        def enqueue_downloads(self, jobs, *, priority: bool = False) -> None:
+            queued.append((list(jobs), priority))
+
+        def set_limits(self, limits) -> None:
+            return None
+
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        window.scheduler = IdleScheduler()
+        window._scheduled_metadata_job_ids.add(job.id)
+
+        window._on_metadata_ready(
+            job.id,
+            TrackMetadata(title="Auto Song", artist="Auto Artist"),
+            "auto_approved",
+            [],
+        )
+
+        assert job.status == DownloadStatus.APPROVED
+        assert queued == [([job], False)]
+    finally:
+        window.scheduler = None
+        window.close()
+        app.processEvents()
+
+
 def test_approved_selected_track_can_move_back_to_review_queue(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))

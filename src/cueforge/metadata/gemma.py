@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import queue
 import re
 import subprocess
 import tempfile
@@ -78,7 +80,7 @@ class GemmaE2BMetadataSuggester:
         runner: Callable[[dict[str, Any], GemmaE2BConfig], str] | None = None,
     ) -> None:
         self.config = config or GemmaE2BConfig()
-        self._runner = runner or _run_gemma_script
+        self._runner = runner or _run_gemma_session
         self._uses_default_runner = runner is None
 
     def suggest(
@@ -117,9 +119,12 @@ class GemmaE2BMetadataSuggester:
             parsed = _parse_model_json(output)
             metadata = _metadata_from_model_json(parsed)
         except Exception as exc:
-            _log(log, f"Gemma E2B fallback 생략: {exc}")
+            _log(log, f"Gemma E2B fallback 생략: {exc}; 원본 출력: {_model_output_excerpt(output)}")
             return []
-        if not metadata or not _model_metadata_is_supported(metadata, info, reference):
+        if not metadata:
+            _log(log, f"Gemma E2B fallback 생략: title/artist 누락; 원본 출력: {_model_output_excerpt(output)}")
+            return []
+        if not _model_metadata_is_supported(metadata, info, reference):
             _log(log, "Gemma E2B fallback 폐기: 원본과 맞지 않는 후보")
             return []
         _log(log, f"Gemma E2B fallback 후보: {metadata.artist} - {metadata.title}")
@@ -210,9 +215,7 @@ def _run_gemma_script(
     log: Callable[[str], None] | None = None,
     progress: Callable[[float | None], None] | None = None,
 ) -> str:
-    deno = config.deno_path or find_executable("deno").path
-    if not deno:
-        raise RuntimeError("Deno executable not found")
+    deno = _gemma_deno_path(config)
     env = os.environ.copy()
     env.setdefault("NO_COLOR", "1")
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", encoding="utf-8", delete=False) as script_file:
@@ -271,6 +274,192 @@ def _run_gemma_script(
         message = (stderr or stdout).strip()
         raise RuntimeError(message or f"Deno exited with {returncode}")
     return stdout
+
+
+_GEMMA_SESSIONS_LOCK = threading.Lock()
+_GEMMA_SESSIONS: dict[tuple[str, str, str, str, bool], "_GemmaDenoSession"] = {}
+
+
+def _run_gemma_session(payload: dict[str, Any], config: GemmaE2BConfig) -> str:
+    session = _get_gemma_session(config)
+    return session.run(payload, timeout_seconds=config.timeout_seconds)
+
+
+def _get_gemma_session(config: GemmaE2BConfig) -> "_GemmaDenoSession":
+    key = _gemma_session_key(config)
+    with _GEMMA_SESSIONS_LOCK:
+        session = _GEMMA_SESSIONS.get(key)
+        if session is None or not session.is_alive():
+            session = _GemmaDenoSession(config, key=key)
+            _GEMMA_SESSIONS[key] = session
+        return session
+
+
+def _gemma_session_key(config: GemmaE2BConfig) -> tuple[str, str, str, str, bool]:
+    return (
+        str(_gemma_deno_path(config)),
+        config.model_repo,
+        str(_gemma_model_dir(config)),
+        str(_gemma_cache_dir(config)),
+        bool(config.allow_download),
+    )
+
+
+def _gemma_deno_path(config: GemmaE2BConfig) -> Path:
+    deno = config.deno_path or find_executable("deno").path
+    if not deno:
+        raise RuntimeError("Deno executable not found")
+    return Path(deno)
+
+
+class _GemmaDenoSession:
+    def __init__(self, config: GemmaE2BConfig, *, key: tuple[str, str, str, str, bool]) -> None:
+        self.config = config
+        self.key = key
+        self._lock = threading.Lock()
+        self._stdout: queue.Queue[str | None] = queue.Queue()
+        self._stderr_lines: list[str] = []
+        self._request_index = 0
+        self._process: subprocess.Popen[str] | None = None
+        self._script_path: Path | None = None
+        self._start()
+
+    def is_alive(self) -> bool:
+        return bool(self._process and self._process.poll() is None)
+
+    def run(self, payload: dict[str, Any], *, timeout_seconds: int) -> str:
+        with self._lock:
+            if not self.is_alive():
+                self.stop()
+                self._start()
+            process = self._process
+            if not process or not process.stdin:
+                raise RuntimeError("Gemma E2B session is not writable")
+            self._request_index += 1
+            request_id = f"req-{self._request_index}"
+            request = dict(payload)
+            request["requestId"] = request_id
+            try:
+                process.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+                process.stdin.flush()
+            except Exception as exc:
+                self.stop()
+                raise RuntimeError(f"Gemma E2B session write failed: {exc}") from exc
+            return self._read_response(request_id, timeout_seconds=timeout_seconds)
+
+    def stop(self) -> None:
+        process = self._process
+        self._process = None
+        if process and process.poll() is None:
+            try:
+                if process.stdin:
+                    process.stdin.close()
+            except Exception:
+                pass
+            try:
+                process.kill()
+            except Exception:
+                pass
+        if self._script_path:
+            try:
+                self._script_path.unlink()
+            except OSError:
+                pass
+            self._script_path = None
+
+    def _start(self) -> None:
+        deno = _gemma_deno_path(self.config)
+        env = os.environ.copy()
+        env.setdefault("NO_COLOR", "1")
+        with tempfile.NamedTemporaryFile("w", suffix=".mjs", encoding="utf-8", delete=False) as script_file:
+            script_file.write(_GEMMA_DENO_SESSION_SCRIPT)
+            self._script_path = Path(script_file.name)
+        process = subprocess.Popen(
+            [
+                str(deno),
+                "run",
+                "--quiet",
+                "--allow-env",
+                "--allow-ffi",
+                "--allow-net",
+                "--allow-read",
+                "--allow-write",
+                str(self._script_path),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+        self._process = process
+        threading.Thread(target=self._read_stdout, args=(process.stdout,), daemon=True).start()
+        threading.Thread(target=self._read_stderr, args=(process.stderr,), daemon=True).start()
+
+    def _read_response(self, request_id: str, *, timeout_seconds: int) -> str:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.stop()
+                raise RuntimeError(f"Deno timed out after {timeout_seconds}s")
+            try:
+                line = self._stdout.get(timeout=min(0.1, remaining))
+            except queue.Empty:
+                if self._process and self._process.poll() is not None:
+                    raise RuntimeError(self._session_error_message())
+                continue
+            if line is None:
+                raise RuntimeError(self._session_error_message())
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError:
+                self._stderr_lines.append(line)
+                continue
+            if not isinstance(response, dict) or response.get("cueforgeResponse") is not True:
+                continue
+            if response.get("requestId") != request_id:
+                continue
+            if response.get("ok") is False:
+                raise RuntimeError(str(response.get("error") or self._session_error_message()))
+            return str(response.get("output") or "")
+
+    def _read_stdout(self, stream: Any) -> None:
+        if not stream:
+            self._stdout.put(None)
+            return
+        try:
+            for line in stream:
+                self._stdout.put(line)
+        finally:
+            self._stdout.put(None)
+
+    def _read_stderr(self, stream: Any) -> None:
+        if not stream:
+            return
+        for line in stream:
+            self._stderr_lines.append(line)
+
+    def _session_error_message(self) -> str:
+        message = "".join(self._stderr_lines[-20:]).strip()
+        if message:
+            return message
+        if self._process and self._process.poll() is not None:
+            return f"Deno exited with {self._process.poll()}"
+        return "Gemma E2B session stopped before returning a response"
+
+
+def _shutdown_gemma_sessions() -> None:
+    with _GEMMA_SESSIONS_LOCK:
+        sessions = list(_GEMMA_SESSIONS.values())
+        _GEMMA_SESSIONS.clear()
+    for session in sessions:
+        session.stop()
+
+
+atexit.register(_shutdown_gemma_sessions)
 
 
 def _download_gemma_e2b_model(
@@ -518,6 +707,15 @@ def _parse_model_json(output: str) -> dict[str, Any]:
     raise ValueError("Gemma output did not contain a JSON object")
 
 
+def _model_output_excerpt(output: str, *, limit: int = 500) -> str:
+    text = squash_spaces(output)
+    if not text:
+        return "<empty>"
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}..."
+
+
 def _metadata_from_model_json(payload: dict[str, Any]) -> TrackMetadata | None:
     title = squash_spaces(str(payload.get("title") or ""))
     artist = squash_spaces(str(payload.get("artist") or ""))
@@ -757,4 +955,128 @@ function generatedText(value) {
 }
 
 console.log(generatedText(result));
+"""
+
+
+_GEMMA_DENO_SESSION_SCRIPT = r"""
+import { env, pipeline } from "npm:@huggingface/transformers";
+
+let generatorPromise = null;
+let generatorKey = "";
+
+async function generatorFor(input) {
+  env.cacheDir = input.cacheDir;
+  env.allowLocalModels = true;
+  env.allowRemoteModels = Boolean(input.allowDownload);
+  const modelPath = input.modelPath || input.model;
+  const key = JSON.stringify([modelPath, input.cacheDir, Boolean(input.allowDownload)]);
+  if (!generatorPromise || generatorKey !== key) {
+    generatorKey = key;
+    generatorPromise = pipeline("text-generation", modelPath, {
+      dtype: "q4",
+      cache_dir: input.cacheDir,
+      local_files_only: !Boolean(input.allowDownload),
+    });
+  }
+  try {
+    return await generatorPromise;
+  } catch (error) {
+    generatorPromise = null;
+    generatorKey = "";
+    throw error;
+  }
+}
+
+async function handleRequest(input) {
+  const generator = await generatorFor(input);
+  if (input.mode === "prepare") {
+    return JSON.stringify({ ok: true });
+  }
+
+  const prompt = [
+    {
+      role: "system",
+      content:
+        "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, performer, singer, music, composer, and lyrics credits, but do not assume every such line is the final artist/title. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Choose the song title from the clearest title/track line or from the meaningful song phrase in VIDEO TITLE. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. CURRENT GUESS may be wrong and must not override stronger source text. Do not swap artist and title. Return only compact JSON with title, artist, and reason. Do not invent values that are not supported by the provided text.",
+    },
+    {
+      role: "user",
+      content: renderPromptInput(input.input),
+    },
+  ];
+
+  const result = await generator(prompt, {
+    max_new_tokens: input.maxNewTokens ?? 96,
+    do_sample: false,
+    temperature: 0,
+    return_full_text: false,
+  });
+  return generatedText(result);
+}
+
+function renderPromptInput(value) {
+  return [
+    `VIDEO TITLE:\n${value?.video_title ?? ""}`,
+    `VIDEO CHANNEL:\n${value?.video_channel ?? ""}`,
+    `VIDEO UPLOADER:\n${value?.video_uploader ?? ""}`,
+    `VIDEO CREATOR:\n${value?.video_creator ?? ""}`,
+    `CURRENT GUESS:\nTitle: ${value?.current_guess_title ?? ""}\nArtist: ${value?.current_guess_artist ?? ""}`,
+    `VIDEO DESCRIPTION:\n${value?.video_description ?? ""}`,
+  ].join("\n\n");
+}
+
+function generatedText(value) {
+  const item = Array.isArray(value) ? value[0] : value;
+  const generated = item?.generated_text ?? item;
+  if (Array.isArray(generated)) {
+    const last = generated[generated.length - 1];
+    return typeof last === "string" ? last : (last?.content ?? JSON.stringify(last));
+  }
+  return String(generated ?? "");
+}
+
+function sendResponse(input, payload) {
+  console.log(JSON.stringify({
+    cueforgeResponse: true,
+    requestId: input?.requestId ?? "",
+    ...payload,
+  }));
+}
+
+async function handleLine(line) {
+  let input;
+  try {
+    input = JSON.parse(line);
+  } catch (error) {
+    sendResponse({ requestId: "" }, { ok: false, error: String(error?.message ?? error) });
+    return;
+  }
+  try {
+    const output = await handleRequest(input);
+    sendResponse(input, { ok: true, output });
+  } catch (error) {
+    sendResponse(input, {
+      ok: false,
+      error: String(error?.stack ?? error?.message ?? error),
+    });
+  }
+}
+
+let buffer = "";
+for await (const chunk of Deno.stdin.readable.pipeThrough(new TextDecoderStream())) {
+  buffer += chunk;
+  let newlineIndex = buffer.indexOf("\n");
+  while (newlineIndex >= 0) {
+    const line = buffer.slice(0, newlineIndex).trim();
+    buffer = buffer.slice(newlineIndex + 1);
+    if (line) {
+      await handleLine(line);
+    }
+    newlineIndex = buffer.indexOf("\n");
+  }
+}
+const tail = buffer.trim();
+if (tail) {
+  await handleLine(tail);
+}
 """

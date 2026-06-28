@@ -11,6 +11,8 @@ from cueforge.metadata.gemma import (
     _gemma_model_dir,
     _prompt_input,
     _run_gemma_script,
+    _run_gemma_session,
+    _shutdown_gemma_sessions,
     gemma_e2b_cached,
     prepare_gemma_e2b,
 )
@@ -56,6 +58,24 @@ def test_gemma_suggester_discards_unsupported_hallucination(tmp_path: Path) -> N
     )
 
     assert candidates == []
+
+
+def test_gemma_suggester_logs_raw_output_when_json_parse_fails(tmp_path: Path) -> None:
+    logs: list[str] = []
+    suggester = GemmaE2BMetadataSuggester(
+        GemmaE2BConfig(cache_dir=tmp_path),
+        runner=lambda payload, config: "The likely title is Correct Song by Correct Artist.",
+    )
+
+    candidates = suggester.suggest(
+        info={"title": "Correct Artist - Correct Song", "uploader": "Correct Artist"},
+        reference=TrackMetadata(title="Correct Song", artist="Correct Artist"),
+        candidates=[],
+        log=logs.append,
+    )
+
+    assert candidates == []
+    assert any("원본 출력: The likely title is Correct Song by Correct Artist." in message for message in logs)
 
 
 def test_gemma_prompt_input_includes_video_title_channel_and_description() -> None:
@@ -330,6 +350,41 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
     assert progresses == [50.0]
     assert logs == ["Gemma E2B 다운로드: model.onnx 50%"]
     assert not Path(args[-1]).exists()
+
+
+def test_gemma_session_runner_reuses_warm_process(monkeypatch, tmp_path: Path) -> None:
+    created = []
+
+    class FakeSession:
+        def __init__(self, config, *, key) -> None:
+            self.config = config
+            self.key = key
+            self.alive = True
+            created.append(self)
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def run(self, payload, *, timeout_seconds):
+            assert timeout_seconds == 90
+            return '{"title":"Correct Song","artist":"Correct Artist"}'
+
+        def stop(self) -> None:
+            self.alive = False
+
+    monkeypatch.setattr("cueforge.metadata.gemma._GemmaDenoSession", FakeSession)
+    monkeypatch.setattr("cueforge.metadata.gemma._gemma_deno_path", lambda config: tmp_path / "deno.exe")
+    _shutdown_gemma_sessions()
+
+    config = GemmaE2BConfig(cache_dir=tmp_path)
+    try:
+        first = _run_gemma_session({"mode": "suggest"}, config)
+        second = _run_gemma_session({"mode": "suggest"}, config)
+
+        assert first == second
+        assert len(created) == 1
+    finally:
+        _shutdown_gemma_sessions()
 
 
 def _write_required_gemma_files(config: GemmaE2BConfig) -> None:

@@ -829,6 +829,7 @@ class MainWindow(QMainWindow):
         self.pipeline_retry_button: QPushButton | None = None
         self.history_table = QTableWidget(0, 5)
         self.clear_history_button: QPushButton | None = None
+        self._scheduled_metadata_job_ids: set[str] = set()
 
         self._load_settings()
         self._build_ui()
@@ -2183,6 +2184,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         review_state = _review_state_value(state)
         job = self.jobs[job_id]
+        scheduled_metadata = job.id in self._scheduled_metadata_job_ids
+        self._scheduled_metadata_job_ids.discard(job.id)
         job.selected_metadata = metadata
         job.candidates = candidates
         job.candidate_summaries = []
@@ -2196,7 +2199,7 @@ class MainWindow(QMainWindow):
         self._update_row(job)
         if review_state == ReviewState.AUTO_APPROVED:
             self._append_log(job_id, "메타데이터 자동 승인됨; 다운로드 준비 완료")
-            if self.scheduler and self.scheduler.is_running():
+            if scheduled_metadata and self.scheduler:
                 self.scheduler.enqueue_downloads([job])
         else:
             self._append_log(job_id, f"메타데이터 검수 필요: {_review_state_label(review_state)}")
@@ -2216,6 +2219,7 @@ class MainWindow(QMainWindow):
 
     def _on_job_failed(self, job_id: str, error: str) -> None:
         job = self.jobs[job_id]
+        self._scheduled_metadata_job_ids.discard(job_id)
         category, friendly = user_facing_error(error)
         job.status = DownloadStatus.FAILED
         job.error = friendly
@@ -2239,6 +2243,7 @@ class MainWindow(QMainWindow):
 
     def _on_job_canceled(self, job_id: str) -> None:
         job = self.jobs[job_id]
+        self._scheduled_metadata_job_ids.discard(job_id)
         job.status = DownloadStatus.CANCELED
         job.progress = 0.0
         job.error = ""
@@ -2776,6 +2781,8 @@ class MainWindow(QMainWindow):
     ) -> JobWorker:
         self.cancel_requested = False
         approved_metadata = job.selected_metadata if stage == "download" else None
+        if stage == "metadata":
+            self._scheduled_metadata_job_ids.add(job.id)
         job.status = DownloadStatus.DOWNLOADING if approved_metadata else DownloadStatus.METADATA
         job.platform = detect_source_platform(job.url).value
         self._update_row(job)

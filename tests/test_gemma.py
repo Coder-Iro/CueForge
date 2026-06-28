@@ -145,6 +145,39 @@ def test_gemma_suggester_refines_noisy_video_title_candidate(tmp_path: Path) -> 
     assert candidates[0].metadata.artist == "아카네 리제"
 
 
+def test_gemma_suggester_refines_original_artist_for_cover_video(tmp_path: Path) -> None:
+    calls = []
+
+    def runner(payload, config):
+        calls.append(payload)
+        if payload["mode"] == "suggest":
+            assert payload["promptVersion"] == GEMMA_E2B_PROMPT_VERSION
+            return '{"title":"꽃에 망령","artist":"Yorushika"}'
+        assert payload["mode"] == "refine"
+        assert "Yorushika" in payload["badOutput"]
+        return '{"title":"꽃에 망령","artist":"계화"}'
+
+    suggester = GemmaE2BMetadataSuggester(GemmaE2BConfig(cache_dir=tmp_path), runner=runner)
+
+    candidates = suggester.suggest(
+        info={
+            "id": "Bmi16BwbccE",
+            "extractor_key": "Youtube",
+            "title": "꽃에 망령(花に亡霊) | 계화 COVER",
+            "channel": "계화",
+            "uploader": "계화",
+            "description": "Original :: Yorushika (요루시카) - Ghost In A Flower (ヨルシカ - 花に亡霊)",
+        },
+        reference=TrackMetadata(title="꽃에 망령(花に亡霊) | 계화 COVER", artist="계화"),
+        candidates=[],
+    )
+
+    assert [call["mode"] for call in calls] == ["suggest", "refine"]
+    assert len(candidates) == 1
+    assert candidates[0].metadata.title == "꽃에 망령"
+    assert candidates[0].metadata.artist == "계화"
+
+
 def test_gemma_context_key_prefers_url_then_source_id() -> None:
     assert (
         _gemma_context_key(
@@ -454,6 +487,8 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         assert "prefer the local-script display name" in script_text
         assert "description credit names a performer only with a romanized alias" in script_text
         assert "VIDEO CHANNEL or VIDEO UPLOADER shows that same performer" in script_text
+        assert "Original/원곡/原曲 source-work artist" in script_text
+        assert "must not override VIDEO CHANNEL" in script_text
         assert 'Use this exact schema: {\\"title\\":\\"...\\",\\"artist\\":\\"...\\"}' in script_text
         assert '\\"reason\\"' not in script_text
         assert "Do not use Markdown, prose, code fences, comments, arrays, or extra keys" in script_text

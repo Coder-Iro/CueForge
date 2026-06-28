@@ -27,7 +27,7 @@ from cueforge.runtime import find_executable
 DEFAULT_GEMMA_E2B_MODEL_REPO = "onnx-community/gemma-4-E2B-it-ONNX"
 DEFAULT_GEMMA_E2B_MARKER = "gemma-e2b-it.ready.json"
 DEFAULT_GEMMA_E2B_MARKER_VERSION = 3
-GEMMA_E2B_PROMPT_VERSION = 6
+GEMMA_E2B_PROMPT_VERSION = 7
 GEMMA_E2B_REQUIRED_FILES = (
     "chat_template.jinja",
     "config.json",
@@ -705,6 +705,8 @@ def _model_metadata_is_supported(metadata: TrackMetadata, info: dict[str, Any], 
 def _needs_gemma_refinement(metadata: TrackMetadata, info: dict[str, Any]) -> bool:
     source_title = squash_spaces(str(info.get("fulltitle") or info.get("title") or info.get("track") or ""))
     title = squash_spaces(metadata.title)
+    if _looks_like_cover_source(info) and _artist_is_original_credit(metadata.artist, info):
+        return True
     if not source_title or not title:
         return False
     if title.casefold() == source_title.casefold():
@@ -719,6 +721,35 @@ def _looks_like_packaged_video_title(title: str) -> bool:
     if any(marker in title for marker in ("[", "]", "【", "】", "|", "｜", "ㅣ")):
         return True
     return any(token in text for token in (" cover", " mv", " official", " live", " ver.", " version"))
+
+
+def _looks_like_cover_source(info: dict[str, Any]) -> bool:
+    source = squash_spaces(
+        " ".join(
+            str(value or "")
+            for value in (
+                info.get("fulltitle"),
+                info.get("title"),
+                info.get("track"),
+                info.get("description"),
+            )
+        )
+    ).casefold()
+    return any(token in source for token in ("cover", "커버", "歌ってみた", "covered by"))
+
+
+def _artist_is_original_credit(artist: str, info: dict[str, Any]) -> bool:
+    artist = squash_spaces(artist)
+    if not artist:
+        return False
+    artist_norm = artist.casefold()
+    for line in str(info.get("description") or "").splitlines():
+        line = squash_spaces(line)
+        if not line or artist_norm not in line.casefold():
+            continue
+        if re.match(r"^(?:[#\s\\/:：|.\-_*·•🩸]*)(?:original|orig\.?|원곡|原曲)\b", line, flags=re.IGNORECASE):
+            return True
+    return False
 
 
 def _supported_text(value: str, source: str) -> bool:
@@ -923,7 +954,7 @@ function promptFor(input) {
       {
         role: "user",
         content:
-          "Your previous JSON was valid, but it may have copied the noisy YouTube upload title or a romanized channel alias instead of the tag metadata. Re-read the same source text. If the video is a cover or performance, identify the performed recording title and the performer/vocal/cover artist. If the VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate titles, creators, performer names, or COVER/MV/live packaging, use the short display title as title. If a performer has both local-script and romanized display names, prefer the local-script display name. If a description credit uses a romanized performer alias and VIDEO CHANNEL or VIDEO UPLOADER shows that same performer with a local-script display name, output the local-script display name. If your previous answer is still best, return it unchanged. Return exactly one compact JSON object with schema {\"title\":\"...\",\"artist\":\"...\"} and nothing else.",
+          "Your previous JSON was valid, but it may have copied the noisy YouTube upload title, a romanized channel alias, or an Original/원곡/原曲 source-work artist instead of the tag metadata. Re-read the same source text. If the video is a cover or performance, identify the performed recording title and the performer/vocal/cover artist. If the previous artist appears on an Original/원곡/原曲 line, treat that as the original source artist, not the tag artist. If no vocal/performer line exists, prefer VIDEO CHANNEL, VIDEO UPLOADER, or the performer name beside COVER in VIDEO TITLE. If the VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate titles, creators, performer names, or COVER/MV/live packaging, use the short display title as title. If a performer has both local-script and romanized display names, prefer the local-script display name. If a description credit uses a romanized performer alias and VIDEO CHANNEL or VIDEO UPLOADER shows that same performer with a local-script display name, output the local-script display name. If your previous answer is still best, return it unchanged. Return exactly one compact JSON object with schema {\"title\":\"...\",\"artist\":\"...\"} and nothing else.",
       },
     ];
   }
@@ -940,6 +971,7 @@ function buildBasePrompt(input) {
         "Use VIDEO DESCRIPTION line by line together with VIDEO TITLE, VIDEO CHANNEL, VIDEO UPLOADER, and VIDEO CREATOR.",
         "Credit-like lines may mention title, artist, vocal, chorus, cover, performer, singer, music, composer, lyrics, translation, arrangement, original work, or source work. Use them as evidence, but do not treat every credit line as the final tag artist/title.",
         "For cover or performance videos, tag the performed recording in this upload, not the original source work. Prefer explicit performer, vocal, chorus, cover, singer, channel, or uploader evidence for artist. Use music/composer/lyrics/original credits as artist only when no performer is identified.",
+        "Lines labeled Original, Orig., 원곡, or 原曲 identify the source work or original artist; for a COVER video they must not override VIDEO CHANNEL, VIDEO UPLOADER, or a performer name shown beside COVER in VIDEO TITLE.",
         "Prefer a concise display song title. Do not copy the entire VIDEO TITLE when it contains upload packaging.",
         "If VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate-language titles, composer/original-artist names, performer names, COVER/MV/live labels, or other packaging text, the short leading display title is usually the tag title.",
         "Treat channel names, uploader names, project names, franchise names, album/OST section names, MV labels, and upload packaging as context, not as title or artist unless the source text clearly credits them as the recording artist/title.",

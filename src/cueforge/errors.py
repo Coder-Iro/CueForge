@@ -21,7 +21,7 @@ def classify_error(error: object) -> ErrorCategory:
         return ErrorCategory.COOKIE_COPY_FAILED
     if "timeout" in message or "timed out" in message or "read timed out" in message:
         return ErrorCategory.NETWORK_TIMEOUT
-    if "429" in message or "too many requests" in message or "rate limit" in message:
+    if "429" in message or "too many requests" in message or "rate limit" in message or "rate-limited" in message:
         return ErrorCategory.RATE_LIMITED
     if "file exists" in message or "permission denied" in message or "access is denied" in message:
         return ErrorCategory.FILE_CONFLICT

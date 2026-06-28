@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from cueforge.download import PlaylistExpansionResult
 from cueforge.gui.main_window import MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls, _supported_urls
-from cueforge.models import DownloadStatus, MetadataCandidate, TrackMetadata
+from cueforge.models import ErrorCategory, DownloadStatus, MetadataCandidate, TrackMetadata
 from cueforge.runtime import DependencyStatus
 
 
@@ -593,6 +593,26 @@ def test_main_window_does_not_analyze_original_playlist_after_expansion_failure(
         job = next(iter(window.jobs.values()))
         assert job.status == DownloadStatus.FAILED
         assert "438개 중 100개" in job.error
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_stops_processing_after_youtube_rate_limit(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        job, _row = window._insert_job("https://music.youtube.com/watch?v=abc", output_dir=tmp_path)
+        window.worker_mode = "process"
+
+        window._on_job_failed(job.id, "The current session has been rate-limited by YouTube")
+
+        assert job.status == DownloadStatus.FAILED
+        assert job.error_category == ErrorCategory.RATE_LIMITED.value
+        assert window.worker_mode == "canceled"
+        assert window.cancel_requested is True
+        assert "남은 작업 시작을 중지" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()

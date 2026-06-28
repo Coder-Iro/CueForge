@@ -7,3 +7,10 @@ def test_dpapi_decrypt_failure_suggests_cookie_file() -> None:
 
     assert category == ErrorCategory.COOKIE_COPY_FAILED
     assert "쿠키 파일" in message
+
+
+def test_hyphenated_rate_limited_error_is_classified() -> None:
+    category, message = user_facing_error("The current session has been rate-limited by YouTube")
+
+    assert category == ErrorCategory.RATE_LIMITED
+    assert "외부 서비스 제한" in message

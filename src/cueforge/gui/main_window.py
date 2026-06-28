@@ -66,7 +66,7 @@ from cueforge.metadata import (
 from cueforge.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from cueforge.metadata.matching import text_similarity
 from cueforge.metadata.normalize import merge_metadata
-from cueforge.models import DownloadJob, DownloadStatus, JobEvent, MetadataCandidate, ReviewState, SchedulerLimits, TagWriteResult, TrackMetadata
+from cueforge.models import ErrorCategory, DownloadJob, DownloadStatus, JobEvent, MetadataCandidate, ReviewState, SchedulerLimits, TagWriteResult, TrackMetadata
 from cueforge.paths import default_output_dir, legacy_cwd_output_dir
 from cueforge.runtime import app_root, find_executable, format_diagnostics
 from cueforge.sources import SourcePlatform, detect_source_platform
@@ -80,6 +80,7 @@ AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
 CoverArtProviderFactory = Callable[[], Any]
 TagWriterFactory = Callable[[], Any]
 YOUTUBE_DATA_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
+YOUTUBE_YTDLP_REQUEST_INTERVAL_SECONDS = 1.5
 _ACTIVE_STATUSES = {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}
 _TERMINAL_STATUSES = {DownloadStatus.DONE, DownloadStatus.FAILED, DownloadStatus.CANCELED}
 _ANALYZABLE_STATUSES = {
@@ -220,6 +221,7 @@ class JobWorker(QThread):
                 output_dir=output_dir,
                 cookie_file=self.cookie_file,
                 ffmpeg_location=self.ffmpeg_location,
+                youtube_request_interval_seconds=YOUTUBE_YTDLP_REQUEST_INTERVAL_SECONDS,
             ),
             self._on_progress,
         )
@@ -1418,6 +1420,7 @@ class MainWindow(QMainWindow):
             DownloadConfig(
                 output_dir=output_dir,
                 cookie_file=resolved_cookie_file,
+                youtube_request_interval_seconds=YOUTUBE_YTDLP_REQUEST_INTERVAL_SECONDS,
             )
         )
         return downloader.expand_playlist(url)
@@ -1985,7 +1988,19 @@ class MainWindow(QMainWindow):
         job.error_category = category.value
         self._update_row(job)
         self._append_log(job_id, f"실패: {friendly}")
+        if category == ErrorCategory.RATE_LIMITED:
+            self._stop_after_rate_limit()
         self._refresh_actions()
+
+    def _stop_after_rate_limit(self) -> None:
+        self.cancel_requested = True
+        self.worker_mode = "canceled"
+        if self.scheduler and self.scheduler.is_running():
+            self.scheduler.cancel_all()
+        self._append_log(
+            "system",
+            "YouTube rate-limit이 감지되어 남은 작업 시작을 중지했습니다. 한 시간 정도 쉰 뒤 실패 항목만 재시도하세요.",
+        )
 
     def _on_job_canceled(self, job_id: str) -> None:
         job = self.jobs[job_id]

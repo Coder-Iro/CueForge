@@ -82,6 +82,24 @@ def test_fetch_info_uses_ytdlp_without_download(tmp_path: Path) -> None:
     assert FakeYDL.calls[-1]["noplaylist"] is True
 
 
+def test_fetch_info_waits_between_youtube_requests(tmp_path: Path, monkeypatch) -> None:
+    waits: list[tuple[str, float]] = []
+
+    class Limiter:
+        def wait(self, interval_seconds: float) -> None:
+            waits.append(("yt-dlp-youtube", interval_seconds))
+
+    monkeypatch.setattr("cueforge.download.global_rate_limiter", lambda name: Limiter())
+    downloader = YTDLPDownloader(
+        DownloadConfig(output_dir=tmp_path, youtube_request_interval_seconds=1.5),
+        ydl_factory=FakeYDL,
+    )
+
+    downloader.fetch_info("https://music.youtube.com/watch?v=abc")
+
+    assert waits == [("yt-dlp-youtube", 1.5)]
+
+
 def test_expand_playlist_flattens_entries_and_skips_unavailable_items(tmp_path: Path) -> None:
     PlaylistYDL.calls.clear()
     downloader = YTDLPDownloader(

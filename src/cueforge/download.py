@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote, urlparse
 
+from cueforge.rate_limit import global_rate_limiter
+
 
 @dataclass(slots=True)
 class DownloadConfig:
@@ -18,6 +20,7 @@ class DownloadConfig:
     audio_bitrate_kbps: int = 320
     keep_original: bool = False
     allow_remote_js_components: bool = True
+    youtube_request_interval_seconds: float = 0.0
     quiet: bool = True
 
 
@@ -75,6 +78,7 @@ class YTDLPDownloader:
 
     def fetch_info(self, url: str) -> dict[str, Any]:
         options = self._base_options()
+        self._wait_for_youtube_request(url)
         with self._ydl_factory(options) as ydl:
             return ydl.extract_info(url, download=False)
 
@@ -101,6 +105,7 @@ class YTDLPDownloader:
         return result
 
     def _expand_playlist_with_options(self, url: str, options: dict[str, Any]) -> PlaylistExpansionResult:
+        self._wait_for_youtube_request(url)
         with self._ydl_factory(options) as ydl:
             info = ydl.extract_info(url, download=False)
         return _playlist_expansion_result(info, source_url=url)
@@ -127,10 +132,16 @@ class YTDLPDownloader:
         return self._download_with_options(url, options)
 
     def _download_with_options(self, url: str, options: dict[str, Any]) -> DownloadResult:
+        self._wait_for_youtube_request(url)
         with self._ydl_factory(options) as ydl:
             info = ydl.extract_info(url, download=True)
             final_path = self._resolve_output_path(ydl, info)
             return DownloadResult(path=final_path, info=info)
+
+    def _wait_for_youtube_request(self, url: str) -> None:
+        if self.config.youtube_request_interval_seconds <= 0 or not _is_youtube_url(url):
+            return
+        global_rate_limiter("yt-dlp-youtube").wait(self.config.youtube_request_interval_seconds)
 
     def _base_options(self) -> dict[str, Any]:
         options: dict[str, Any] = {
@@ -225,6 +236,10 @@ def _youtube_watch_url(video_id: str, *, source_url: str) -> str:
 
 
 def _is_youtube_playlist_url(url: str) -> bool:
+    return _is_youtube_url(url)
+
+
+def _is_youtube_url(url: str) -> bool:
     host = urlparse(url).netloc.casefold()
     return "youtube.com" in host or "youtu.be" in host
 

@@ -911,8 +911,9 @@ def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None
     calls: list[str] = []
     completed: list[bool] = []
 
-    def prepare(log):
+    def prepare(log, progress):
         log("MiniLM 다운로드 중")
+        progress(45.0)
         calls.append("prepared")
 
     dialog = OnboardingDialog(
@@ -928,6 +929,7 @@ def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None
         assert dialog.skip_button.isHidden() is True
         assert dialog.skip_button.isEnabled() is False
         assert "필수 모델 준비 필요" in dialog.prepare_status_label.text()
+        assert dialog.prepare_progress_bar.isVisible() is True
 
         dialog._complete()
         assert dialog.skip_button.isEnabled() is False
@@ -941,6 +943,7 @@ def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None
         assert calls == ["prepared"]
         assert completed == [True]
         assert dialog.isVisible() is False
+        assert dialog.prepare_progress_bar.value() == 100
     finally:
         dialog.close()
         parent.close()

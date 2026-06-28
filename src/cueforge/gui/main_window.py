@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QProgressBar,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -87,7 +88,7 @@ ResolverFactory = Callable[[], MetadataResolver]
 AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
 CoverArtProviderFactory = Callable[[], Any]
 TagWriterFactory = Callable[[], Any]
-OnboardingPrepareStep = tuple[str, Callable[[Callable[[str], None]], None]]
+OnboardingPrepareStep = tuple[str, Callable[[Callable[[str], None], Callable[[float | None], None]], None]]
 YOUTUBE_DATA_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 YOUTUBE_YTDLP_REQUEST_INTERVAL_SECONDS = 1.5
 _ACTIVE_STATUSES = {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}
@@ -467,6 +468,7 @@ class GoogleOAuthWorker(QThread):
 
 class OnboardingPrepareWorker(QThread):
     status_changed = Signal(str)
+    progress_changed = Signal(object)
     succeeded = Signal()
     failed = Signal(str)
 
@@ -476,9 +478,21 @@ class OnboardingPrepareWorker(QThread):
 
     def run(self) -> None:
         try:
-            for label, step in self.steps:
+            total = max(len(self.steps), 1)
+            for index, (label, step) in enumerate(self.steps):
+                base = (index / total) * 100.0
+                span = 100.0 / total
                 self.status_changed.emit(f"{label} 준비 중...")
-                step(lambda message: self.status_changed.emit(message))
+                self.progress_changed.emit(base)
+
+                def emit_step_progress(value: float | None, *, base: float = base, span: float = span) -> None:
+                    if value is None:
+                        self.progress_changed.emit(None)
+                        return
+                    self.progress_changed.emit(max(0.0, min(base + (span * (float(value) / 100.0)), 100.0)))
+
+                step(lambda message: self.status_changed.emit(message), emit_step_progress)
+                self.progress_changed.emit(base + span)
             self.succeeded.emit()
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -535,6 +549,11 @@ class OnboardingDialog(QDialog):
         self.prepare_status_label = QLabel(self._initial_prepare_status())
         self.prepare_status_label.setWordWrap(True)
         layout.addWidget(self.prepare_status_label)
+        self.prepare_progress_bar = QProgressBar()
+        self.prepare_progress_bar.setRange(0, 100)
+        self.prepare_progress_bar.setValue(0)
+        self.prepare_progress_bar.setVisible(bool(self._prepare_steps))
+        layout.addWidget(self.prepare_progress_bar)
 
         action_row = QHBoxLayout()
         action_row.addStretch(1)
@@ -572,8 +591,11 @@ class OnboardingDialog(QDialog):
         self.skip_button.setEnabled(False)
         self.done_button.setEnabled(False)
         self.prepare_status_label.setText("필수 모델을 준비하는 중입니다. 창을 닫지 말고 기다려 주세요.")
+        self.prepare_progress_bar.setRange(0, 100)
+        self.prepare_progress_bar.setValue(0)
         worker = OnboardingPrepareWorker(self._prepare_steps)
         worker.status_changed.connect(self.prepare_status_label.setText)
+        worker.progress_changed.connect(self._set_prepare_progress)
         worker.succeeded.connect(self._prepare_succeeded)
         worker.failed.connect(self._prepare_failed)
         worker.finished.connect(lambda worker=worker: self._prepare_finished(worker))
@@ -582,6 +604,7 @@ class OnboardingDialog(QDialog):
 
     def _prepare_succeeded(self) -> None:
         self.prepare_status_label.setText("필수 모델 준비 완료")
+        self._set_prepare_progress(100.0)
         self._on_done()
         self.accept()
 
@@ -590,6 +613,18 @@ class OnboardingDialog(QDialog):
         QMessageBox.warning(self, "초기 준비 실패", message)
         self.skip_button.setEnabled(self._can_skip)
         self.done_button.setEnabled(True)
+        self.prepare_progress_bar.setRange(0, 100)
+
+    def _set_prepare_progress(self, value: object) -> None:
+        if value is None:
+            self.prepare_progress_bar.setRange(0, 0)
+            return
+        self.prepare_progress_bar.setRange(0, 100)
+        try:
+            percent = int(round(float(value)))
+        except (TypeError, ValueError):
+            return
+        self.prepare_progress_bar.setValue(max(0, min(percent, 100)))
 
     def _prepare_finished(self, worker: OnboardingPrepareWorker) -> None:
         if self._prepare_worker is worker:
@@ -1457,16 +1492,17 @@ class MainWindow(QMainWindow):
             steps = [
                 (
                     "MiniLM 후보 평가 모델",
-                    lambda log: prepare_semantic_model(SemanticRankerConfig(allow_download=True), log=log),
+                    lambda log, progress: prepare_semantic_model(SemanticRankerConfig(allow_download=True), log=log),
                 )
             ]
         if not gemma_e2b_cached():
             steps.append(
                 (
                     "Gemma E2B fallback 모델",
-                    lambda log: prepare_gemma_e2b(
+                    lambda log, progress: prepare_gemma_e2b(
                         GemmaE2BConfig(allow_download=True, timeout_seconds=600),
                         log=log,
+                        progress=progress,
                     ),
                 )
             )

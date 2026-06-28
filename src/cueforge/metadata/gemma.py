@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -117,6 +118,7 @@ def prepare_gemma_e2b(
     config: GemmaE2BConfig | None = None,
     *,
     log: Callable[[str], None] | None = None,
+    progress: Callable[[float | None], None] | None = None,
     runner: Callable[[dict[str, Any], GemmaE2BConfig], str] | None = None,
 ) -> None:
     resolved = config or GemmaE2BConfig(allow_download=True, timeout_seconds=600)
@@ -126,16 +128,28 @@ def prepare_gemma_e2b(
         "cacheDir": str(_gemma_cache_dir(resolved)),
         "allowDownload": resolved.allow_download,
         "maxNewTokens": 1,
+        "emitProgress": True,
     }
     _log(log, "Gemma E2B 모델 준비 중")
-    (runner or _run_gemma_script)(payload, resolved)
+    _emit_progress(progress, 0.0)
+    if runner:
+        runner(payload, resolved)
+    else:
+        _run_gemma_script(payload, resolved, log=log, progress=progress)
     marker = _gemma_marker_path(resolved)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({"model": resolved.model_repo}, ensure_ascii=False), encoding="utf-8")
+    _emit_progress(progress, 100.0)
     _log(log, "Gemma E2B 모델 준비 완료")
 
 
-def _run_gemma_script(payload: dict[str, Any], config: GemmaE2BConfig) -> str:
+def _run_gemma_script(
+    payload: dict[str, Any],
+    config: GemmaE2BConfig,
+    *,
+    log: Callable[[str], None] | None = None,
+    progress: Callable[[float | None], None] | None = None,
+) -> str:
     deno = config.deno_path or find_executable("deno").path
     if not deno:
         raise RuntimeError("Deno executable not found")
@@ -144,8 +158,11 @@ def _run_gemma_script(payload: dict[str, Any], config: GemmaE2BConfig) -> str:
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", encoding="utf-8", delete=False) as script_file:
         script_file.write(_GEMMA_DENO_SCRIPT)
         script_path = Path(script_file.name)
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    returncode = -1
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [
                 str(deno),
                 "run",
@@ -157,24 +174,123 @@ def _run_gemma_script(payload: dict[str, Any], config: GemmaE2BConfig) -> str:
                 "--allow-write",
                 str(script_path),
             ],
-            input=json.dumps(payload, ensure_ascii=False),
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=config.timeout_seconds,
-            check=False,
             env=env,
         )
+        stdout_thread = threading.Thread(target=_read_stream, args=(process.stdout, stdout_lines), daemon=True)
+        stderr_thread = threading.Thread(
+            target=_read_gemma_stderr,
+            args=(process.stderr, stderr_lines, log, progress),
+            daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+        if process.stdin:
+            process.stdin.write(json.dumps(payload, ensure_ascii=False))
+            process.stdin.close()
+        try:
+            returncode = process.wait(timeout=config.timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            raise RuntimeError(f"Deno timed out after {config.timeout_seconds}s") from exc
+        stdout_thread.join(timeout=1)
+        stderr_thread.join(timeout=1)
     finally:
         try:
             script_path.unlink()
         except OSError:
             pass
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(message or f"Deno exited with {result.returncode}")
-    return result.stdout
+    stdout = "".join(stdout_lines)
+    stderr = "".join(stderr_lines)
+    if returncode != 0:
+        message = (stderr or stdout).strip()
+        raise RuntimeError(message or f"Deno exited with {returncode}")
+    return stdout
+
+
+def _read_stream(stream: Any, lines: list[str]) -> None:
+    if not stream:
+        return
+    for line in stream:
+        lines.append(line)
+
+
+def _read_gemma_stderr(
+    stream: Any,
+    lines: list[str],
+    log: Callable[[str], None] | None,
+    progress: Callable[[float | None], None] | None,
+) -> None:
+    if not stream:
+        return
+    for line in stream:
+        if _handle_gemma_progress_line(line.strip(), log=log, progress=progress):
+            continue
+        lines.append(line)
+
+
+def _handle_gemma_progress_line(
+    line: str,
+    *,
+    log: Callable[[str], None] | None,
+    progress: Callable[[float | None], None] | None,
+) -> bool:
+    if not line:
+        return False
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict) or payload.get("cueforgeProgress") is not True:
+        return False
+    percent = _progress_percent(payload)
+    if percent is not None:
+        _emit_progress(progress, percent)
+    file_label = _progress_file_label(payload)
+    status = str(payload.get("status") or "").strip()
+    if file_label and percent is not None:
+        _log(log, f"Gemma E2B 다운로드: {file_label} {percent:.0f}%")
+    elif file_label:
+        _log(log, f"Gemma E2B 다운로드: {file_label}")
+    elif status:
+        _log(log, f"Gemma E2B 다운로드: {status}")
+    return True
+
+
+def _progress_percent(payload: dict[str, Any]) -> float | None:
+    value = _to_float(payload.get("progress"))
+    if value is not None:
+        return max(0.0, min(value, 100.0))
+    loaded = _to_float(payload.get("loaded"))
+    total = _to_float(payload.get("total"))
+    if loaded is not None and total and total > 0:
+        return max(0.0, min((loaded / total) * 100.0, 100.0))
+    return None
+
+
+def _progress_file_label(payload: dict[str, Any]) -> str:
+    value = squash_spaces(str(payload.get("file") or payload.get("name") or ""))
+    if not value:
+        return ""
+    return re.split(r"[\\/]", value)[-1] or value
+
+
+def _emit_progress(progress: Callable[[float | None], None] | None, value: float | None) -> None:
+    if progress:
+        progress(value)
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None
 
 
 def _prompt_input(info: dict[str, Any], reference: TrackMetadata) -> dict[str, str]:
@@ -284,7 +400,30 @@ env.cacheDir = input.cacheDir;
 env.allowLocalModels = true;
 env.allowRemoteModels = Boolean(input.allowDownload);
 
-const generator = await pipeline("text-generation", input.model, { dtype: "q4" });
+function reportProgress(payload) {
+  if (!input.emitProgress) {
+    return;
+  }
+  const loaded = Number(payload?.loaded ?? 0);
+  const total = Number(payload?.total ?? 0);
+  let progress = Number(payload?.progress);
+  if (!Number.isFinite(progress) && total > 0) {
+    progress = (loaded / total) * 100;
+  }
+  console.error(JSON.stringify({
+    cueforgeProgress: true,
+    status: payload?.status ?? "",
+    file: payload?.file ?? payload?.name ?? "",
+    progress: Number.isFinite(progress) ? progress : null,
+    loaded: Number.isFinite(loaded) ? loaded : null,
+    total: Number.isFinite(total) ? total : null,
+  }));
+}
+
+const generator = await pipeline("text-generation", input.model, {
+  dtype: "q4",
+  progress_callback: reportProgress,
+});
 
 if (input.mode === "prepare") {
   console.log(JSON.stringify({ ok: true }));

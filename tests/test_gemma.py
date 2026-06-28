@@ -107,22 +107,46 @@ def test_prepare_gemma_writes_ready_marker(tmp_path: Path) -> None:
 
 def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> None:
     calls = []
+    written = []
+    logs = []
+    progresses = []
 
-    class Result:
-        returncode = 0
-        stdout = '{"ok":true}'
-        stderr = ""
+    class Stdin:
+        def write(self, value):
+            written.append(value)
 
-    def fake_run(args, **kwargs):
+        def close(self):
+            return None
+
+    class Process:
+        def __init__(self, args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            self.stdin = Stdin()
+            self.stdout = ['{"ok":true}']
+            self.stderr = ['{"cueforgeProgress":true,"file":"onnx/model.onnx","progress":50}\n']
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    def fake_popen(args, **kwargs):
         calls.append((args, kwargs))
         script_path = Path(args[-1])
         assert script_path.exists()
         assert "npm:@huggingface/transformers" in script_path.read_text(encoding="utf-8")
-        return Result()
+        return Process(args, **kwargs)
 
-    monkeypatch.setattr("cueforge.metadata.gemma.subprocess.run", fake_run)
+    monkeypatch.setattr("cueforge.metadata.gemma.subprocess.Popen", fake_popen)
 
-    output = _run_gemma_script({"mode": "prepare"}, GemmaE2BConfig(deno_path=tmp_path / "deno.exe"))
+    output = _run_gemma_script(
+        {"mode": "prepare"},
+        GemmaE2BConfig(deno_path=tmp_path / "deno.exe"),
+        log=logs.append,
+        progress=progresses.append,
+    )
 
     args, kwargs = calls[0]
     assert output == '{"ok":true}'
@@ -131,5 +155,7 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
     assert "--allow-env" in args
     assert "--allow-ffi" in args
     assert "--allow-net" in args
-    assert kwargs["input"] == '{"mode": "prepare"}'
+    assert written == ['{"mode": "prepare"}']
+    assert progresses == [50.0]
+    assert logs == ["Gemma E2B 다운로드: model.onnx 50%"]
     assert not Path(args[-1]).exists()

@@ -222,6 +222,7 @@ def test_main_window_liked_music_playlist_uses_ytdlp_expander(tmp_path) -> None:
             return PlaylistExpansionResult(urls=[f"https://music.youtube.com/watch?v=video-{index}" for index in range(483)])
 
         window._expand_playlist_with_ytdlp = expand_with_ytdlp
+        window._ytmusic_oauth_connected = lambda: False
 
         result = window._expand_playlist("https://music.youtube.com/playlist?list=LM", output_dir=tmp_path)
 
@@ -229,6 +230,27 @@ def test_main_window_liked_music_playlist_uses_ytdlp_expander(tmp_path) -> None:
         assert len(result.urls) == 483
         assert result.urls[0] == "https://music.youtube.com/watch?v=video-0"
         assert result.urls[-1] == "https://music.youtube.com/watch?v=video-482"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_oauth_skips_ytdlp_for_youtube_playlist(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._ytmusic_oauth_connected = lambda: True
+        window._expand_playlist_with_ytdlp = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("yt-dlp should not be used when OAuth is connected")
+        )
+        window._expand_playlist_with_youtube_data_api = lambda playlist_id: PlaylistExpansionResult(
+            urls=[f"https://music.youtube.com/watch?v={playlist_id}-track"]
+        )
+
+        result = window._expand_playlist("https://www.youtube.com/playlist?list=PLPRIVATE", output_dir=tmp_path)
+
+        assert result.urls == ["https://music.youtube.com/watch?v=PLPRIVATE-track"]
     finally:
         window.close()
         app.processEvents()
@@ -468,6 +490,7 @@ def test_main_window_liked_music_empty_ytdlp_result_fails_when_fallback_fails(tm
     try:
         window._expand_playlist_with_ytdlp = lambda url, output_dir, **_kwargs: PlaylistExpansionResult(urls=[])
         window._expand_playlist_with_ytmusicapi = lambda url, **_kwargs: (_ for _ in ()).throw(RuntimeError("oauth failed"))
+        window._ytmusic_oauth_connected = lambda: False
 
         with pytest.raises(RuntimeError, match="oauth failed"):
             window._expand_playlist("https://www.youtube.com/playlist?list=LM", output_dir=tmp_path)

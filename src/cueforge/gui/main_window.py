@@ -1360,6 +1360,9 @@ class MainWindow(QMainWindow):
         emit_log = log or self._append_log
         if self._playlist_expander:
             return self._playlist_expander(url)
+        playlist_id = _youtube_playlist_id(url)
+        if playlist_id and self._ytmusic_oauth_connected():
+            return self._expand_playlist_with_youtube_data_api(playlist_id)
         try:
             result = self._expand_playlist_with_ytdlp(
                 url,

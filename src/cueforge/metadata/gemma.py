@@ -21,6 +21,7 @@ from cueforge.runtime import find_executable
 
 DEFAULT_GEMMA_E2B_MODEL_REPO = "onnx-community/gemma-4-E2B-it-ONNX"
 DEFAULT_GEMMA_E2B_MARKER = "gemma-e2b-it.ready.json"
+DEFAULT_GEMMA_E2B_MARKER_VERSION = 2
 GENERIC_SUPPORT_TOKENS = {
     "artist",
     "audio",
@@ -81,6 +82,10 @@ class GemmaE2BMetadataSuggester:
             _log(log, "Gemma E2B fallback 후보 생성 준비")
             output = self._runner(payload, self.config)
         except Exception as exc:
+            if not self.config.allow_download and _is_missing_local_model_error(exc):
+                _invalidate_gemma_marker(self.config)
+                _log(log, "Gemma E2B 모델 캐시가 없어 fallback 후보 생성을 건너뜀. 초기 준비에서 모델을 다시 다운로드하세요.")
+                return []
             _log(log, f"Gemma E2B fallback 실행 실패: {exc}")
             raise RuntimeError(f"Gemma E2B 모델을 실행할 수 없습니다: {exc}") from exc
         try:
@@ -111,7 +116,16 @@ class GemmaE2BMetadataSuggester:
 
 def gemma_e2b_cached(config: GemmaE2BConfig | None = None) -> bool:
     resolved = config or GemmaE2BConfig()
-    return _gemma_marker_path(resolved).exists()
+    marker = _gemma_marker_path(resolved)
+    if not marker.exists():
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return payload.get("model") == resolved.model_repo and payload.get("marker_version") == DEFAULT_GEMMA_E2B_MARKER_VERSION
 
 
 def prepare_gemma_e2b(
@@ -138,7 +152,17 @@ def prepare_gemma_e2b(
         _run_gemma_script(payload, resolved, log=log, progress=progress)
     marker = _gemma_marker_path(resolved)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps({"model": resolved.model_repo}, ensure_ascii=False), encoding="utf-8")
+    marker.write_text(
+        json.dumps(
+            {
+                "model": resolved.model_repo,
+                "marker_version": DEFAULT_GEMMA_E2B_MARKER_VERSION,
+                "cache_dir": str(_gemma_cache_dir(resolved)),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     _emit_progress(progress, 100.0)
     _log(log, "Gemma E2B 모델 준비 완료")
 
@@ -372,6 +396,24 @@ def _has_strong_external_candidate(candidates: list[MetadataCandidate]) -> bool:
         ):
             return True
     return False
+
+
+def _is_missing_local_model_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return (
+        "local_files_only=true" in message
+        or "env.allowremotemodels=false" in message
+        or "file was not found locally" in message
+    )
+
+
+def _invalidate_gemma_marker(config: GemmaE2BConfig) -> None:
+    try:
+        _gemma_marker_path(config).unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
 
 
 def _gemma_cache_dir(config: GemmaE2BConfig) -> Path:

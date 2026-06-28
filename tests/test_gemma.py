@@ -94,6 +94,28 @@ def test_gemma_suggester_raises_when_model_execution_fails(tmp_path: Path) -> No
         )
 
 
+def test_gemma_suggester_skips_and_invalidates_missing_local_model(tmp_path: Path) -> None:
+    marker = tmp_path / "gemma-e2b-it.ready.json"
+    marker.write_text('{"model":"onnx-community/gemma-4-E2B-it-ONNX","marker_version":2}', encoding="utf-8")
+    logs: list[str] = []
+
+    def runner(payload, config):
+        raise RuntimeError("local_files_only=true and file was not found locally at config.json")
+
+    suggester = GemmaE2BMetadataSuggester(GemmaE2BConfig(cache_dir=tmp_path, allow_download=False), runner=runner)
+
+    candidates = suggester.suggest(
+        info={"title": "Correct Artist - Correct Song"},
+        reference=TrackMetadata(title="Correct Song", artist="Correct Artist"),
+        candidates=[],
+        log=logs.append,
+    )
+
+    assert candidates == []
+    assert not marker.exists()
+    assert any("모델 캐시가 없어" in message for message in logs)
+
+
 def test_prepare_gemma_writes_ready_marker(tmp_path: Path) -> None:
     config = GemmaE2BConfig(cache_dir=tmp_path, allow_download=True)
 
@@ -103,6 +125,14 @@ def test_prepare_gemma_writes_ready_marker(tmp_path: Path) -> None:
     )
 
     assert gemma_e2b_cached(config) is True
+
+
+def test_gemma_cache_rejects_legacy_marker(tmp_path: Path) -> None:
+    config = GemmaE2BConfig(cache_dir=tmp_path)
+    marker = tmp_path / "gemma-e2b-it.ready.json"
+    marker.write_text('{"model":"onnx-community/gemma-4-E2B-it-ONNX"}', encoding="utf-8")
+
+    assert gemma_e2b_cached(config) is False
 
 
 def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> None:

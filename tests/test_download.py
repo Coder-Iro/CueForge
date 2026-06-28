@@ -60,7 +60,7 @@ class IncompletePlaylistYDL(FakeYDL):
 
     def extract_info(self, url: str, download: bool = False) -> dict:
         assert url == "https://www.youtube.com/playlist?list=PL123"
-        if self.options.get("extractor_args"):
+        if self.options.get("extractor_args", {}).get("youtubetab", {}).get("skip") == ["webpage"]:
             entries = [{"id": f"retry-{index}", "ie_key": "Youtube"} for index in range(4)]
         else:
             entries = [{"id": "first-page", "ie_key": "Youtube"}]
@@ -80,6 +80,19 @@ def test_fetch_info_uses_ytdlp_without_download(tmp_path: Path) -> None:
     assert "cookiesfrombrowser" not in FakeYDL.calls[-1]
     assert FakeYDL.calls[-1]["remote_components"] == ["ejs:github"]
     assert FakeYDL.calls[-1]["noplaylist"] is True
+    assert FakeYDL.calls[-1]["extractor_args"] == {"youtube": {"lang": ["ko"]}}
+
+
+def test_fetch_info_can_disable_youtube_locale(tmp_path: Path) -> None:
+    FakeYDL.calls.clear()
+    downloader = YTDLPDownloader(
+        DownloadConfig(output_dir=tmp_path, youtube_preferred_lang=""),
+        ydl_factory=FakeYDL,
+    )
+
+    downloader.fetch_info("https://music.youtube.com/watch?v=abc")
+
+    assert "extractor_args" not in FakeYDL.calls[-1]
 
 
 def test_fetch_info_waits_between_youtube_requests(tmp_path: Path, monkeypatch) -> None:
@@ -132,7 +145,10 @@ def test_expand_playlist_retries_youtube_pagination_with_skip_webpage(tmp_path: 
     result = downloader.expand_playlist("https://www.youtube.com/playlist?list=PL123")
 
     assert len(IncompletePlaylistYDL.calls) == 2
-    assert IncompletePlaylistYDL.calls[-1]["extractor_args"] == {"youtubetab": {"skip": ["webpage"]}}
+    assert IncompletePlaylistYDL.calls[-1]["extractor_args"] == {
+        "youtube": {"lang": ["ko"]},
+        "youtubetab": {"skip": ["webpage"]},
+    }
     assert result.expected_count == 5
     assert result.urls == [
         "https://www.youtube.com/watch?v=retry-0",

@@ -21,6 +21,7 @@ class DownloadConfig:
     keep_original: bool = False
     allow_remote_js_components: bool = True
     youtube_request_interval_seconds: float = 0.0
+    youtube_preferred_lang: str = "ko"
     quiet: bool = True
 
 
@@ -98,7 +99,7 @@ class YTDLPDownloader:
         result = self._expand_playlist_with_options(url, options)
         if _is_incomplete_playlist_result(result) and _is_youtube_playlist_url(url):
             retry_options = dict(options)
-            retry_options["extractor_args"] = {"youtubetab": {"skip": ["webpage"]}}
+            _merge_extractor_args(retry_options, {"youtubetab": {"skip": ["webpage"]}})
             retry_result = self._expand_playlist_with_options(url, retry_options)
             if len(retry_result.urls) > len(result.urls):
                 return retry_result
@@ -156,6 +157,9 @@ class YTDLPDownloader:
             options["cookiefile"] = str(self.config.cookie_file)
         if self.config.allow_remote_js_components:
             options["remote_components"] = ["ejs:github"]
+        youtube_lang = self.config.youtube_preferred_lang.strip()
+        if youtube_lang:
+            _merge_extractor_args(options, {"youtube": {"lang": [youtube_lang]}})
         return options
 
     def _progress_hook(self, payload: dict[str, Any]) -> None:
@@ -256,3 +260,15 @@ def _is_incomplete_playlist_result(result: PlaylistExpansionResult) -> bool:
     if result.expected_count is None:
         return False
     return len(result.urls) + result.skipped_count < result.expected_count
+
+
+def _merge_extractor_args(options: dict[str, Any], extra: dict[str, dict[str, list[str]]]) -> None:
+    extractor_args = {
+        extractor: {key: list(values) for key, values in args.items()}
+        for extractor, args in (options.get("extractor_args") or {}).items()
+    }
+    for extractor, args in extra.items():
+        existing_args = extractor_args.setdefault(extractor, {})
+        for key, values in args.items():
+            existing_args[key] = list(values)
+    options["extractor_args"] = extractor_args

@@ -8,6 +8,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
@@ -316,6 +317,8 @@ class _HuggingFaceDownloadProgress:
         self.log = log
         self.progress = progress
         self.lock = threading.Lock()
+        self.started_at = time.monotonic()
+        self.last_log_at = self.started_at
         self.last_percent = -1.0
         self.next_log_percent = 5
 
@@ -377,6 +380,11 @@ class _HuggingFaceDownloadProgress:
             if self.total_bytes <= 0:
                 _emit_progress(self.progress, None)
                 return
+            now = time.monotonic()
+            elapsed = max(now - self.started_at, 0.001)
+            speed = self.downloaded_bytes / elapsed
+            remaining_bytes = max(self.total_bytes - self.downloaded_bytes, 0)
+            eta_seconds = remaining_bytes / speed if speed > 0 else None
             percent = max(0.0, min((self.downloaded_bytes / self.total_bytes) * 95.0, 95.0))
             if percent < self.last_percent:
                 return
@@ -384,11 +392,18 @@ class _HuggingFaceDownloadProgress:
                 self.last_percent = percent
                 _emit_progress(self.progress, percent)
             display_percent = int((percent / 95.0) * 100.0)
-            if display_percent >= self.next_log_percent:
+            should_log = (
+                display_percent >= self.next_log_percent
+                or now - self.last_log_at >= 2.0
+                or percent >= 95.0
+            )
+            if should_log:
+                self.last_log_at = now
                 _log(
                     self.log,
                     f"Gemma E2B 다운로드: {display_percent}% "
-                    f"({_format_bytes(self.downloaded_bytes)} / {_format_bytes(self.total_bytes)})",
+                    f"({_format_bytes(self.downloaded_bytes)} / {_format_bytes(self.total_bytes)}, "
+                    f"{_format_transfer_rate(speed)}, ETA {_format_eta(eta_seconds)})",
                 )
                 while self.next_log_percent <= display_percent:
                     self.next_log_percent += 5
@@ -628,6 +643,25 @@ def _format_bytes(value: int | float) -> str:
                 return f"{size:.0f} {unit}"
             return f"{size:.1f} {unit}"
         size /= 1024
+
+
+def _format_transfer_rate(bytes_per_second: int | float) -> str:
+    if bytes_per_second <= 0:
+        return "속도 계산 중"
+    return f"{_format_bytes(bytes_per_second)}/s"
+
+
+def _format_eta(seconds: float | None) -> str:
+    if seconds is None or seconds != seconds or seconds < 0:
+        return "계산 중"
+    rounded = int(round(seconds))
+    if rounded < 60:
+        return f"{rounded}초"
+    minutes, secs = divmod(rounded, 60)
+    if minutes < 60:
+        return f"{minutes}분 {secs:02d}초"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}시간 {minutes:02d}분"
 
 
 def _description_excerpt(description: str, *, limit: int = 900) -> str:

@@ -7,6 +7,7 @@ from cueforge.metadata.gemma import (
     GEMMA_E2B_REQUIRED_FILES,
     GemmaE2BConfig,
     GemmaE2BMetadataSuggester,
+    _HuggingFaceDownloadProgress,
     _gemma_model_dir,
     _run_gemma_script,
     gemma_e2b_cached,
@@ -228,6 +229,20 @@ def test_prepare_gemma_downloads_model_with_python_before_deno(monkeypatch, tmp_
     assert any("q4 모델 다운로드 시작" in message for message in logs)
     assert any("로컬 모델 실행 확인" in message for message in logs)
     assert gemma_e2b_cached(config) is True
+
+
+def test_gemma_download_progress_reports_speed_and_eta(monkeypatch) -> None:
+    ticks = iter([100.0, 102.0])
+    logs: list[str] = []
+    progresses: list[float | None] = []
+
+    monkeypatch.setattr("cueforge.metadata.gemma.time.monotonic", lambda: next(ticks))
+
+    tracker = _HuggingFaceDownloadProgress(total_bytes=1000, log=logs.append, progress=progresses.append)
+    tracker.update_bytes(250)
+
+    assert progresses == [23.75]
+    assert logs == ["Gemma E2B 다운로드: 25% (250 B / 1000 B, 125 B/s, ETA 6초)"]
 
 
 def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> None:

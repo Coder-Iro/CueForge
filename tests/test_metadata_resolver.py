@@ -302,7 +302,7 @@ def test_youtube_auto_generated_description_does_not_create_theme_hint() -> None
     assert resolution.candidates == []
 
 
-def test_youtube_resolver_uses_compact_title_pattern_for_user_uploads() -> None:
+def test_youtube_resolver_keeps_compact_title_pattern_as_review_candidate() -> None:
     class EmptyYTMusicProvider:
         def lookup(self, url: str) -> TrackMetadata:
             return TrackMetadata()
@@ -323,8 +323,10 @@ def test_youtube_resolver_uses_compact_title_pattern_for_user_uploads() -> None:
         },
     )
 
-    assert resolution.metadata.title == "개미관찰"
-    assert resolution.metadata.artist == "린"
+    assert resolution.metadata.title == "린-개미관찰"
+    assert resolution.metadata.artist == "윤다희"
     assert resolution.metadata.release_date == "2014-04-27"
     assert resolution.state == ReviewState.REVIEW_REQUIRED
     assert resolution.candidates[0].provider == "title_artist_title"
+    assert resolution.candidates[0].metadata.title == "개미관찰"
+    assert resolution.candidates[0].metadata.artist == "린"

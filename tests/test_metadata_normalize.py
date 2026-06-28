@@ -48,7 +48,7 @@ def test_safe_fallback_prefers_track_fields() -> None:
     assert metadata.release_date == "2026-05-01"
 
 
-def test_safe_fallback_prefers_parsed_artist_before_uploader() -> None:
+def test_safe_fallback_preserves_source_title_before_parsed_hint() -> None:
     metadata = build_safe_fallback(
         {
             "title": "린-개미관찰",
@@ -57,8 +57,8 @@ def test_safe_fallback_prefers_parsed_artist_before_uploader() -> None:
         }
     )
 
-    assert metadata.title == "개미관찰"
-    assert metadata.artist == "린"
+    assert metadata.title == "린-개미관찰"
+    assert metadata.artist == "윤다희"
     assert metadata.release_date == "2014-04-27"
 
 
@@ -71,7 +71,7 @@ def test_safe_fallback_uses_uploader_when_title_prefix_is_generic() -> None:
         }
     )
 
-    assert metadata.title == "개미관찰"
+    assert metadata.title == "보컬로이드 -개미관찰"
     assert metadata.artist == "토우링고"
     assert metadata.release_date == "2014-07-29"
 

@@ -989,6 +989,15 @@ def test_review_candidate_table_previews_then_applies_selected_candidate(tmp_pat
         assert window.review_fields["artist"].text() == "Artist B"
         assert window.review_fields["album"].text() == "Album B"
         assert job.selected_metadata.title == "Candidate B"
+
+        job.selected_metadata = TrackMetadata(title="Fallback", artist="Uploader")
+        window._set_review_fields(job.selected_metadata)
+        window.candidate_table.cellDoubleClicked.emit(0, 0)
+        app.processEvents()
+
+        assert window.review_fields["title"].text() == "Candidate A"
+        assert window.review_fields["artist"].text() == "Artist A"
+        assert job.selected_metadata.title == "Candidate A"
     finally:
         window.close()
         app.processEvents()

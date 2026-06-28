@@ -51,6 +51,8 @@ from cueforge.metadata import (
     AcoustIDProvider,
     CoverArtProvider,
     MetadataResolver,
+    SemanticCandidateRanker,
+    SemanticRankerConfig,
     default_ytmusic_oauth_account_path,
     default_ytmusic_oauth_token_path,
     fetch_ytmusic_oauth_account,
@@ -122,6 +124,7 @@ class JobWorker(QThread):
         acoustid_config: AcoustIDConfig | None = None,
         audio_recognition_enabled: bool = True,
         verify_auto_approved_metadata: bool = False,
+        semantic_ranking_enabled: bool = True,
         approved_metadata: TrackMetadata | None = None,
         analyze_only: bool = False,
         downloader_factory: DownloaderFactory | None = None,
@@ -141,6 +144,7 @@ class JobWorker(QThread):
         self.acoustid_config = acoustid_config or AcoustIDConfig()
         self.audio_recognition_enabled = audio_recognition_enabled
         self.verify_auto_approved_metadata = verify_auto_approved_metadata
+        self.semantic_ranking_enabled = semantic_ranking_enabled
         self.approved_metadata = approved_metadata
         self.analyze_only = analyze_only
         self._downloader_factory = downloader_factory or _create_downloader
@@ -234,6 +238,11 @@ class JobWorker(QThread):
             return self._resolver_factory()
         return MetadataResolver(
             cover_art_provider_factory=self._cover_art_provider_factory,
+            semantic_ranker_factory=(
+                (lambda: SemanticCandidateRanker(SemanticRankerConfig(allow_download=True)))
+                if self.semantic_ranking_enabled
+                else None
+            ),
         )
 
     def _resolve_metadata(self, downloader: YTDLPDownloader) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate], SourcePlatform]:
@@ -590,6 +599,7 @@ class MainWindow(QMainWindow):
         self.audio_recognition_checkbox = QCheckBox("메타데이터 신뢰도가 낮으면 AcoustID 사용")
         self.audio_recognition_checkbox.setChecked(True)
         self.verify_auto_approved_checkbox = QCheckBox("YouTube 자동 승인 메타데이터를 AcoustID로 검증")
+        self.semantic_ranking_checkbox = QCheckBox("MiniLM 후보 평가 사용")
         self.acoustid_key_input = QLineEdit()
         self.acoustid_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.fpcalc_path_input = QLineEdit()
@@ -635,6 +645,7 @@ class MainWindow(QMainWindow):
         self.candidate_table.setMinimumHeight(88)
         self.candidate_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.candidate_table.itemSelectionChanged.connect(self._preview_selected_candidate)
+        self.candidate_table.cellDoubleClicked.connect(self._apply_candidate_row)
         self.candidate_preview_table = QTableWidget(0, len(self.CANDIDATE_PREVIEW_COLUMNS))
         self.candidate_preview_table.setHorizontalHeaderLabels(self.CANDIDATE_PREVIEW_COLUMNS)
         self.candidate_preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -921,7 +932,7 @@ class MainWindow(QMainWindow):
         provider_layout.addWidget(self.candidate_preview_table)
         candidate_action_row = QHBoxLayout()
         candidate_action_row.addStretch(1)
-        self.apply_candidate_button = QPushButton("후보 적용")
+        self.apply_candidate_button = QPushButton("선택 후보를 태그에 반영")
         self.apply_candidate_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.apply_candidate_button.clicked.connect(self._apply_pending_candidate)
         self.apply_candidate_button.setEnabled(False)
@@ -1035,6 +1046,7 @@ class MainWindow(QMainWindow):
         recognition_form = QFormLayout(recognition_group)
         recognition_form.addRow(self.audio_recognition_checkbox)
         recognition_form.addRow(self.verify_auto_approved_checkbox)
+        recognition_form.addRow(self.semantic_ranking_checkbox)
         recognition_form.addRow("AcoustID 클라이언트 키", self.acoustid_key_input)
         recognition_form.addRow("fpcalc 경로", self._path_row(self.fpcalc_path_input, self._browse_fpcalc))
 
@@ -1082,6 +1094,9 @@ class MainWindow(QMainWindow):
         self.verify_auto_approved_checkbox.setChecked(
             _settings_bool(self._settings.value("acoustid/verify_auto_approved", False), default=False)
         )
+        self.semantic_ranking_checkbox.setChecked(
+            _settings_bool(self._settings.value("metadata/semantic_ranking", True), default=True)
+        )
         self.metadata_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/metadata_parallel", 3), default=3))
         self.download_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/download_parallel", 2), default=2))
         self.tagging_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/tagging_parallel", 1), default=1))
@@ -1107,6 +1122,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue("acoustid/client_key", self.acoustid_key_input.text().strip())
         self._settings.setValue("acoustid/enabled", self.audio_recognition_checkbox.isChecked())
         self._settings.setValue("acoustid/verify_auto_approved", self.verify_auto_approved_checkbox.isChecked())
+        self._settings.setValue("metadata/semantic_ranking", self.semantic_ranking_checkbox.isChecked())
         self._settings.remove("auth/cookie_browser")
         self._settings.remove("auth/unlock_browser_cookie_database")
         self._settings.setValue("scheduler/metadata_parallel", self.metadata_parallel_spin.value())
@@ -1128,6 +1144,7 @@ class MainWindow(QMainWindow):
             str(self._ytmusic_oauth_client_file() or ""),
             str(self._ytmusic_oauth_token_file().exists()),
             self._google_oauth_account_label(),
+            str(self.semantic_ranking_checkbox.isChecked()),
             str(self.metadata_parallel_spin.value()),
             str(self.download_parallel_spin.value()),
             str(self.tagging_parallel_spin.value()),
@@ -1161,6 +1178,7 @@ class MainWindow(QMainWindow):
             f"fpcalc {fpcalc.source if fpcalc.available else '없음'}; "
             f"AcoustID {acoustid}; 쿠키 파일 {cookie_file}; "
             f"Google OAuth {google_oauth}; YTMusic 인증 {ytmusic_auth}; "
+            f"MiniLM {'사용' if self.semantic_ranking_checkbox.isChecked() else '꺼짐'}; "
             f"병렬 {self.metadata_parallel_spin.value()}/{self.download_parallel_spin.value()}/{self.tagging_parallel_spin.value()}."
         )
         self._dependency_status_cache_key = cache_key
@@ -1179,6 +1197,7 @@ class MainWindow(QMainWindow):
         self.metadata_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
         self.download_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
         self.tagging_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
+        self.semantic_ranking_checkbox.stateChanged.connect(self._refresh_settings_status_label)
 
     def _refresh_settings_status_label(self, *args: Any) -> None:
         self._dependency_status_cache_key = None
@@ -1964,6 +1983,7 @@ class MainWindow(QMainWindow):
             ),
             audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
             verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
+            semantic_ranking_enabled=self.semantic_ranking_checkbox.isChecked(),
             approved_metadata=approved_metadata,
             analyze_only=analyze_only,
             tag_semaphore=self.scheduler.tag_semaphore if self.scheduler else None,
@@ -2353,6 +2373,22 @@ class MainWindow(QMainWindow):
         candidate_index = self.pending_candidate_index
         if not job or candidate_index is None or candidate_index >= len(job.candidates):
             return
+        self._apply_candidate(job, candidate_index)
+
+    def _apply_candidate_row(self, row: int, _column: int) -> None:
+        job = self._active_review_job()
+        if not job or row < 0:
+            return
+        item = self.candidate_table.item(row, 0)
+        if not item:
+            return
+        candidate_index = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(candidate_index, int) or candidate_index >= len(job.candidates):
+            return
+        self.pending_candidate_index = candidate_index
+        self._apply_candidate(job, candidate_index)
+
+    def _apply_candidate(self, job: DownloadJob, candidate_index: int) -> None:
         candidate = job.candidates[candidate_index]
         metadata = candidate.metadata.with_defaults_from(job.selected_metadata).normalized()
         job.selected_metadata = metadata
@@ -2361,6 +2397,7 @@ class MainWindow(QMainWindow):
         self._populate_candidate_preview(metadata, metadata)
         self._update_row(job)
         self._refresh_cover_preview(job, metadata)
+        self._append_log(job.id, f"후보 반영: {candidate.provider} {candidate.score:.2f}")
 
     def _populate_candidate_preview(self, current: TrackMetadata, applied: TrackMetadata) -> None:
         rows = _candidate_preview_rows(current, applied)
@@ -2585,6 +2622,7 @@ class MainWindow(QMainWindow):
             ),
             audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
             verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
+            semantic_ranking_enabled=self.semantic_ranking_checkbox.isChecked(),
             approved_metadata=approved_metadata,
             analyze_only=stage == "metadata",
             tag_semaphore=tag_semaphore,

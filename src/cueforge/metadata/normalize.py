@@ -113,11 +113,11 @@ def build_safe_fallback(info: dict[str, Any], source_url: str = "") -> TrackMeta
         or ""
     )
     parsed_artist, parsed_title = parse_artist_title(title)
-    artist = native_artist or parsed_artist or str(info.get("uploader") or info.get("uploader_id") or "")
+    artist = native_artist or str(info.get("uploader") or info.get("uploader_id") or "") or parsed_artist
     return clean_metadata(
         TrackMetadata(
-            title=parsed_title or title,
-            artist=artist or parsed_artist,
+            title=title or parsed_title,
+            artist=artist,
             album=str(info.get("album") or info.get("series") or ""),
             album_artist=str(info.get("album_artist") or _first(info.get("album_artists")) or ""),
             genre=str(info.get("genre") or _first(info.get("genres")) or _first(info.get("categories")) or ""),
@@ -146,7 +146,8 @@ def merge_metadata(
     best_candidate = max(candidates, key=lambda candidate: candidate.score, default=None)
     state = ReviewState.MANUAL_REQUIRED
     if best_candidate:
-        resolved = resolved.overlay(best_candidate.metadata.normalized())
+        if best_candidate.score >= 0.85 or not resolved.is_minimum_viable():
+            resolved = resolved.overlay(best_candidate.metadata.normalized())
         state = best_candidate.review_state
 
     if user:

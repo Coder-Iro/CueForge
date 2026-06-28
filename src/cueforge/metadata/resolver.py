@@ -27,6 +27,7 @@ class MetadataResolution:
 YTMusicProviderFactory = Callable[..., Any]
 MusicBrainzProviderFactory = Callable[[], Any]
 CoverArtProviderFactory = Callable[[], Any]
+SemanticRankerFactory = Callable[[], Any]
 
 
 class MetadataResolver:
@@ -36,10 +37,12 @@ class MetadataResolver:
         ytmusic_provider_factory: YTMusicProviderFactory | None = None,
         musicbrainz_provider_factory: MusicBrainzProviderFactory | None = None,
         cover_art_provider_factory: CoverArtProviderFactory | None = None,
+        semantic_ranker_factory: SemanticRankerFactory | None = None,
     ) -> None:
         self._ytmusic_provider_factory = ytmusic_provider_factory or YouTubeMusicProvider
         self._musicbrainz_provider_factory = musicbrainz_provider_factory or MusicBrainzProvider
         self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
+        self._semantic_ranker_factory = semantic_ranker_factory
 
     def resolve(
         self,
@@ -80,6 +83,7 @@ class MetadataResolver:
         if hint_candidates:
             reference_candidates = [as_reference_candidate(candidate) for candidate in reference_candidates]
         candidates.extend(reference_candidates)
+        candidates = self._semantic_ranked_candidates(reference, info, candidates, log=log)
         metadata, state = merge_metadata(youtube=reference, candidates=candidates, fallback=fallback)
         metadata = self.enrich_cover_art(metadata, platform=platform, fallback_cover_url=reference.cover_url or fallback.cover_url, log=log)
         return MetadataResolution(metadata=metadata, state=state, candidates=candidates, platform=platform)
@@ -202,6 +206,23 @@ class MetadataResolver:
             else:
                 candidates.append(hint)
         return candidates
+
+    def _semantic_ranked_candidates(
+        self,
+        reference: TrackMetadata,
+        info: dict[str, Any],
+        candidates: list[MetadataCandidate],
+        *,
+        log: Callable[[str], None] | None,
+    ) -> list[MetadataCandidate]:
+        if not candidates or not self._semantic_ranker_factory:
+            return candidates
+        try:
+            ranker = self._semantic_ranker_factory()
+            return ranker.rerank(info=info, reference=reference, candidates=candidates, log=log)
+        except Exception as exc:
+            _log(log, f"MiniLM 후보 평가 생략: {exc}")
+            return candidates
 
 
 def _duration_ms(info: dict[str, Any]) -> int | None:

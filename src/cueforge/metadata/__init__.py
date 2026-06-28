@@ -11,6 +11,7 @@ from cueforge.metadata.hints import MetadataHint, build_hint_candidates, extract
 from cueforge.metadata.fingerprint import AcoustIDConfig, AcoustIDProvider, AudioFingerprint, FpcalcFingerprinter
 from cueforge.metadata.musicbrainz import MusicBrainzConfig, MusicBrainzProvider
 from cueforge.metadata.resolver import MetadataResolution, MetadataResolver
+from cueforge.metadata.semantic import SemanticCandidateRanker, SemanticRankerConfig
 from cueforge.metadata.soundcloud import (
     as_reference_candidate,
     build_soundcloud_metadata,
@@ -54,6 +55,8 @@ __all__ = [
     "MetadataResolution",
     "MetadataResolver",
     "ReviewState",
+    "SemanticCandidateRanker",
+    "SemanticRankerConfig",
     "TrackMetadata",
     "YouTubeMusicProvider",
     "YTMusicCookieAuthConfig",

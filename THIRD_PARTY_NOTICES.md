@@ -7,9 +7,17 @@ CueForge depends on Python packages and external command-line tools. This file i
 - PySide6: LGPL/commercial licensing, used for the desktop UI.
 - yt-dlp: Unlicense, used for supported media extraction.
 - mutagen: GPL-2.0-or-later, used for ID3 tag writing.
+- numpy: BSD-3-Clause, used for ONNX tensor handling.
+- onnxruntime: MIT, used for local CPU candidate scoring.
 - requests: Apache-2.0, used for metadata and cover-art HTTP calls.
+- tokenizers: Apache-2.0, used for MiniLM tokenizer execution.
 - ytmusicapi: MIT, used for YouTube Music metadata.
+- huggingface-hub: Apache-2.0, used to cache the ONNX MiniLM model.
 - platformdirs: MIT, used for cache path resolution.
+
+## Metadata Models
+
+- `Xenova/paraphrase-multilingual-MiniLM-L12-v2`: ONNX export of `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`, Apache-2.0, used for local CPU semantic scoring of metadata candidates.
 
 ## Vendored / Adapted Code
 

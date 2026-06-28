@@ -11,10 +11,14 @@ requires-python = ">=3.11,<3.15"
 license = "MIT"
 authors = [{ name = "CueForge Contributors" }]
 dependencies = [
+  "huggingface-hub>=1.0",
   "mutagen>=1.47",
+  "numpy>=2.2",
+  "onnxruntime>=1.24",
   "platformdirs>=4.3",
   "PySide6>=6.10",
   "requests>=2.32",
+  "tokenizers>=0.22",
   "yt-dlp>=2026.1.1",
   "ytmusicapi>=1.12",
 ]

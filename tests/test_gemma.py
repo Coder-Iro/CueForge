@@ -1,4 +1,5 @@
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -11,7 +12,6 @@ from cueforge.metadata.gemma import (
     _gemma_context_key,
     _gemma_model_dir,
     _prompt_input,
-    _run_gemma_script,
     _run_gemma_session,
     _shutdown_gemma_sessions,
     gemma_e2b_cached,
@@ -289,9 +289,9 @@ def test_prepare_gemma_downloads_model_with_python_before_deno(monkeypatch, tmp_
         _write_required_gemma_files(config)
         return str(model_dir)
 
-    def fake_run_gemma_script(payload, resolved, **kwargs):
+    def fake_run_gemma_session(payload, resolved):
         run_payloads.append(payload)
-        assert resolved == config
+        assert resolved == GemmaE2BConfig(cache_dir=tmp_path, allow_download=False)
         assert payload["model"] == config.model_repo
         assert payload["modelPath"] == model_dir.as_posix()
         assert payload["allowDownload"] is False
@@ -299,7 +299,7 @@ def test_prepare_gemma_downloads_model_with_python_before_deno(monkeypatch, tmp_
 
     monkeypatch.setattr("cueforge.metadata.gemma.HfApi", lambda: Api())
     monkeypatch.setattr("cueforge.metadata.gemma.snapshot_download", fake_snapshot_download)
-    monkeypatch.setattr("cueforge.metadata.gemma._run_gemma_script", fake_run_gemma_script)
+    monkeypatch.setattr("cueforge.metadata.gemma._run_gemma_session", fake_run_gemma_session)
 
     prepare_gemma_e2b(config, log=logs.append, progress=progresses.append)
 
@@ -329,12 +329,55 @@ def test_gemma_download_progress_reports_speed_and_eta(monkeypatch) -> None:
 def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> None:
     calls = []
     written = []
-    logs = []
-    progresses = []
+
+    class Stream:
+        def __init__(self) -> None:
+            self.items = []
+            self.condition = threading.Condition()
+            self.closed = False
+
+        def push(self, value: str) -> None:
+            with self.condition:
+                self.items.append(value)
+                self.condition.notify()
+
+        def close(self) -> None:
+            with self.condition:
+                self.closed = True
+                self.condition.notify()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            with self.condition:
+                while not self.items and not self.closed:
+                    self.condition.wait(timeout=1)
+                if self.items:
+                    return self.items.pop(0)
+                raise StopIteration
 
     class Stdin:
+        def __init__(self, process):
+            self.process = process
+
         def write(self, value):
             written.append(value)
+            request = json.loads(value)
+            self.process.stdout.push(
+                json.dumps(
+                    {
+                        "cueforgeResponse": True,
+                        "requestId": request["requestId"],
+                        "ok": True,
+                        "output": '{"ok":true}',
+                    }
+                )
+                + "\n"
+            )
+
+        def flush(self):
+            return None
 
         def close(self):
             return None
@@ -343,14 +386,18 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         def __init__(self, args, **kwargs):
             self.args = args
             self.kwargs = kwargs
-            self.stdin = Stdin()
-            self.stdout = ['{"ok":true}']
-            self.stderr = ['{"cueforgeProgress":true,"file":"onnx/model.onnx","progress":50}\n']
+            self.stdout = Stream()
+            self.stderr = Stream()
+            self.stdin = Stdin(self)
+            self.killed = False
 
-        def wait(self, timeout=None):
-            return 0
+        def poll(self):
+            return None if not self.killed else -9
 
         def kill(self):
+            self.killed = True
+            self.stdout.close()
+            self.stderr.close()
             return None
 
     def fake_popen(args, **kwargs):
@@ -361,6 +408,8 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         assert "npm:@huggingface/transformers" in script_text
         assert "Read VIDEO DESCRIPTION line by line" in script_text
         assert "do not assume every such line is the final artist/title" in script_text
+        assert "For cover or performance videos, extract metadata for the performed recording" in script_text
+        assert "prefer the local-script display name" in script_text
         assert 'Use this exact schema: {\\"title\\":\\"...\\",\\"artist\\":\\"...\\",\\"reason\\":\\"...\\"}' in script_text
         assert "Do not use Markdown, prose, code fences, comments, arrays, or extra keys" in script_text
         assert "CURRENT GUESS" not in script_text
@@ -371,25 +420,26 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         return Process(args, **kwargs)
 
     monkeypatch.setattr("cueforge.metadata.gemma.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("cueforge.metadata.gemma._gemma_deno_path", lambda config: tmp_path / "deno.exe")
+    _shutdown_gemma_sessions()
 
-    output = _run_gemma_script(
-        {"mode": "prepare"},
-        GemmaE2BConfig(deno_path=tmp_path / "deno.exe"),
-        log=logs.append,
-        progress=progresses.append,
-    )
+    script_path = None
+    try:
+        output = _run_gemma_session({"mode": "prepare"}, GemmaE2BConfig(cache_dir=tmp_path))
 
-    args, kwargs = calls[0]
-    assert output == '{"ok":true}'
-    assert args[1] == "run"
-    assert "--no-prompt" not in args
-    assert "--allow-env" in args
-    assert "--allow-ffi" in args
-    assert "--allow-net" in args
-    assert written == ['{"mode": "prepare"}']
-    assert progresses == [50.0]
-    assert logs == ["Gemma E2B 다운로드: model.onnx 50%"]
-    assert not Path(args[-1]).exists()
+        args, kwargs = calls[0]
+        script_path = Path(args[-1])
+        assert output == '{"ok":true}'
+        assert args[1] == "run"
+        assert "--no-prompt" not in args
+        assert "--allow-env" in args
+        assert "--allow-ffi" in args
+        assert "--allow-net" in args
+        assert json.loads(written[0])["mode"] == "prepare"
+    finally:
+        _shutdown_gemma_sessions()
+    assert script_path is not None
+    assert not script_path.exists()
 
 
 def test_gemma_session_runner_reuses_warm_process(monkeypatch, tmp_path: Path) -> None:

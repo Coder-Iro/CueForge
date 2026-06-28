@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Callable
@@ -195,7 +195,6 @@ def prepare_gemma_e2b(
         "cacheDir": _path_for_js(_gemma_cache_dir(resolved)),
         "allowDownload": False,
         "maxNewTokens": 1,
-        "emitProgress": False,
     }
     _log(log, "Gemma E2B 모델 준비 중")
     _emit_progress(progress, 0.0)
@@ -205,7 +204,7 @@ def prepare_gemma_e2b(
         _download_gemma_e2b_model(resolved, log=log, progress=progress)
         _log(log, "Gemma E2B 로컬 모델 실행 확인 중")
         _emit_progress(progress, 96.0)
-        _run_gemma_script(payload, resolved, log=log, progress=progress)
+        _run_gemma_session(payload, replace(resolved, allow_download=False))
     marker = _gemma_marker_path(resolved)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(
@@ -223,74 +222,6 @@ def prepare_gemma_e2b(
     )
     _emit_progress(progress, 100.0)
     _log(log, "Gemma E2B 모델 준비 완료")
-
-
-def _run_gemma_script(
-    payload: dict[str, Any],
-    config: GemmaE2BConfig,
-    *,
-    log: Callable[[str], None] | None = None,
-    progress: Callable[[float | None], None] | None = None,
-) -> str:
-    deno = _gemma_deno_path(config)
-    env = os.environ.copy()
-    env.setdefault("NO_COLOR", "1")
-    with tempfile.NamedTemporaryFile("w", suffix=".mjs", encoding="utf-8", delete=False) as script_file:
-        script_file.write(_GEMMA_DENO_SCRIPT)
-        script_path = Path(script_file.name)
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
-    returncode = -1
-    try:
-        process = subprocess.Popen(
-            [
-                str(deno),
-                "run",
-                "--quiet",
-                "--allow-env",
-                "--allow-ffi",
-                "--allow-net",
-                "--allow-read",
-                "--allow-write",
-                str(script_path),
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-        )
-        stdout_thread = threading.Thread(target=_read_stream, args=(process.stdout, stdout_lines), daemon=True)
-        stderr_thread = threading.Thread(
-            target=_read_gemma_stderr,
-            args=(process.stderr, stderr_lines, log, progress),
-            daemon=True,
-        )
-        stdout_thread.start()
-        stderr_thread.start()
-        if process.stdin:
-            process.stdin.write(json.dumps(payload, ensure_ascii=False))
-            process.stdin.close()
-        try:
-            returncode = process.wait(timeout=config.timeout_seconds)
-        except subprocess.TimeoutExpired as exc:
-            process.kill()
-            raise RuntimeError(f"Deno timed out after {config.timeout_seconds}s") from exc
-        stdout_thread.join(timeout=1)
-        stderr_thread.join(timeout=1)
-    finally:
-        try:
-            script_path.unlink()
-        except OSError:
-            pass
-    stdout = "".join(stdout_lines)
-    stderr = "".join(stderr_lines)
-    if returncode != 0:
-        message = (stderr or stdout).strip()
-        raise RuntimeError(message or f"Deno exited with {returncode}")
-    return stdout
 
 
 _GEMMA_SESSIONS_LOCK = threading.Lock()
@@ -615,73 +546,6 @@ class _HuggingFaceDownloadProgress:
                     self.next_log_percent += 5
 
 
-def _read_stream(stream: Any, lines: list[str]) -> None:
-    if not stream:
-        return
-    for line in stream:
-        lines.append(line)
-
-
-def _read_gemma_stderr(
-    stream: Any,
-    lines: list[str],
-    log: Callable[[str], None] | None,
-    progress: Callable[[float | None], None] | None,
-) -> None:
-    if not stream:
-        return
-    for line in stream:
-        if _handle_gemma_progress_line(line.strip(), log=log, progress=progress):
-            continue
-        lines.append(line)
-
-
-def _handle_gemma_progress_line(
-    line: str,
-    *,
-    log: Callable[[str], None] | None,
-    progress: Callable[[float | None], None] | None,
-) -> bool:
-    if not line:
-        return False
-    try:
-        payload = json.loads(line)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(payload, dict) or payload.get("cueforgeProgress") is not True:
-        return False
-    percent = _progress_percent(payload)
-    if percent is not None:
-        _emit_progress(progress, percent)
-    file_label = _progress_file_label(payload)
-    status = str(payload.get("status") or "").strip()
-    if file_label and percent is not None:
-        _log(log, f"Gemma E2B 다운로드: {file_label} {percent:.0f}%")
-    elif file_label:
-        _log(log, f"Gemma E2B 다운로드: {file_label}")
-    elif status:
-        _log(log, f"Gemma E2B 다운로드: {status}")
-    return True
-
-
-def _progress_percent(payload: dict[str, Any]) -> float | None:
-    value = _to_float(payload.get("progress"))
-    if value is not None:
-        return max(0.0, min(value, 100.0))
-    loaded = _to_float(payload.get("loaded"))
-    total = _to_float(payload.get("total"))
-    if loaded is not None and total and total > 0:
-        return max(0.0, min((loaded / total) * 100.0, 100.0))
-    return None
-
-
-def _progress_file_label(payload: dict[str, Any]) -> str:
-    value = squash_spaces(str(payload.get("file") or payload.get("name") or ""))
-    if not value:
-        return ""
-    return re.split(r"[\\/]", value)[-1] or value
-
-
 def _emit_progress(progress: Callable[[float | None], None] | None, value: float | None) -> None:
     if progress:
         progress(value)
@@ -930,90 +794,6 @@ def _log(log: Callable[[str], None] | None, message: str) -> None:
         log(message)
 
 
-_GEMMA_DENO_SCRIPT = r"""
-import { env, pipeline } from "npm:@huggingface/transformers";
-
-const input = JSON.parse(await new Response(Deno.stdin.readable).text());
-env.cacheDir = input.cacheDir;
-env.allowLocalModels = true;
-env.allowRemoteModels = Boolean(input.allowDownload);
-
-function reportProgress(payload) {
-  if (!input.emitProgress) {
-    return;
-  }
-  const loaded = Number(payload?.loaded ?? 0);
-  const total = Number(payload?.total ?? 0);
-  let progress = Number(payload?.progress);
-  if (!Number.isFinite(progress) && total > 0) {
-    progress = (loaded / total) * 100;
-  }
-  console.error(JSON.stringify({
-    cueforgeProgress: true,
-    status: payload?.status ?? "",
-    file: payload?.file ?? payload?.name ?? "",
-    progress: Number.isFinite(progress) ? progress : null,
-    loaded: Number.isFinite(loaded) ? loaded : null,
-    total: Number.isFinite(total) ? total : null,
-  }));
-}
-
-const modelPath = input.modelPath || input.model;
-const generator = await pipeline("text-generation", modelPath, {
-  dtype: "q4",
-  cache_dir: input.cacheDir,
-  local_files_only: !Boolean(input.allowDownload),
-  progress_callback: reportProgress,
-});
-
-if (input.mode === "prepare") {
-  console.log(JSON.stringify({ ok: true }));
-  Deno.exit(0);
-}
-
-const prompt = [
-  {
-    role: "system",
-    content:
-      "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, performer, singer, music, composer, and lyrics credits, but do not assume every such line is the final artist/title. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Choose the song title from the clearest title/track line or from the meaningful song phrase in VIDEO TITLE. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. Do not swap artist and title. Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}. Do not use Markdown, prose, code fences, comments, arrays, or extra keys. Do not omit any key. Do not invent values that are not supported by the provided text.",
-  },
-  {
-    role: "user",
-    content: renderPromptInput(input.input),
-  },
-];
-
-function renderPromptInput(value) {
-  return [
-    `VIDEO TITLE:\n${value?.video_title ?? ""}`,
-    `VIDEO CHANNEL:\n${value?.video_channel ?? ""}`,
-    `VIDEO UPLOADER:\n${value?.video_uploader ?? ""}`,
-    `VIDEO CREATOR:\n${value?.video_creator ?? ""}`,
-    `VIDEO DESCRIPTION:\n${value?.video_description ?? ""}`,
-  ].join("\n\n");
-}
-
-const result = await generator(prompt, {
-  max_new_tokens: input.maxNewTokens ?? 96,
-  do_sample: false,
-  temperature: 0,
-  return_full_text: false,
-});
-
-function generatedText(value) {
-  const item = Array.isArray(value) ? value[0] : value;
-  const generated = item?.generated_text ?? item;
-  if (Array.isArray(generated)) {
-    const last = generated[generated.length - 1];
-    return typeof last === "string" ? last : (last?.content ?? JSON.stringify(last));
-  }
-  return String(generated ?? "");
-}
-
-console.log(generatedText(result));
-"""
-
-
 _GEMMA_DENO_SESSION_SCRIPT = r"""
 import { env, pipeline } from "npm:@huggingface/transformers";
 
@@ -1086,7 +866,7 @@ function buildBasePrompt(input) {
     {
       role: "system",
       content:
-        "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, performer, singer, music, composer, and lyrics credits, but do not assume every such line is the final artist/title. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Choose the song title from the clearest title/track line or from the meaningful song phrase in VIDEO TITLE. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. Do not swap artist and title. Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}. Do not use Markdown, prose, code fences, comments, arrays, or extra keys. Do not omit any key. Do not invent values that are not supported by the provided text.",
+        "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, chorus, cover, performer, singer, music, composer, lyrics, and arrangement credits, but do not assume every such line is the final artist/title. For cover or performance videos, extract metadata for the performed recording, not for the original source work. Original, music, lyrics, composer, and arrangement credits may describe the source work or production credits; do not use those credits as the track artist when an explicit vocal, chorus, cover, performed by, singer, channel, or uploader performer is present. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Prefer a concise display song title. When the video title starts with a localized/display title and later adds bracketed original titles, alternate-language titles, composer/original-artist names, performer names, COVER/MV/live labels, or other packaging text, keep only the display title. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. When a performer name appears in local script with a romanized alias in parentheses or a trailing uppercase alias, prefer the local-script display name unless only the romanized form is present. Do not swap artist and title. Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}. Do not use Markdown, prose, code fences, comments, arrays, or extra keys. Do not omit any key. Do not invent values that are not supported by the provided text.",
     },
     {
       role: "user",

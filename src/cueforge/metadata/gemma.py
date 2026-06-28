@@ -57,6 +57,7 @@ GENERIC_SUPPORT_TOKENS = {
     "track",
     "video",
 }
+LEADING_BRACKET_PATTERN = re.compile(r"^\s*(?:\[[^\]]+\]|【[^】]+】|「[^」]+」|『[^』]+』)\s*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,6 +529,9 @@ def _metadata_from_model_json(payload: dict[str, Any]) -> TrackMetadata | None:
 
 
 def _model_metadata_is_supported(metadata: TrackMetadata, info: dict[str, Any], reference: TrackMetadata) -> bool:
+    del reference
+    if _artist_is_likely_bracketed_channel_tag(metadata.artist, info):
+        return False
     source = squash_spaces(
         " ".join(
             str(value or "")
@@ -539,14 +543,72 @@ def _model_metadata_is_supported(metadata: TrackMetadata, info: dict[str, Any], 
                 info.get("uploader"),
                 info.get("creator"),
                 info.get("description"),
-                reference.title,
-                reference.artist,
             )
         )
     )
     if not source:
         return False
     return _supported_text(metadata.title, source) and _supported_text(metadata.artist, source)
+
+
+def _artist_is_likely_bracketed_channel_tag(artist: str, info: dict[str, Any]) -> bool:
+    artist = squash_spaces(artist)
+    if not artist:
+        return False
+    channel_values = [
+        squash_spaces(str(info.get(key) or ""))
+        for key in ("channel", "uploader")
+    ]
+    if not any(_same_text(artist, value) for value in channel_values if value):
+        return False
+    titles = [
+        squash_spaces(str(info.get(key) or ""))
+        for key in ("fulltitle", "title", "track")
+    ]
+    bracketed_artist = any(_same_text(artist, tag) for title in titles for tag in _leading_bracket_tags(title))
+    if not bracketed_artist:
+        return False
+    strong_source = squash_spaces(
+        " ".join(
+            [
+                *(_strip_leading_bracket_tags(title) for title in titles),
+                str(info.get("description") or ""),
+                str(info.get("creator") or ""),
+            ]
+        )
+    )
+    return not _phrase_in_text(artist, strong_source)
+
+
+def _leading_bracket_tags(value: str) -> list[str]:
+    tags: list[str] = []
+    text = value
+    while True:
+        match = LEADING_BRACKET_PATTERN.match(text)
+        if not match:
+            return tags
+        token = match.group(0).strip()
+        tags.append(token[1:-1].strip())
+        text = text[match.end():]
+
+
+def _strip_leading_bracket_tags(value: str) -> str:
+    text = value
+    while True:
+        match = LEADING_BRACKET_PATTERN.match(text)
+        if not match:
+            return squash_spaces(text)
+        text = text[match.end():]
+
+
+def _same_text(left: str, right: str) -> bool:
+    return squash_spaces(left).casefold() == squash_spaces(right).casefold()
+
+
+def _phrase_in_text(phrase: str, text: str) -> bool:
+    phrase = squash_spaces(phrase).casefold()
+    text = squash_spaces(text).casefold()
+    return bool(phrase and phrase in text)
 
 
 def _supported_text(value: str, source: str) -> bool:
@@ -666,9 +728,9 @@ def _format_eta(seconds: float | None) -> str:
     return f"{hours}시간 {minutes:02d}분"
 
 
-def _description_excerpt(description: str, *, limit: int = 2000) -> str:
+def _description_excerpt(description: str, *, limit: int = 4000) -> str:
     lines = [squash_spaces(line) for line in description.splitlines()]
-    return " ".join(line for line in lines if line)[:limit].rstrip()
+    return "\n".join(line for line in lines if line)[:limit].rstrip()
 
 
 def _log(log: Callable[[str], None] | None, message: str) -> None:
@@ -721,13 +783,24 @@ const prompt = [
   {
     role: "system",
     content:
-      "Extract track metadata from one noisy YouTube video. Use video_title and video_description as the primary evidence. Use video_channel, video_uploader, and video_creator only as weak hints unless the title or description supports them. current_guess_title and current_guess_artist may be wrong and must not override stronger source text. Preserve the actual song title instead of shortening it to a series, episode, OST, MV, or game name. Do not swap artist and title. Return only compact JSON with title, artist, and reason. Do not invent values that are not supported by the provided text.",
+      "Extract track metadata from one noisy YouTube video. Use VIDEO TITLE and VIDEO DESCRIPTION as the primary evidence. Preserve line boundaries in VIDEO DESCRIPTION: credit lines such as Music Mitsukiyo, Lyrics Name, Vocal Name, Artist Name, Composer Name, or Track Title are strong evidence even without a colon. Prefer Vocal/Artist/Performer as the track artist when present; use Music/Composer only when no performer is present. Use channel/uploader only as weak hints unless the title or description supports them. A leading bracketed franchise/project tag in VIDEO TITLE, such as [Game Name] or [Series Name], is not the artist by itself. CURRENT GUESS may be wrong and must not override stronger source text. Preserve the actual song title instead of shortening it to a series, episode, OST, MV, or game name. Remove MV, official video, OST section names, and franchise tags from the title when a cleaner track title is present in the description. Do not swap artist and title. Return only compact JSON with title, artist, and reason. Do not invent values that are not supported by the provided text.",
   },
   {
     role: "user",
-    content: JSON.stringify(input.input),
+    content: renderPromptInput(input.input),
   },
 ];
+
+function renderPromptInput(value) {
+  return [
+    `VIDEO TITLE:\n${value?.video_title ?? ""}`,
+    `VIDEO CHANNEL:\n${value?.video_channel ?? ""}`,
+    `VIDEO UPLOADER:\n${value?.video_uploader ?? ""}`,
+    `VIDEO CREATOR:\n${value?.video_creator ?? ""}`,
+    `CURRENT GUESS:\nTitle: ${value?.current_guess_title ?? ""}\nArtist: ${value?.current_guess_artist ?? ""}`,
+    `VIDEO DESCRIPTION:\n${value?.video_description ?? ""}`,
+  ].join("\n\n");
+}
 
 const result = await generator(prompt, {
   max_new_tokens: input.maxNewTokens ?? 96,

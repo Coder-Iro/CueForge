@@ -206,6 +206,37 @@ def test_gemma_suggester_prefers_cover_performer_over_original_artist_without_re
     assert candidates[0].metadata.album_artist == "계화"
 
 
+def test_gemma_suggester_prefers_non_official_creator_over_project_channel(tmp_path: Path) -> None:
+    calls = []
+
+    def runner(payload, config):
+        calls.append(payload)
+        assert payload["mode"] == "suggest"
+        return '{"title":"Ex-Otogibanashi","artist":"『超かぐや姫 ! 』公式"}'
+
+    suggester = GemmaE2BMetadataSuggester(GemmaE2BConfig(cache_dir=tmp_path), runner=runner)
+
+    candidates = suggester.suggest(
+        info={
+            "id": "qbT7bBYz5YA",
+            "extractor_key": "Youtube",
+            "title": "【Official MV】Ex-Otogibanashi (Anime ver.) - ryo (supercell)",
+            "channel": "『超かぐや姫 ! 』公式",
+            "uploader": "『超かぐや姫 ! 』公式",
+            "creator": "『超かぐや姫 ! 』公式, ryo (supercell)",
+            "description": "Lyrics, Music & Arrangement:：ryo (supercell)",
+        },
+        reference=TrackMetadata(title="Ex-Otogibanashi", artist="『超かぐや姫 ! 』公式"),
+        candidates=[],
+    )
+
+    assert [call["mode"] for call in calls] == ["suggest"]
+    assert len(candidates) == 1
+    assert candidates[0].metadata.title == "Ex-Otogibanashi"
+    assert candidates[0].metadata.artist == "ryo (supercell)"
+    assert candidates[0].metadata.album_artist == "ryo (supercell)"
+
+
 def test_gemma_context_key_prefers_url_then_source_id() -> None:
     assert (
         _gemma_context_key(

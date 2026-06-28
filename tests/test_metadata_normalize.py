@@ -76,6 +76,31 @@ def test_safe_fallback_uses_uploader_when_title_prefix_is_generic() -> None:
     assert metadata.release_date == "2014-07-29"
 
 
+def test_safe_fallback_prefers_non_official_creator_from_mixed_creator_credit() -> None:
+    metadata = build_safe_fallback(
+        {
+            "title": "【Official MV】Ex-Otogibanashi (Anime ver.) - ryo (supercell)",
+            "creator": "『超かぐや姫 ! 』公式, ryo (supercell)",
+            "uploader": "『超かぐや姫 ! 』公式",
+        }
+    )
+
+    assert metadata.artist == "ryo (supercell)"
+    assert metadata.album_artist == "ryo (supercell)"
+
+
+def test_safe_fallback_does_not_treat_official_as_artist_name_noise() -> None:
+    metadata = build_safe_fallback(
+        {
+            "title": "Official髭男dism - Pretender",
+            "creator": "Official髭男dism",
+            "uploader": "Official髭男dism",
+        }
+    )
+
+    assert metadata.artist == "Official髭男dism"
+
+
 def test_merge_metadata_user_values_win() -> None:
     fallback = TrackMetadata(title="Video Title", artist="Uploader")
     youtube = TrackMetadata(title="YT Title", artist="YT Artist", album="YT Album")

@@ -48,6 +48,11 @@ class FakeYTMusicWithCoverProvider:
         return TrackMetadata(title="YT Title", artist="YT Artist", cover_url="https://img.youtube.com/yt-thumb.jpg")
 
 
+class OfficialProjectYTMusicProvider:
+    def lookup(self, url: str) -> TrackMetadata:
+        return TrackMetadata(title="Ex-Otogibanashi", artist="『超かぐや姫 ! 』公式")
+
+
 class FakeReleaseMusicBrainzProvider:
     def lookup(self, reference: TrackMetadata, *, duration_ms: int | None = None) -> list[MetadataCandidate]:
         return [
@@ -236,6 +241,27 @@ def test_youtube_resolver_falls_back_to_platform_thumbnail_when_cover_art_missin
     )
 
     assert resolution.metadata.cover_url == "https://img.youtube.com/yt-thumb.jpg"
+
+
+def test_youtube_resolver_prefers_mixed_creator_artist_over_official_project_artist() -> None:
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=lambda auth_path: OfficialProjectYTMusicProvider(),
+        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
+    )
+
+    resolution = resolver.resolve(
+        url="https://youtu.be/qbT7bBYz5YA",
+        info={
+            "extractor_key": "Youtube",
+            "title": "【Official MV】Ex-Otogibanashi (Anime ver.) - ryo (supercell)",
+            "channel": "『超かぐや姫 ! 』公式",
+            "uploader": "『超かぐや姫 ! 』公式",
+            "creator": "『超かぐや姫 ! 』公式, ryo (supercell)",
+        },
+    )
+
+    assert resolution.metadata.title == "Ex-Otogibanashi"
+    assert resolution.metadata.artist == "ryo (supercell)"
 
 
 def test_soundcloud_resolver_keeps_native_artwork_even_with_release_match() -> None:

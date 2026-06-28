@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from cueforge.metadata.cover_art import CoverArtProvider
 from cueforge.metadata.hints import build_hint_candidates
-from cueforge.metadata.normalize import build_safe_fallback, merge_metadata
+from cueforge.metadata.normalize import build_safe_fallback, merge_metadata, prefer_creator_artist_over_official_metadata
 from cueforge.metadata.soundcloud import as_reference_candidate, build_soundcloud_native_candidate
 from cueforge.metadata.ytmusic import YouTubeMusicProvider
 from cueforge.metadata.musicbrainz import MusicBrainzProvider
@@ -75,6 +75,7 @@ class MetadataResolver:
                 oauth_token_file=ytmusic_oauth_token_file,
                 log=log,
             ).lookup(url)
+            youtube = prefer_creator_artist_over_official_metadata(youtube, info)
             if youtube.title or youtube.artist:
                 _log(log, f"YouTube Music 메타데이터 수신: {youtube.artist} - {youtube.title}")
             else:

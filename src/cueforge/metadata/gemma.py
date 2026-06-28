@@ -20,7 +20,12 @@ from huggingface_hub import HfApi, snapshot_download
 from platformdirs import user_cache_path
 
 from cueforge.metadata.matching import text_similarity
-from cueforge.metadata.normalize import clean_metadata, squash_spaces
+from cueforge.metadata.normalize import (
+    clean_metadata,
+    is_official_project_label,
+    prefer_creator_artist_over_official_metadata,
+    squash_spaces,
+)
 from cueforge.models import MetadataCandidate, TrackMetadata
 from cueforge.runtime import find_executable
 
@@ -686,6 +691,7 @@ def _metadata_from_model_json(payload: dict[str, Any]) -> TrackMetadata | None:
 
 def _normalize_gemma_metadata(metadata: TrackMetadata, info: dict[str, Any]) -> TrackMetadata:
     metadata = _prefer_local_artist_alias(metadata, info)
+    metadata = prefer_creator_artist_over_official_metadata(metadata, info)
     metadata = _prefer_cover_performer_for_original_artist(metadata, info)
     return _prefer_local_artist_alias(metadata, info)
 
@@ -783,7 +789,7 @@ def _local_alias_from_source(alias: str, source: str) -> str:
         if not match:
             continue
         local = _clean_local_alias(match.group("local"))
-        if local and _has_local_script(local):
+        if local and _has_local_script(local) and not is_official_project_label(local):
             return local
     return ""
 

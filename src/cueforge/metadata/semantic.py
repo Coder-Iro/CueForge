@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from cueforge.metadata.matching import text_similarity
 from cueforge.metadata.normalize import squash_spaces
 from cueforge.models import MetadataCandidate, TrackMetadata
 from cueforge.runtime import app_root
@@ -68,7 +70,8 @@ class SemanticCandidateRanker:
         ranked = [
             _candidate_with_semantic_score(
                 candidate,
-                score=model.similarity(source_text, _candidate_text(candidate.metadata)),
+                embedding_score=model.similarity(source_text, _candidate_text(candidate.metadata)),
+                evidence_score=_source_evidence_score(info, reference, candidate.metadata),
                 config=self.config,
             )
             for candidate in candidates
@@ -76,7 +79,16 @@ class SemanticCandidateRanker:
         ranked.sort(key=lambda candidate: candidate.score, reverse=True)
         best = ranked[0]
         if best.raw.get("semantic_score") is not None:
-            _log(log, f"MiniLM 후보 평가: {best.provider} {best.raw['semantic_score']:.2f}")
+            embedding_score = best.raw.get("semantic_embedding_score")
+            evidence_score = best.raw.get("semantic_evidence_score")
+            if evidence_score is not None and embedding_score is not None and evidence_score > embedding_score:
+                _log(
+                    log,
+                    f"MiniLM 후보 평가: {best.provider} {best.raw['semantic_score']:.2f} "
+                    f"(MiniLM {embedding_score:.2f}, 원문 근거 {evidence_score:.2f})",
+                )
+            else:
+                _log(log, f"MiniLM 후보 평가: {best.provider} {best.raw['semantic_score']:.2f}")
         return ranked
 
 
@@ -227,10 +239,13 @@ def _bundled_model_dir() -> Path:
 def _candidate_with_semantic_score(
     candidate: MetadataCandidate,
     *,
-    score: float,
+    embedding_score: float,
+    evidence_score: float,
     config: SemanticRankerConfig,
 ) -> MetadataCandidate:
-    score = max(0.0, min(float(score), 1.0))
+    embedding_score = _clamped_score(embedding_score)
+    evidence_score = _clamped_score(evidence_score)
+    score = max(embedding_score, evidence_score)
     if candidate.raw.get("requires_semantic_score"):
         adjusted = round(score, 3)
     else:
@@ -248,6 +263,8 @@ def _candidate_with_semantic_score(
         raw={
             **candidate.raw,
             "semantic_score": round(score, 3),
+            "semantic_embedding_score": round(embedding_score, 3),
+            "semantic_evidence_score": round(evidence_score, 3),
             "semantic_model": config.model_repo,
         },
     )
@@ -287,10 +304,63 @@ def _candidate_text(metadata: TrackMetadata) -> str:
     )
 
 
+def _source_evidence_score(info: dict[str, Any], reference: TrackMetadata, metadata: TrackMetadata) -> float:
+    if not metadata.title or not metadata.artist:
+        return 0.0
+    description = _description_excerpt(str(info.get("description") or ""))
+    video_title = str(info.get("fulltitle") or info.get("title") or info.get("track") or reference.title or "")
+    channel = str(info.get("channel") or "")
+    uploader = str(info.get("uploader") or "")
+    creator = str(info.get("creator") or "")
+    title_sources = (video_title, description)
+    artist_sources = (channel, uploader, creator, video_title, description, reference.artist)
+    title_score = _text_evidence_score(metadata.title, title_sources)
+    artist_score = _text_evidence_score(metadata.artist, artist_sources)
+    if title_score <= 0 or artist_score <= 0:
+        return 0.0
+    return round((title_score * 0.55) + (artist_score * 0.45), 3)
+
+
+def _text_evidence_score(value: str, sources: tuple[str, ...]) -> float:
+    value = squash_spaces(value)
+    if not value:
+        return 0.0
+    value_norm = value.casefold()
+    best = 0.0
+    tokens = _evidence_tokens(value)
+    for source in sources:
+        source = squash_spaces(source)
+        if not source:
+            continue
+        source_norm = source.casefold()
+        if value_norm in source_norm:
+            return 1.0
+        if tokens:
+            hits = sum(1 for token in tokens if token in source_norm)
+            if hits == len(tokens):
+                best = max(best, 0.9)
+            elif hits:
+                best = max(best, 0.45 + (0.20 * (hits / len(tokens))))
+        similarity = text_similarity(value, source)
+        if similarity >= 0.9:
+            best = max(best, 0.85)
+        elif similarity >= 0.65:
+            best = max(best, 0.65)
+    return best
+
+
+def _evidence_tokens(value: str) -> list[str]:
+    return [token.casefold() for token in re.split(r"[\s,;/|()\[\]{}<>\"'「」『』:：-]+", value) if len(token) >= 2]
+
+
 def _description_excerpt(description: str, *, limit: int = 600) -> str:
     lines = [squash_spaces(line) for line in description.splitlines()]
     excerpt = " ".join(line for line in lines if line)
     return excerpt[:limit].rstrip()
+
+
+def _clamped_score(value: float) -> float:
+    return max(0.0, min(float(value), 1.0))
 
 
 def _cosine_similarity(left: list[float], right: list[float]) -> float:

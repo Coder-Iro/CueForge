@@ -1002,6 +1002,8 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
         job = next(iter(window.jobs.values()))
         job.status = DownloadStatus.REVIEW_REQUIRED
         job.selected_metadata = TrackMetadata(title="Fallback", artist="Uploader")
+        job.source_title = "Original Video Title"
+        job.source_channel = "Original Channel"
         job.candidates = [
             MetadataCandidate(
                 provider="musicbrainz",
@@ -1016,6 +1018,12 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
         assert window.review_queue_table.rowCount() == 1
         assert window.review_queue_table.item(0, 0).text() == "Fallback"
         assert window.review_queue_table.item(0, 2).text() == "검수"
+        assert window.source_url_input.text() == "https://youtu.be/abc"
+        assert window.source_url_input.isReadOnly() is True
+        assert window.source_title_input.text() == "Original Video Title"
+        assert window.source_title_input.isReadOnly() is True
+        assert window.source_channel_input.text() == "Original Channel"
+        assert window.source_channel_input.isReadOnly() is True
         assert "점수 0.70" in window.confidence_detail_label.text()
         assert "검수 필요" in window.confidence_detail_label.text()
         assert "아티스트 충돌" in window.candidate_table.item(0, 3).text()

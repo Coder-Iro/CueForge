@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from cueforge.download import DownloadCanceled, DownloadConfig, DownloadProgress, DownloadResult
 from cueforge.gui.main_window import JobWorker
-from cueforge.metadata import AcoustIDConfig
+from cueforge.metadata import AcoustIDConfig, MetadataResolution
 from cueforge.models import DownloadJob, MetadataCandidate, ReviewState, TagWriteResult, TrackMetadata
 from cueforge.sources import SourcePlatform
 
@@ -75,6 +75,14 @@ class FakeCoverArtProvider:
 
 
 class FakeCoverResolver:
+    def resolve(self, **_kwargs) -> MetadataResolution:
+        return MetadataResolution(
+            metadata=TrackMetadata(title="Resolved", artist="Artist"),
+            state=ReviewState.REVIEW_REQUIRED,
+            candidates=[],
+            platform=SourcePlatform.YOUTUBE,
+        )
+
     def enrich_cover_art(
         self,
         metadata: TrackMetadata,
@@ -84,6 +92,15 @@ class FakeCoverResolver:
         log: object = None,
     ) -> TrackMetadata:
         return metadata
+
+
+class SourceInfoDownloader(FakeDownloader):
+    def fetch_info(self, url: str) -> dict:
+        return {
+            "extractor_key": "Youtube",
+            "title": "Original Video Title",
+            "channel": "Original Channel",
+        }
 
 
 class FakeTagWriter:
@@ -137,6 +154,26 @@ def test_worker_passes_cookie_file_to_downloader(tmp_path: Path) -> None:
     downloader = worker._new_downloader(tmp_path)
 
     assert downloader.config.cookie_file == cookie_file
+
+
+def test_worker_stores_original_source_title_and_channel(tmp_path: Path) -> None:
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    worker = JobWorker(
+        job,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        downloader_factory=lambda config, progress_callback: SourceInfoDownloader(config, progress_callback),
+        resolver_factory=FakeCoverResolver,
+    )
+
+    metadata, state, candidates, platform = worker._resolve_metadata(worker._new_downloader(tmp_path))
+
+    assert metadata.title == "Resolved"
+    assert state == ReviewState.REVIEW_REQUIRED
+    assert candidates == []
+    assert platform == SourcePlatform.YOUTUBE
+    assert job.source_title == "Original Video Title"
+    assert job.source_channel == "Original Channel"
 
 
 def test_worker_skips_auto_approved_audio_recognition_by_default(tmp_path: Path) -> None:

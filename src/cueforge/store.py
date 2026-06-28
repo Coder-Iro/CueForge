@@ -20,7 +20,7 @@ from cueforge.models import (
     TrackMetadata,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SECRET_PATTERNS = (
     re.compile(r"(__Secure-[A-Za-z0-9_]+|SAPISID|SID|LOGIN_INFO)=([^;\s]+)", re.IGNORECASE),
     re.compile(r"(client[_ -]?key|authorization|cookie)\s*[:=]\s*([^\s;]+)", re.IGNORECASE),
@@ -53,8 +53,8 @@ class JobStore:
                 INSERT INTO jobs (
                     id, url, platform, status, progress, output_dir, downloaded_path, final_path,
                     error, error_category, error_message, retry_count, selected_metadata,
-                    candidate_summaries, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_title, source_channel, candidate_summaries, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     url=excluded.url,
                     platform=excluded.platform,
@@ -68,6 +68,8 @@ class JobStore:
                     error_message=excluded.error_message,
                     retry_count=excluded.retry_count,
                     selected_metadata=excluded.selected_metadata,
+                    source_title=excluded.source_title,
+                    source_channel=excluded.source_channel,
                     candidate_summaries=excluded.candidate_summaries,
                     updated_at=excluded.updated_at
                 """,
@@ -85,6 +87,8 @@ class JobStore:
                     job.error_message,
                     job.retry_count,
                     _metadata_json(job.selected_metadata),
+                    job.source_title,
+                    job.source_channel,
                     _summaries_json(candidate_summaries),
                     job.created_at,
                     job.updated_at,
@@ -121,7 +125,7 @@ class JobStore:
                 """
                 SELECT id, url, platform, status, progress, output_dir, downloaded_path, final_path,
                        error, error_category, error_message, retry_count, selected_metadata,
-                       candidate_summaries, created_at, updated_at
+                       source_title, source_channel, candidate_summaries, created_at, updated_at
                 FROM jobs
                 ORDER BY created_at ASC, id ASC
                 """
@@ -188,9 +192,7 @@ class JobStore:
         with self._connect() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS schema_info (version INTEGER NOT NULL)")
             row = conn.execute("SELECT version FROM schema_info").fetchone()
-            if not row:
-                conn.execute("INSERT INTO schema_info (version) VALUES (?)", (SCHEMA_VERSION,))
-            elif int(row[0]) != SCHEMA_VERSION:
+            if row and int(row[0]) > SCHEMA_VERSION:
                 raise RuntimeError(f"Unsupported CueForge job store schema: {row[0]}")
             conn.execute(
                 """
@@ -208,6 +210,8 @@ class JobStore:
                     error_message TEXT NOT NULL DEFAULT '',
                     retry_count INTEGER NOT NULL DEFAULT 0,
                     selected_metadata TEXT NOT NULL,
+                    source_title TEXT NOT NULL DEFAULT '',
+                    source_channel TEXT NOT NULL DEFAULT '',
                     candidate_summaries TEXT NOT NULL DEFAULT '[]',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
@@ -228,9 +232,21 @@ class JobStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id, created_at DESC)")
+            self._ensure_column(conn, "jobs", "source_title", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "jobs", "source_channel", "TEXT NOT NULL DEFAULT ''")
+            if not row:
+                conn.execute("INSERT INTO schema_info (version) VALUES (?)", (SCHEMA_VERSION,))
+            elif int(row[0]) < SCHEMA_VERSION:
+                conn.execute("UPDATE schema_info SET version = ?", (SCHEMA_VERSION,))
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path)
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def sanitize_event_text(message: str) -> str:
@@ -282,6 +298,8 @@ def _job_from_row(row: tuple[Any, ...]) -> DownloadJob:
         error_message,
         retry_count,
         selected_metadata,
+        source_title,
+        source_channel,
         candidate_summaries,
         created_at,
         updated_at,
@@ -310,6 +328,8 @@ def _job_from_row(row: tuple[Any, ...]) -> DownloadJob:
         error_message=str(error_message or ""),
         retry_count=int(retry_count or 0),
         selected_metadata=_load_metadata(str(selected_metadata or "{}")),
+        source_title=str(source_title or ""),
+        source_channel=str(source_channel or ""),
         candidate_summaries=summaries,
         candidates=candidates,
         created_at=float(created_at),

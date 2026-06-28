@@ -239,6 +239,15 @@ class JobWorker(QThread):
         started_at = time.monotonic()
         self.log_message.emit(self.job.id, "yt-dlp 정보 조회 시작")
         info = downloader.fetch_info(self.job.url)
+        self.job.source_title = _source_text_from_info(info, "fulltitle", "title", "track")
+        self.job.source_channel = _source_text_from_info(
+            info,
+            "channel",
+            "uploader",
+            "creator",
+            "artist",
+            "uploader_id",
+        )
         self.log_message.emit(self.job.id, f"yt-dlp 정보 조회 완료 ({_elapsed(started_at)}): {_info_summary(info)}")
         started_at = time.monotonic()
         self.log_message.emit(self.job.id, "메타데이터 공급자 조회 시작")
@@ -638,6 +647,15 @@ class MainWindow(QMainWindow):
         self.queue_status_label.setWordWrap(True)
         self.dependency_status_label = QLabel("")
         self.dependency_status_label.setWordWrap(True)
+        self.source_url_input = QLineEdit()
+        self.source_url_input.setReadOnly(True)
+        self.source_url_input.setPlaceholderText("원본 URL 없음")
+        self.source_title_input = QLineEdit()
+        self.source_title_input.setReadOnly(True)
+        self.source_title_input.setPlaceholderText("원본 제목 없음")
+        self.source_channel_input = QLineEdit()
+        self.source_channel_input.setReadOnly(True)
+        self.source_channel_input.setPlaceholderText("원본 채널 없음")
         self.review_fields = {
             "title": QLineEdit(),
             "artist": QLineEdit(),
@@ -912,6 +930,9 @@ class MainWindow(QMainWindow):
         tag_editor_layout = QVBoxLayout(tag_editor_group)
 
         form = QFormLayout()
+        form.addRow("원본 URL", self.source_url_input)
+        form.addRow("원본 제목", self.source_title_input)
+        form.addRow("원본 채널", self.source_channel_input)
         labels = {
             "title": "제목",
             "artist": "아티스트",
@@ -2228,6 +2249,7 @@ class MainWindow(QMainWindow):
         self.pending_candidate_index = None
         self._clear_candidate_preview()
         self._populate_candidate_table(job)
+        self._set_source_fields(job)
         self._set_review_fields(metadata)
         self._loading_review = False
         self._refresh_cover_preview(job, metadata)
@@ -2248,6 +2270,9 @@ class MainWindow(QMainWindow):
         self.candidate_table.setRowCount(0)
         self.pending_candidate_index = None
         self._clear_candidate_preview()
+        self.source_url_input.clear()
+        self.source_title_input.clear()
+        self.source_channel_input.clear()
         self._set_review_fields(TrackMetadata())
         self.cover_preview_label.setPixmap(QPixmap())
         self.cover_preview_label.setText("커버 없음")
@@ -2287,6 +2312,11 @@ class MainWindow(QMainWindow):
     def _set_review_fields(self, metadata: TrackMetadata) -> None:
         for key, field in self.review_fields.items():
             field.setText(str(getattr(metadata, key) or ""))
+
+    def _set_source_fields(self, job: DownloadJob) -> None:
+        self.source_url_input.setText(job.url)
+        self.source_title_input.setText(job.source_title)
+        self.source_channel_input.setText(job.source_channel)
 
     def _preview_selected_candidate(self) -> None:
         if self._loading_review:
@@ -2989,6 +3019,19 @@ def _info_summary(info: dict[str, Any]) -> str:
     if title:
         parts.append(title[:80])
     return " / ".join(parts)
+
+
+def _source_text_from_info(info: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = info.get(key)
+        if isinstance(value, (list, tuple)):
+            value = next((item for item in value if item), "")
+        if isinstance(value, dict):
+            value = value.get("name") or value.get("title") or value.get("id") or ""
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _create_downloader(config: DownloadConfig, progress_callback: Any) -> YTDLPDownloader:

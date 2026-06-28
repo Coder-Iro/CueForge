@@ -285,7 +285,7 @@ def test_main_window_liked_music_oauth_uses_youtube_data_api(tmp_path) -> None:
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
         window._ytmusic_oauth_connected = lambda: True
-        window._expand_liked_music_with_youtube_data_api = lambda: PlaylistExpansionResult(
+        window._expand_liked_music_with_youtube_data_api = lambda session=None: PlaylistExpansionResult(
             urls=["https://music.youtube.com/watch?v=liked"]
         )
         window._create_ytmusic_client = lambda: (_ for _ in ()).throw(AssertionError("ytmusicapi should not be used"))
@@ -293,6 +293,25 @@ def test_main_window_liked_music_oauth_uses_youtube_data_api(tmp_path) -> None:
         result = window._expand_playlist_with_ytmusicapi("https://www.youtube.com/playlist?list=LM")
 
         assert result.urls == ["https://music.youtube.com/watch?v=liked"]
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_private_playlist_oauth_uses_youtube_data_api(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._ytmusic_oauth_connected = lambda: True
+        window._expand_playlist_with_youtube_data_api = lambda playlist_id: PlaylistExpansionResult(
+            urls=[f"https://music.youtube.com/watch?v={playlist_id}-track"]
+        )
+        window._create_ytmusic_client = lambda: (_ for _ in ()).throw(AssertionError("ytmusicapi should not be used"))
+
+        result = window._expand_playlist_with_ytmusicapi("https://www.youtube.com/playlist?list=PLPRIVATE")
+
+        assert result.urls == ["https://music.youtube.com/watch?v=PLPRIVATE-track"]
     finally:
         window.close()
         app.processEvents()
@@ -356,6 +375,77 @@ def test_main_window_liked_music_youtube_data_api_paginates(tmp_path) -> None:
         app.processEvents()
 
 
+def test_main_window_playlist_youtube_data_api_paginates(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    client_file = tmp_path / "google_oauth_client.json"
+    client_file.write_text(
+        '{"installed": {"client_id": "client.apps.googleusercontent.com", "client_secret": "secret"}}',
+        encoding="utf-8",
+    )
+    token_file = tmp_path / "ytmusic_oauth_token.json"
+    token_file.write_text(
+        '{"access_token": "access", "refresh_token": "refresh", "expires_at": 9999999999, "scope": "https://www.googleapis.com/auth/youtube", "token_type": "Bearer"}',
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class Session:
+        def get(self, url: str, *, headers: dict[str, str], params: dict[str, object], timeout: int) -> Response:
+            calls.append({"url": url, "headers": headers, "params": dict(params), "timeout": timeout})
+            if len(calls) == 1:
+                return Response(
+                    {
+                        "items": [
+                            {"contentDetails": {"videoId": "a"}},
+                            {"contentDetails": {"videoId": "b"}},
+                        ],
+                        "nextPageToken": "next",
+                        "pageInfo": {"totalResults": 3},
+                    }
+                )
+            return Response({"items": [{"contentDetails": {"videoId": "c"}}], "pageInfo": {"totalResults": 3}})
+
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._ytmusic_oauth_client_file = lambda: client_file
+        window._ytmusic_oauth_token_file = lambda: token_file
+
+        result = window._expand_playlist_with_youtube_data_api("VLPLPRIVATE", Session())
+
+        assert result.urls == [
+            "https://music.youtube.com/watch?v=a",
+            "https://music.youtube.com/watch?v=b",
+            "https://music.youtube.com/watch?v=c",
+        ]
+        assert result.expected_count == 3
+        assert calls[0]["url"] == "https://www.googleapis.com/youtube/v3/playlistItems"
+        assert calls[0]["headers"] == {"Authorization": "Bearer access"}
+        assert calls[0]["params"] == {
+            "part": "contentDetails",
+            "playlistId": "PLPRIVATE",
+            "maxResults": 50,
+        }
+        assert calls[1]["params"] == {
+            "part": "contentDetails",
+            "playlistId": "PLPRIVATE",
+            "maxResults": 50,
+            "pageToken": "next",
+        }
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_main_window_liked_music_empty_ytdlp_result_fails_when_fallback_fails(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
 
@@ -379,6 +469,7 @@ def test_main_window_youtube_music_playlist_falls_back_when_ytdlp_result_count_i
         window._expand_playlist_with_ytdlp = lambda url, output_dir: PlaylistExpansionResult(
             urls=[f"https://music.youtube.com/watch?v=track-{index}" for index in range(100)]
         )
+        window._ytmusic_oauth_connected = lambda: False
         window._create_ytmusic_client = lambda: _FakeYTMusicPlaylistClient(track_count=483)
 
         result = window._expand_playlist("https://music.youtube.com/playlist?list=PLBIG", output_dir=tmp_path)
@@ -400,6 +491,7 @@ def test_main_window_regular_youtube_playlist_can_use_ytmusicapi_fallback_when_y
             urls=[f"https://www.youtube.com/watch?v=track-{index}" for index in range(100)],
             expected_count=438,
         )
+        window._ytmusic_oauth_connected = lambda: False
         window._create_ytmusic_client = lambda: _FakeYTMusicPlaylistClient(track_count=438)
 
         result = window._expand_playlist("https://www.youtube.com/playlist?list=PLBIG", output_dir=tmp_path)

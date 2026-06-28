@@ -10,10 +10,7 @@ from urllib.parse import parse_qs, urlparse
 from cueforge.metadata.ytmusic_auth import (
     YTMusicCookieAuthConfig,
     YTMusicCookieAuthError,
-    YTMusicOAuthError,
-    build_ytmusic_oauth_credentials,
     build_ytmusic_cookie_auth,
-    load_ytmusic_oauth_client,
 )
 from cueforge.metadata.normalize import clean_metadata, clean_title, parse_artist_title
 from cueforge.models import TrackMetadata
@@ -78,12 +75,7 @@ class YouTubeMusicProvider:
 
     def _resolve_auth(self) -> tuple[Any, Any]:
         if self.oauth_client_file and self.oauth_token_file and self.oauth_token_file.exists():
-            try:
-                client = load_ytmusic_oauth_client(self.oauth_client_file)
-                self._emit("YTMusic 인증: Google OAuth 사용")
-                return str(self.oauth_token_file), build_ytmusic_oauth_credentials(client)
-            except YTMusicOAuthError as exc:
-                self._emit(f"YTMusic OAuth 인증 생략: {exc}")
+            self._emit("YTMusic 인증: Google OAuth는 YouTube Data API 전용으로 사용")
 
         if self.auth_path and self.auth_path.exists():
             self._emit("YTMusic 인증: 수동 JSON 사용")

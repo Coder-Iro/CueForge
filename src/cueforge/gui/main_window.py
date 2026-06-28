@@ -52,7 +52,6 @@ from cueforge.metadata import (
     CoverArtProvider,
     MetadataResolver,
     default_ytmusic_oauth_account_path,
-    build_ytmusic_oauth_credentials,
     default_ytmusic_oauth_token_path,
     fetch_ytmusic_oauth_account,
     find_ytmusic_oauth_client_file,
@@ -81,6 +80,7 @@ AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
 CoverArtProviderFactory = Callable[[], Any]
 TagWriterFactory = Callable[[], Any]
 YOUTUBE_DATA_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+YOUTUBE_DATA_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 _ACTIVE_STATUSES = {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}
 _TERMINAL_STATUSES = {DownloadStatus.DONE, DownloadStatus.FAILED, DownloadStatus.CANCELED}
 _ANALYZABLE_STATUSES = {
@@ -1362,8 +1362,8 @@ class MainWindow(QMainWindow):
         playlist_id = _youtube_playlist_id(url)
         if not playlist_id:
             raise ValueError("YouTube playlist ID를 찾을 수 없습니다.")
-        if playlist_id == "LM" and self._ytmusic_oauth_connected():
-            return self._expand_liked_music_with_youtube_data_api()
+        if self._ytmusic_oauth_connected():
+            return self._expand_playlist_with_youtube_data_api(playlist_id)
         client = self._create_ytmusic_client()
         if playlist_id == "LM" and hasattr(client, "get_liked_songs"):
             playlist = client.get_liked_songs(limit=None)
@@ -1382,17 +1382,72 @@ class MainWindow(QMainWindow):
                 skipped_count += 1
         return PlaylistExpansionResult(urls=urls, skipped_count=skipped_count, expected_count=len(tracks))
 
-    def _expand_liked_music_with_youtube_data_api(self, session: Any | None = None) -> PlaylistExpansionResult:
-        oauth_client_file = self._ytmusic_oauth_client_file()
-        oauth_token_file = self._ytmusic_oauth_token_file()
-        if not oauth_client_file or not oauth_token_file.exists():
-            raise ValueError("Google OAuth 연결이 필요합니다.")
-        client = load_ytmusic_oauth_client(oauth_client_file)
-        token = refresh_ytmusic_oauth_token_if_needed(client, oauth_token_file)
-        access_token = str(token.get("access_token") or "")
-        if not access_token:
-            raise ValueError("OAuth access_token이 비어 있습니다. Google 계정을 다시 연결하세요.")
+    def _expand_playlist_with_youtube_data_api(
+        self,
+        playlist_id: str,
+        session: Any | None = None,
+    ) -> PlaylistExpansionResult:
+        if playlist_id == "LM":
+            return self._expand_liked_music_with_youtube_data_api(session)
 
+        access_token = self._youtube_data_api_access_token()
+        http = session or requests.Session()
+        urls: list[str] = []
+        skipped_count = 0
+        expected_count: int | None = None
+        page_token = ""
+        data_api_playlist_id = _youtube_data_api_playlist_id(playlist_id)
+        while True:
+            params = {
+                "part": "contentDetails",
+                "playlistId": data_api_playlist_id,
+                "maxResults": 50,
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            response = http.get(
+                YOUTUBE_DATA_PLAYLIST_ITEMS_URL,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+                timeout=30,
+            )
+            try:
+                payload = response.json()
+            except Exception as exc:
+                raise ValueError(f"YouTube Data API 응답을 읽을 수 없습니다: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("YouTube Data API 응답 형식이 올바르지 않습니다.")
+            if response.status_code >= 400 or payload.get("error"):
+                error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+                message = error.get("message") if isinstance(error, dict) else payload.get("error")
+                raise ValueError(f"YouTube Data API 플레이리스트 조회 실패: {message or response.text}")
+            page_info = payload.get("pageInfo")
+            if expected_count is None and isinstance(page_info, dict):
+                try:
+                    expected_count = int(page_info.get("totalResults") or 0)
+                except (TypeError, ValueError):
+                    expected_count = None
+            items = payload.get("items")
+            if not isinstance(items, list):
+                raise ValueError("YouTube Data API 플레이리스트 items를 읽을 수 없습니다.")
+            for item in items:
+                content_details = item.get("contentDetails") if isinstance(item, dict) else {}
+                video_id = str(content_details.get("videoId") or "").strip() if isinstance(content_details, dict) else ""
+                if video_id:
+                    urls.append(_ytmusic_track_url(video_id))
+                else:
+                    skipped_count += 1
+            page_token = str(payload.get("nextPageToken") or "")
+            if not page_token:
+                break
+        return PlaylistExpansionResult(
+            urls=urls,
+            skipped_count=skipped_count,
+            expected_count=expected_count or len(urls) + skipped_count,
+        )
+
+    def _expand_liked_music_with_youtube_data_api(self, session: Any | None = None) -> PlaylistExpansionResult:
+        access_token = self._youtube_data_api_access_token()
         http = session or requests.Session()
         urls: list[str] = []
         skipped_count = 0
@@ -1431,14 +1486,20 @@ class MainWindow(QMainWindow):
                 break
         return PlaylistExpansionResult(urls=urls, skipped_count=skipped_count, expected_count=len(urls) + skipped_count)
 
-    def _create_ytmusic_client(self) -> Any:
-        from ytmusicapi import YTMusic
-
+    def _youtube_data_api_access_token(self) -> str:
         oauth_client_file = self._ytmusic_oauth_client_file()
         oauth_token_file = self._ytmusic_oauth_token_file()
-        if oauth_client_file and oauth_token_file.exists():
-            client = load_ytmusic_oauth_client(oauth_client_file)
-            return YTMusic(str(oauth_token_file), oauth_credentials=build_ytmusic_oauth_credentials(client))
+        if not oauth_client_file or not oauth_token_file.exists():
+            raise ValueError("Google OAuth 연결이 필요합니다.")
+        client = load_ytmusic_oauth_client(oauth_client_file)
+        token = refresh_ytmusic_oauth_token_if_needed(client, oauth_token_file)
+        access_token = str(token.get("access_token") or "")
+        if not access_token:
+            raise ValueError("OAuth access_token이 비어 있습니다. Google 계정을 다시 연결하세요.")
+        return access_token
+
+    def _create_ytmusic_client(self) -> Any:
+        from ytmusicapi import YTMusic
 
         auth_path = _optional_path(self.auth_path_input.text())
         if auth_path and auth_path.exists():
@@ -3002,6 +3063,12 @@ def _youtube_playlist_id(url: str) -> str:
     if "youtube.com" not in host and "youtu.be" not in host:
         return ""
     return (parse_qs(parsed.query).get("list") or [""])[0].strip()
+
+
+def _youtube_data_api_playlist_id(playlist_id: str) -> str:
+    if playlist_id.startswith("VL") and len(playlist_id) > 2:
+        return playlist_id[2:]
+    return playlist_id
 
 
 def _ytmusic_track_url(video_id: str) -> str:

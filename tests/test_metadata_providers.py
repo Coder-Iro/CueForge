@@ -247,7 +247,7 @@ def test_youtube_music_provider_prefers_manual_auth_json(tmp_path: Path) -> None
     assert calls == [str(auth_path)]
 
 
-def test_youtube_music_provider_prefers_oauth_token(tmp_path: Path) -> None:
+def test_youtube_music_provider_skips_oauth_token_for_ytmusicapi(tmp_path: Path) -> None:
     oauth_client_file = tmp_path / "google_oauth_client.json"
     oauth_client_file.write_text(
         '{"installed": {"client_id": "client.apps.googleusercontent.com", "client_secret": "secret"}}',
@@ -261,6 +261,7 @@ def test_youtube_music_provider_prefers_oauth_token(tmp_path: Path) -> None:
     cookie_file = tmp_path / "cookies.txt"
     cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
     calls: list[tuple[object, object]] = []
+    logs: list[str] = []
 
     provider = YouTubeMusicProvider(
         oauth_client_file=oauth_client_file,
@@ -268,12 +269,13 @@ def test_youtube_music_provider_prefers_oauth_token(tmp_path: Path) -> None:
         cookie_file=cookie_file,
         browser_auth_builder=lambda: {"Cookie": "__Secure-3PAPISID=sapisid"},
         client_factory=lambda auth, oauth_credentials=None: calls.append((auth, oauth_credentials)) or FakeYTMusic(),
+        log=logs.append,
     )
 
     provider.lookup("abc")
 
-    assert calls[0][0] == str(oauth_token_file)
-    assert calls[0][1].client_id == "client.apps.googleusercontent.com"
+    assert calls[0] == ({"Cookie": "__Secure-3PAPISID=sapisid"}, None)
+    assert "Google OAuth는 YouTube Data API 전용" in logs[1]
 
 
 def test_youtube_music_oauth_client_loader_accepts_google_client_json(tmp_path: Path) -> None:

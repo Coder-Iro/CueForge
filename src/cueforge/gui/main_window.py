@@ -542,6 +542,7 @@ class MainWindow(QMainWindow):
         self.download_selected_button: QPushButton | None = None
         self.retry_selected_button: QPushButton | None = None
         self.retry_failed_button: QPushButton | None = None
+        self.remove_done_button: QPushButton | None = None
         self.remove_selected_button: QPushButton | None = None
         self.cancel_current_button: QPushButton | None = None
         self.approve_button: QPushButton | None = None
@@ -737,6 +738,10 @@ class MainWindow(QMainWindow):
         self.retry_failed_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.retry_failed_button.clicked.connect(self._retry_failed)
         primary_action_row.addWidget(self.retry_failed_button)
+        self.remove_done_button = QPushButton("완료 항목 제거")
+        self.remove_done_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.remove_done_button.clicked.connect(self._remove_done_jobs)
+        primary_action_row.addWidget(self.remove_done_button)
         self.cancel_current_button = QPushButton("현재 작업 취소")
         self.cancel_current_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
         self.cancel_current_button.clicked.connect(self._cancel_current_job)
@@ -2099,6 +2104,16 @@ class MainWindow(QMainWindow):
             self._append_log("system", f"실행 중인 작업 {active_count}개는 삭제하지 않음")
         self._refresh_actions()
 
+    def _remove_done_jobs(self) -> None:
+        done_jobs = [self.jobs[job_id] for job_id in self.row_job_ids if self.jobs[job_id].status == DownloadStatus.DONE]
+        if not done_jobs:
+            self._refresh_actions()
+            return
+        removed_count = len(done_jobs)
+        self._remove_jobs(done_jobs)
+        self._append_log("system", f"완료 항목 {removed_count}개를 큐에서 제거함")
+        self._refresh_actions()
+
     def _remove_job(self, job: DownloadJob) -> None:
         self._remove_jobs([job])
 
@@ -2743,6 +2758,7 @@ class MainWindow(QMainWindow):
         approved_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.APPROVED)
         review_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.REVIEW_REQUIRED)
         failed_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.FAILED)
+        done_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.DONE)
         selected_job = self._selected_job()
         active_review = self._active_review_job()
         can_start_pipeline = (pending_count > 0 or approved_count > 0) and not running
@@ -2779,6 +2795,8 @@ class MainWindow(QMainWindow):
             self.retry_selected_button.setEnabled(can_retry_selected)
         if self.retry_failed_button:
             self.retry_failed_button.setEnabled(can_retry)
+        if self.remove_done_button:
+            self.remove_done_button.setEnabled(done_count > 0)
         if self.remove_selected_button:
             self.remove_selected_button.setEnabled(can_remove_selected)
         if self.cancel_current_button:

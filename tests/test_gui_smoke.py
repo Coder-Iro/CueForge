@@ -634,6 +634,7 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
         assert window.download_selected_button is not None
         assert window.retry_selected_button is not None
         assert window.retry_failed_button is not None
+        assert window.remove_done_button is not None
         assert window.remove_selected_button is not None
         assert window.cancel_current_button is not None
 
@@ -649,6 +650,7 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
                 window.retry_selected_button,
                 window.review_selected_button,
                 window.retry_failed_button,
+                window.remove_done_button,
                 window.remove_selected_button,
             )
         ]
@@ -1094,6 +1096,38 @@ def test_remove_selected_bulk_deletes_large_selection(tmp_path, monkeypatch) -> 
         assert window.jobs == {}
         assert len(delete_batches) == 1
         assert len(delete_batches[0]) == 120
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_remove_done_jobs_deletes_only_completed_queue_rows(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        done_job, _row = window._insert_job("https://youtu.be/done", output_dir=tmp_path)
+        failed_job, _row = window._insert_job("https://youtu.be/failed", output_dir=tmp_path)
+        pending_job, _row = window._insert_job("https://youtu.be/pending", output_dir=tmp_path)
+
+        done_job.status = DownloadStatus.DONE
+        failed_job.status = DownloadStatus.FAILED
+        window._update_row(done_job)
+        window._update_row(failed_job)
+        window._refresh_actions()
+
+        assert window.remove_done_button is not None
+        assert window.remove_done_button.isEnabled() is True
+
+        window._remove_done_jobs()
+
+        assert window.table.rowCount() == 2
+        assert done_job.id not in window.jobs
+        assert [job.id for job in window.jobs.values()] == [failed_job.id, pending_job.id]
+        assert [window.table.item(row, 3).text() for row in range(window.table.rowCount())] == [
+            "https://youtu.be/failed",
+            "https://youtu.be/pending",
+        ]
+        assert window.remove_done_button.isEnabled() is False
     finally:
         window.close()
         app.processEvents()

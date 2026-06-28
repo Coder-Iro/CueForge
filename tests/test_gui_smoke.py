@@ -137,18 +137,22 @@ def test_main_window_flattens_playlist_when_analysis_starts(tmp_path, monkeypatc
 
         monkeypatch.setattr(window, "_run_worker", fake_run_worker)
         window._analyze_next()
+        window._wait_for_workers(1000)
+        app.processEvents()
 
         assert calls == ["https://www.youtube.com/playlist?list=PL123"]
         assert analyzed == ["https://www.youtube.com/watch?v=abc"]
-        assert window.table.rowCount() == 2
-        assert window.table.item(0, 3).text() == "https://www.youtube.com/watch?v=abc"
-        assert window.table.item(1, 3).text() == "https://www.youtube.com/watch?v=def"
+        assert window.table.rowCount() == 3
+        assert window.table.item(0, 0).text() == "완료"
+        assert window.table.item(0, 3).text() == "https://www.youtube.com/playlist?list=PL123"
+        assert window.table.item(1, 3).text() == "https://www.youtube.com/watch?v=abc"
+        assert window.table.item(2, 3).text() == "https://www.youtube.com/watch?v=def"
     finally:
         window.close()
         app.processEvents()
 
 
-def test_main_window_replaces_existing_playlist_job_on_retry(tmp_path) -> None:
+def test_main_window_keeps_playlist_job_and_inserts_items_after_it(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
 
     def expand_playlist(url: str) -> PlaylistExpansionResult:
@@ -168,14 +172,16 @@ def test_main_window_replaces_existing_playlist_job_on_retry(tmp_path) -> None:
 
         replacement_jobs = window._prepare_playlist_job_for_analysis(playlist_job)
 
-        assert playlist_job.id not in window.jobs
+        assert playlist_job.id in window.jobs
+        assert playlist_job.status == DownloadStatus.DONE
         assert [job.url for job in replacement_jobs] == [
             "https://music.youtube.com/watch?v=abc",
             "https://music.youtube.com/watch?v=def",
         ]
-        assert window.table.rowCount() == 2
-        assert window.table.item(0, 3).text() == "https://music.youtube.com/watch?v=abc"
-        assert window.table.item(1, 3).text() == "https://music.youtube.com/watch?v=def"
+        assert window.table.rowCount() == 3
+        assert window.table.item(0, 3).text() == "https://music.youtube.com/playlist?list=LM"
+        assert window.table.item(1, 3).text() == "https://music.youtube.com/watch?v=abc"
+        assert window.table.item(2, 3).text() == "https://music.youtube.com/watch?v=def"
     finally:
         window.close()
         app.processEvents()
@@ -211,7 +217,7 @@ def test_main_window_liked_music_playlist_uses_ytdlp_expander(tmp_path) -> None:
 
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        def expand_with_ytdlp(url: str, *, output_dir: object) -> PlaylistExpansionResult:
+        def expand_with_ytdlp(url: str, *, output_dir: object, **_kwargs: object) -> PlaylistExpansionResult:
             calls.append(url)
             return PlaylistExpansionResult(urls=[f"https://music.youtube.com/watch?v=video-{index}" for index in range(483)])
 
@@ -234,13 +240,13 @@ def test_main_window_www_liked_music_playlist_falls_back_to_ytmusicapi_on_ytdlp_
 
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        def expand_with_ytdlp(url: str, *, output_dir: object) -> PlaylistExpansionResult:
+        def expand_with_ytdlp(url: str, *, output_dir: object, **_kwargs: object) -> PlaylistExpansionResult:
             calls.append(url)
             raise RuntimeError("ERROR: [youtube:tab] LM: YouTube said: The playlist does not exist.")
 
         liked_client = _FakeYTMusicLikedClient(track_count=3)
         window._expand_playlist_with_ytdlp = expand_with_ytdlp
-        window._create_ytmusic_client = lambda: liked_client
+        window._create_ytmusic_client = lambda **_kwargs: liked_client
         window._ytmusic_oauth_connected = lambda: False
 
         result = window._expand_playlist("https://www.youtube.com/playlist?list=LM", output_dir=tmp_path)
@@ -262,11 +268,11 @@ def test_main_window_www_liked_music_playlist_falls_back_when_ytdlp_caps_at_100(
 
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        window._expand_playlist_with_ytdlp = lambda url, output_dir: PlaylistExpansionResult(
+        window._expand_playlist_with_ytdlp = lambda url, output_dir, **_kwargs: PlaylistExpansionResult(
             urls=[f"https://www.youtube.com/watch?v=track-{index}" for index in range(100)],
             expected_count=100,
         )
-        window._create_ytmusic_client = lambda: _FakeYTMusicLikedClient(track_count=438)
+        window._create_ytmusic_client = lambda **_kwargs: _FakeYTMusicLikedClient(track_count=438)
         window._ytmusic_oauth_connected = lambda: False
 
         result = window._expand_playlist("https://www.youtube.com/playlist?list=LM", output_dir=tmp_path)
@@ -285,14 +291,14 @@ def test_main_window_liked_music_oauth_uses_youtube_data_api(tmp_path) -> None:
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
         window._ytmusic_oauth_connected = lambda: True
-        window._expand_liked_music_with_youtube_data_api = lambda session=None: PlaylistExpansionResult(
-            urls=["https://music.youtube.com/watch?v=liked"]
+        window._expand_playlist_with_youtube_data_api = lambda playlist_id: PlaylistExpansionResult(
+            urls=[f"https://music.youtube.com/watch?v={playlist_id.lower()}"]
         )
-        window._create_ytmusic_client = lambda: (_ for _ in ()).throw(AssertionError("ytmusicapi should not be used"))
+        window._create_ytmusic_client = lambda **_kwargs: (_ for _ in ()).throw(AssertionError("ytmusicapi should not be used"))
 
         result = window._expand_playlist_with_ytmusicapi("https://www.youtube.com/playlist?list=LM")
 
-        assert result.urls == ["https://music.youtube.com/watch?v=liked"]
+        assert result.urls == ["https://music.youtube.com/watch?v=lm"]
     finally:
         window.close()
         app.processEvents()
@@ -307,7 +313,7 @@ def test_main_window_private_playlist_oauth_uses_youtube_data_api(tmp_path) -> N
         window._expand_playlist_with_youtube_data_api = lambda playlist_id: PlaylistExpansionResult(
             urls=[f"https://music.youtube.com/watch?v={playlist_id}-track"]
         )
-        window._create_ytmusic_client = lambda: (_ for _ in ()).throw(AssertionError("ytmusicapi should not be used"))
+        window._create_ytmusic_client = lambda **_kwargs: (_ for _ in ()).throw(AssertionError("ytmusicapi should not be used"))
 
         result = window._expand_playlist_with_ytmusicapi("https://www.youtube.com/playlist?list=PLPRIVATE")
 
@@ -347,12 +353,15 @@ def test_main_window_liked_music_youtube_data_api_paginates(tmp_path) -> None:
             if len(calls) == 1:
                 return Response(
                     {
-                        "items": [{"id": "a"}, {"id": "b"}],
+                        "items": [
+                            {"contentDetails": {"videoId": "a"}},
+                            {"contentDetails": {"videoId": "b"}},
+                        ],
                         "nextPageToken": "next",
                         "pageInfo": {"totalResults": 3},
                     }
                 )
-            return Response({"items": [{"id": "c"}], "pageInfo": {"totalResults": 3}})
+            return Response({"items": [{"contentDetails": {"videoId": "c"}}], "pageInfo": {"totalResults": 3}})
 
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -367,9 +376,15 @@ def test_main_window_liked_music_youtube_data_api_paginates(tmp_path) -> None:
             "https://music.youtube.com/watch?v=c",
         ]
         assert result.expected_count == 3
+        assert calls[0]["url"] == "https://www.googleapis.com/youtube/v3/playlistItems"
         assert calls[0]["headers"] == {"Authorization": "Bearer access"}
-        assert calls[0]["params"] == {"part": "id", "myRating": "like", "maxResults": 50}
-        assert calls[1]["params"] == {"part": "id", "myRating": "like", "maxResults": 50, "pageToken": "next"}
+        assert calls[0]["params"] == {"part": "contentDetails", "playlistId": "LM", "maxResults": 50}
+        assert calls[1]["params"] == {
+            "part": "contentDetails",
+            "playlistId": "LM",
+            "maxResults": 50,
+            "pageToken": "next",
+        }
     finally:
         window.close()
         app.processEvents()
@@ -451,8 +466,8 @@ def test_main_window_liked_music_empty_ytdlp_result_fails_when_fallback_fails(tm
 
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        window._expand_playlist_with_ytdlp = lambda url, output_dir: PlaylistExpansionResult(urls=[])
-        window._expand_playlist_with_ytmusicapi = lambda url: (_ for _ in ()).throw(RuntimeError("oauth failed"))
+        window._expand_playlist_with_ytdlp = lambda url, output_dir, **_kwargs: PlaylistExpansionResult(urls=[])
+        window._expand_playlist_with_ytmusicapi = lambda url, **_kwargs: (_ for _ in ()).throw(RuntimeError("oauth failed"))
 
         with pytest.raises(RuntimeError, match="oauth failed"):
             window._expand_playlist("https://www.youtube.com/playlist?list=LM", output_dir=tmp_path)
@@ -466,11 +481,11 @@ def test_main_window_youtube_music_playlist_falls_back_when_ytdlp_result_count_i
 
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        window._expand_playlist_with_ytdlp = lambda url, output_dir: PlaylistExpansionResult(
+        window._expand_playlist_with_ytdlp = lambda url, output_dir, **_kwargs: PlaylistExpansionResult(
             urls=[f"https://music.youtube.com/watch?v=track-{index}" for index in range(100)]
         )
         window._ytmusic_oauth_connected = lambda: False
-        window._create_ytmusic_client = lambda: _FakeYTMusicPlaylistClient(track_count=483)
+        window._create_ytmusic_client = lambda **_kwargs: _FakeYTMusicPlaylistClient(track_count=483)
 
         result = window._expand_playlist("https://music.youtube.com/playlist?list=PLBIG", output_dir=tmp_path)
 
@@ -487,12 +502,12 @@ def test_main_window_regular_youtube_playlist_can_use_ytmusicapi_fallback_when_y
 
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        window._expand_playlist_with_ytdlp = lambda url, output_dir: PlaylistExpansionResult(
+        window._expand_playlist_with_ytdlp = lambda url, output_dir, **_kwargs: PlaylistExpansionResult(
             urls=[f"https://www.youtube.com/watch?v=track-{index}" for index in range(100)],
             expected_count=438,
         )
         window._ytmusic_oauth_connected = lambda: False
-        window._create_ytmusic_client = lambda: _FakeYTMusicPlaylistClient(track_count=438)
+        window._create_ytmusic_client = lambda **_kwargs: _FakeYTMusicPlaylistClient(track_count=438)
 
         result = window._expand_playlist("https://www.youtube.com/playlist?list=PLBIG", output_dir=tmp_path)
 
@@ -548,6 +563,8 @@ def test_main_window_does_not_analyze_original_playlist_after_expansion_failure(
 
         monkeypatch.setattr(window, "_run_worker", fake_run_worker)
         window._analyze_next()
+        window._wait_for_workers(1000)
+        app.processEvents()
 
         assert analyzed == []
         job = next(iter(window.jobs.values()))

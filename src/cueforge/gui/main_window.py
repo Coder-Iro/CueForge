@@ -79,7 +79,6 @@ ResolverFactory = Callable[[], MetadataResolver]
 AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
 CoverArtProviderFactory = Callable[[], Any]
 TagWriterFactory = Callable[[], Any]
-YOUTUBE_DATA_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 YOUTUBE_DATA_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 _ACTIVE_STATUSES = {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}
 _TERMINAL_STATUSES = {DownloadStatus.DONE, DownloadStatus.FAILED, DownloadStatus.CANCELED}
@@ -342,6 +341,32 @@ class JobWorker(QThread):
             self._tag_semaphore.release()
 
 
+class PlaylistExpansionWorker(QThread):
+    playlist_ready = Signal(str, object)
+    playlist_failed = Signal(str, str)
+    log_message = Signal(str, str)
+
+    def __init__(
+        self,
+        job: DownloadJob,
+        expand_playlist: Callable[[str, Path, Callable[[str, str], None]], PlaylistExpansionResult],
+    ) -> None:
+        super().__init__()
+        self.job = job
+        self._expand_playlist = expand_playlist
+
+    def run(self) -> None:
+        try:
+            result = self._expand_playlist(self.job.url, self.job.output_dir, self.log_message.emit)
+        except Exception as exc:
+            self.playlist_failed.emit(self.job.id, str(exc))
+            return
+        self.playlist_ready.emit(self.job.id, result)
+
+    def cancel(self) -> None:
+        self.requestInterruption()
+
+
 class CoverPreviewWorker(QThread):
     cover_loaded = Signal(str, str, object, str)
 
@@ -490,10 +515,11 @@ class MainWindow(QMainWindow):
         self.job_store = job_store or JobStore(_job_store_path_for_settings(self._settings))
         self.jobs: dict[str, DownloadJob] = {}
         self.row_job_ids: list[str] = []
-        self.worker: JobWorker | None = None
+        self.worker: QThread | None = None
         self.google_oauth_worker: GoogleOAuthWorker | None = None
         self.scheduler: JobScheduler | None = None
         self.worker_mode = ""
+        self._playlist_expanded_job_ids: list[str] = []
         self.cancel_requested = False
         self.active_review_job_id: str | None = None
         self.tabs: QTabWidget | None = None
@@ -1321,50 +1347,92 @@ class MainWindow(QMainWindow):
         self._store_job(job)
         return job, insert_row
 
-    def _expand_playlist(self, url: str, *, output_dir: Path) -> PlaylistExpansionResult:
+    def _expand_playlist(
+        self,
+        url: str,
+        *,
+        output_dir: Path,
+        cookie_file: Path | None = None,
+        auth_path: Path | None = None,
+        use_ui_auth: bool = True,
+        log: Callable[[str, str], None] | None = None,
+    ) -> PlaylistExpansionResult:
+        emit_log = log or self._append_log
         if self._playlist_expander:
             return self._playlist_expander(url)
         try:
-            result = self._expand_playlist_with_ytdlp(url, output_dir=output_dir)
+            result = self._expand_playlist_with_ytdlp(
+                url,
+                output_dir=output_dir,
+                cookie_file=cookie_file,
+                use_ui_auth=use_ui_auth,
+            )
         except Exception as exc:
             if _should_try_ytmusicapi_playlist_expansion(url):
                 try:
-                    return self._expand_playlist_with_ytmusicapi(url)
+                    return self._expand_playlist_with_ytmusicapi(
+                        url,
+                        auth_path=auth_path,
+                        cookie_file=cookie_file,
+                        use_ui_auth=use_ui_auth,
+                    )
                 except Exception as fallback_exc:
                     raise RuntimeError(f"{exc}\nYouTube Music 전체 펼치기 실패: {fallback_exc}") from fallback_exc
             raise
         if _should_retry_with_ytmusicapi_playlist_expansion(url, result):
             try:
-                fallback = self._expand_playlist_with_ytmusicapi(url)
+                fallback = self._expand_playlist_with_ytmusicapi(
+                    url,
+                    auth_path=auth_path,
+                    cookie_file=cookie_file,
+                    use_ui_auth=use_ui_auth,
+                )
             except Exception as exc:
-                self._append_log("system", f"YouTube Music 전체 펼치기 보강 실패: {exc}")
+                emit_log("system", f"YouTube Music 전체 펼치기 보강 실패: {exc}")
                 if _is_liked_music_playlist(url) and not result.urls:
                     raise RuntimeError(f"YouTube Music 전체 펼치기 실패: {exc}") from exc
             else:
                 if len(fallback.urls) > len(result.urls):
-                    self._append_log(
+                    emit_log(
                         "system",
                         f"YouTube Music 전체 펼치기 보강: yt-dlp {len(result.urls)}개 -> 전체 {len(fallback.urls)}개",
                     )
                     return fallback
         return result
 
-    def _expand_playlist_with_ytdlp(self, url: str, *, output_dir: Path) -> PlaylistExpansionResult:
+    def _expand_playlist_with_ytdlp(
+        self,
+        url: str,
+        *,
+        output_dir: Path,
+        cookie_file: Path | None = None,
+        use_ui_auth: bool = True,
+    ) -> PlaylistExpansionResult:
+        resolved_cookie_file = cookie_file
+        if use_ui_auth and resolved_cookie_file is None:
+            resolved_cookie_file = _optional_path(self.cookie_file_input.text())
         downloader = YTDLPDownloader(
             DownloadConfig(
                 output_dir=output_dir,
-                cookie_file=_optional_path(self.cookie_file_input.text()),
+                cookie_file=resolved_cookie_file,
             )
         )
         return downloader.expand_playlist(url)
 
-    def _expand_playlist_with_ytmusicapi(self, url: str) -> PlaylistExpansionResult:
+    def _expand_playlist_with_ytmusicapi(
+        self,
+        url: str,
+        *,
+        auth_path: Path | None = None,
+        cookie_file: Path | None = None,
+        use_ui_auth: bool = True,
+    ) -> PlaylistExpansionResult:
         playlist_id = _youtube_playlist_id(url)
         if not playlist_id:
             raise ValueError("YouTube playlist ID를 찾을 수 없습니다.")
         if self._ytmusic_oauth_connected():
             return self._expand_playlist_with_youtube_data_api(playlist_id)
-        client = self._create_ytmusic_client()
+        client = self._create_ytmusic_client(auth_path=auth_path, cookie_file=cookie_file, use_ui_auth=use_ui_auth)
         if playlist_id == "LM" and hasattr(client, "get_liked_songs"):
             playlist = client.get_liked_songs(limit=None)
         else:
@@ -1387,9 +1455,6 @@ class MainWindow(QMainWindow):
         playlist_id: str,
         session: Any | None = None,
     ) -> PlaylistExpansionResult:
-        if playlist_id == "LM":
-            return self._expand_liked_music_with_youtube_data_api(session)
-
         access_token = self._youtube_data_api_access_token()
         http = session or requests.Session()
         urls: list[str] = []
@@ -1447,44 +1512,7 @@ class MainWindow(QMainWindow):
         )
 
     def _expand_liked_music_with_youtube_data_api(self, session: Any | None = None) -> PlaylistExpansionResult:
-        access_token = self._youtube_data_api_access_token()
-        http = session or requests.Session()
-        urls: list[str] = []
-        skipped_count = 0
-        page_token = ""
-        while True:
-            params = {"part": "id", "myRating": "like", "maxResults": 50}
-            if page_token:
-                params["pageToken"] = page_token
-            response = http.get(
-                YOUTUBE_DATA_VIDEOS_URL,
-                headers={"Authorization": f"Bearer {access_token}"},
-                params=params,
-                timeout=30,
-            )
-            try:
-                payload = response.json()
-            except Exception as exc:
-                raise ValueError(f"YouTube Data API 응답을 읽을 수 없습니다: {exc}") from exc
-            if not isinstance(payload, dict):
-                raise ValueError("YouTube Data API 응답 형식이 올바르지 않습니다.")
-            if response.status_code >= 400 or payload.get("error"):
-                error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
-                message = error.get("message") if isinstance(error, dict) else payload.get("error")
-                raise ValueError(f"YouTube Data API 좋아요 목록 조회 실패: {message or response.text}")
-            items = payload.get("items")
-            if not isinstance(items, list):
-                raise ValueError("YouTube Data API 좋아요 목록 items를 읽을 수 없습니다.")
-            for item in items:
-                video_id = str(item.get("id") or "").strip() if isinstance(item, dict) else ""
-                if video_id:
-                    urls.append(_ytmusic_track_url(video_id))
-                else:
-                    skipped_count += 1
-            page_token = str(payload.get("nextPageToken") or "")
-            if not page_token:
-                break
-        return PlaylistExpansionResult(urls=urls, skipped_count=skipped_count, expected_count=len(urls) + skipped_count)
+        return self._expand_playlist_with_youtube_data_api("LM", session)
 
     def _youtube_data_api_access_token(self) -> str:
         oauth_client_file = self._ytmusic_oauth_client_file()
@@ -1498,14 +1526,22 @@ class MainWindow(QMainWindow):
             raise ValueError("OAuth access_token이 비어 있습니다. Google 계정을 다시 연결하세요.")
         return access_token
 
-    def _create_ytmusic_client(self) -> Any:
+    def _create_ytmusic_client(
+        self,
+        *,
+        auth_path: Path | None = None,
+        cookie_file: Path | None = None,
+        use_ui_auth: bool = True,
+    ) -> Any:
         from ytmusicapi import YTMusic
 
-        auth_path = _optional_path(self.auth_path_input.text())
+        if use_ui_auth and auth_path is None:
+            auth_path = _optional_path(self.auth_path_input.text())
         if auth_path and auth_path.exists():
             return YTMusic(str(auth_path))
 
-        cookie_file = _optional_path(self.cookie_file_input.text())
+        if use_ui_auth and cookie_file is None:
+            cookie_file = _optional_path(self.cookie_file_input.text())
         if cookie_file and cookie_file.exists():
             from cueforge.metadata.ytmusic_auth import YTMusicCookieAuthConfig, build_ytmusic_cookie_auth
 
@@ -1530,11 +1566,8 @@ class MainWindow(QMainWindow):
             job = self.jobs[job_id]
             if job.status == DownloadStatus.PENDING:
                 if _is_playlist_url(job.url):
-                    replacement_jobs = self._prepare_playlist_job_for_analysis(job)
-                    if not replacement_jobs:
-                        index += 1
-                        continue
-                    job = replacement_jobs[0]
+                    if self._start_playlist_expansion(job, mode="playlist_process"):
+                        return
                 self._run_worker(job, analyze_only=False, worker_mode="process")
                 return
             index += 1
@@ -1554,14 +1587,9 @@ class MainWindow(QMainWindow):
             self._refresh_actions()
             return
         if _is_playlist_url(job.url):
-            replacement_jobs = self._prepare_playlist_job_for_analysis(job)
-            if replacement_jobs:
-                first_job = replacement_jobs[0]
-                row = self.row_job_ids.index(first_job.id)
-                self.table.selectRow(row)
-                self._run_worker(first_job, analyze_only=False, continue_queue=False)
-            else:
-                self._refresh_actions()
+            if self._start_playlist_expansion(job, mode="playlist_single"):
+                return
+            self._run_worker(job, analyze_only=False, continue_queue=False)
             return
         self._prepare_job_retry(job, message="선택 항목 분석 시작")
         self._run_worker(job, analyze_only=False, continue_queue=False)
@@ -1596,10 +1624,14 @@ class MainWindow(QMainWindow):
             if job.status != DownloadStatus.FAILED:
                 continue
             if _is_playlist_url(job.url):
-                if self._prepare_playlist_job_for_analysis(job):
-                    retried += 1
-                continue
-            if self._prepare_playlist_job_for_analysis(job):
+                job.status = DownloadStatus.PENDING
+                job.progress = 0.0
+                job.error = ""
+                job.error_message = ""
+                job.error_category = ""
+                job.retry_count += 1
+                self._update_row(job)
+                self._append_log(job.id, "재시도를 위해 큐에 추가됨")
                 retried += 1
                 continue
             job.status = DownloadStatus.PENDING
@@ -1624,14 +1656,16 @@ class MainWindow(QMainWindow):
             self._refresh_actions()
             return
         if _is_playlist_url(job.url):
-            replacement_jobs = self._prepare_playlist_job_for_analysis(job)
-            if replacement_jobs:
-                first_job = replacement_jobs[0]
-                row = self.row_job_ids.index(first_job.id)
-                self.table.selectRow(row)
-                self._run_worker(first_job, analyze_only=False, continue_queue=False)
-            else:
-                self._refresh_actions()
+            job.status = DownloadStatus.PENDING
+            job.progress = 0.0
+            job.error = ""
+            job.error_message = ""
+            job.error_category = ""
+            job.retry_count += 1
+            self._update_row(job)
+            if self._start_playlist_expansion(job, mode="playlist_single"):
+                return
+            self._run_worker(job, analyze_only=False, continue_queue=False)
             return
         self._prepare_job_retry(job, message="선택 항목 재시도 시작")
         self._run_worker(job, analyze_only=False, continue_queue=False)
@@ -1660,7 +1694,6 @@ class MainWindow(QMainWindow):
             self._prepare_job_retry(job, message="플레이리스트 매개변수를 제거하고 분석 시작")
             return [job]
 
-        row = self.row_job_ids.index(job.id)
         self._append_log(job.id, "플레이리스트 분석 준비: 개별 항목으로 펼치는 중")
         try:
             result = self._expand_playlist(job.url, output_dir=job.output_dir)
@@ -1679,15 +1712,99 @@ class MainWindow(QMainWindow):
             self._append_log(job.id, f"플레이리스트 펼치기 실패: {message}")
             return []
 
+        return self._apply_playlist_expansion(job, result)
+
+    def _start_playlist_expansion(self, job: DownloadJob, *, mode: str) -> bool:
+        if not _is_playlist_url(job.url):
+            return False
+        fallback_url = _single_video_url_from_playlist_url(job.url)
+        if fallback_url:
+            self._prepare_job_retry(job, message="플레이리스트 매개변수를 제거하고 분석 시작")
+            return False
+        if self.worker and self.worker.isRunning():
+            return True
+
+        auth_path = _optional_path(self.auth_path_input.text())
+        cookie_file = _optional_path(self.cookie_file_input.text())
+
+        def expand(url: str, output_dir: Path, log: Callable[[str, str], None]) -> PlaylistExpansionResult:
+            return self._expand_playlist(
+                url,
+                output_dir=output_dir,
+                auth_path=auth_path,
+                cookie_file=cookie_file,
+                use_ui_auth=False,
+                log=log,
+            )
+
+        self.save_settings()
+        self.cancel_requested = False
+        self._playlist_expanded_job_ids = []
+        job.status = DownloadStatus.METADATA
+        job.progress = 0.0
+        job.error = ""
+        job.error_message = ""
+        job.error_category = ""
+        self._update_row(job)
+        self._append_log(job.id, "플레이리스트 분석 준비: 개별 항목으로 펼치는 중")
+        self.worker_mode = mode
+        self.worker = PlaylistExpansionWorker(job, expand)
+        self.worker.playlist_ready.connect(self._on_playlist_expanded)
+        self.worker.playlist_failed.connect(self._on_playlist_expansion_failed)
+        self.worker.log_message.connect(self._append_log)
+        self.worker.finished.connect(self._playlist_worker_finished)
+        self.worker.start()
+        self._refresh_actions()
+        return True
+
+    def _on_playlist_expanded(self, job_id: str, result: PlaylistExpansionResult) -> None:
+        job = self.jobs.get(job_id)
+        if not job:
+            self._playlist_expanded_job_ids = []
+            return
+        inserted = self._apply_playlist_expansion(job, result)
+        self._playlist_expanded_job_ids = [item.id for item in inserted]
+
+    def _on_playlist_expansion_failed(self, job_id: str, error: str) -> None:
+        job = self.jobs.get(job_id)
+        if not job:
+            return
+        message = _playlist_expansion_failure_message(
+            job.url,
+            error,
+            auth_diagnostic=self._liked_music_auth_diagnostic() if _is_liked_music_playlist(job.url) else "",
+        )
+        category, text = user_facing_error(message)
+        job.status = DownloadStatus.FAILED
+        job.progress = 0.0
+        job.error_category = category.value
+        job.error_message = message
+        job.error = text
+        self._update_row(job)
+        self._append_log(job.id, f"플레이리스트 펼치기 실패: {message}")
+
+    def _playlist_worker_finished(self) -> None:
+        mode = self.worker_mode
+        inserted_ids = list(getattr(self, "_playlist_expanded_job_ids", []))
+        self.worker = None
+        self.worker_mode = ""
+        self.cancel_requested = False
+        self._playlist_expanded_job_ids = []
+        self._refresh_actions()
+        if mode == "playlist_process":
+            self._process_next()
+        elif mode == "playlist_analysis":
+            self._analyze_next()
+        elif mode == "playlist_scheduler":
+            self._schedule_pending_analysis()
+        elif mode == "playlist_single" and inserted_ids:
+            first_job = self.jobs.get(inserted_ids[0])
+            if first_job:
+                self._select_job_row(first_job)
+                self._run_worker(first_job, analyze_only=False, continue_queue=False)
+
+    def _apply_playlist_expansion(self, job: DownloadJob, result: PlaylistExpansionResult) -> list[DownloadJob]:
         urls = [url for url in _dedupe_preserving_order(result.urls) if not self._has_existing_url(url)]
-        if not urls:
-            message = "플레이리스트에서 새로 추가할 수 있는 항목이 없습니다."
-            job.status = DownloadStatus.FAILED
-            job.error_message = message
-            job.error = message
-            self._update_row(job)
-            self._append_log(job.id, message)
-            return []
         if _is_incomplete_playlist_expansion(result):
             message = _playlist_incomplete_message(job.url, result)
             category, text = user_facing_error(message)
@@ -1699,7 +1816,18 @@ class MainWindow(QMainWindow):
             self._append_log(job.id, message)
             return []
 
-        self._remove_job(job)
+        job.status = DownloadStatus.DONE
+        job.progress = 100.0
+        job.error = ""
+        job.error_message = ""
+        job.error_category = ""
+        self._update_row(job)
+        row = self.row_job_ids.index(job.id) + 1
+        if not urls:
+            message = "플레이리스트에서 새로 추가할 수 있는 항목이 없습니다."
+            self._append_log(job.id, message)
+            return []
+
         inserted: list[DownloadJob] = []
         for offset, url in enumerate(urls):
             new_job, _row = self._insert_job(
@@ -1718,7 +1846,7 @@ class MainWindow(QMainWindow):
 
     def _liked_music_auth_diagnostic(self) -> str:
         if self._ytmusic_oauth_connected():
-            return "Google OAuth 연결은 되어 있지만 YouTube Music API가 플레이리스트 접근을 거부했습니다. 연결 해제 후 다시 연결하거나 계정 권한을 확인하세요."
+            return "Google OAuth 연결은 되어 있지만 YouTube Data API가 좋아요 표시한 음악 목록 접근을 거부했습니다. 연결 해제 후 다시 연결하거나 계정 권한을 확인하세요."
         if self._ytmusic_oauth_client_file():
             return "Google OAuth 클라이언트는 포함됐지만 아직 Google 계정 연결이 완료되지 않았습니다."
 
@@ -2311,13 +2439,22 @@ class MainWindow(QMainWindow):
     def _schedule_pending_analysis(self) -> None:
         if not self.scheduler:
             return
+        if self.worker and self.worker.isRunning():
+            self._refresh_actions()
+            return
         jobs: list[DownloadJob] = []
         for job_id in list(self.row_job_ids):
             job = self.jobs.get(job_id)
             if not job or job.status != DownloadStatus.PENDING:
                 continue
-            replacement_jobs = self._prepare_playlist_job_for_analysis(job)
-            jobs.extend(replacement_jobs or ([job] if job.status == DownloadStatus.PENDING else []))
+            if _is_playlist_url(job.url):
+                if jobs:
+                    self.scheduler.enqueue_analysis(jobs)
+                    jobs = []
+                if self._start_playlist_expansion(job, mode="playlist_scheduler"):
+                    return
+            if job.status == DownloadStatus.PENDING:
+                jobs.append(job)
         self.scheduler.enqueue_analysis(jobs)
         self._refresh_actions()
 

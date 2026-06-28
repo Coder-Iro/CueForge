@@ -499,6 +499,7 @@ class OnboardingDialog(QDialog):
         self._on_done = on_done
         self._prepare_steps = prepare_steps
         self._auto_prepare = auto_prepare
+        self._can_skip = not prepare_steps
         self._prepare_started = False
         self._prepare_worker: OnboardingPrepareWorker | None = None
         self.setWindowTitle("초기 환경 점검")
@@ -506,7 +507,12 @@ class OnboardingDialog(QDialog):
         self.resize(560, 420)
 
         layout = QVBoxLayout(self)
-        intro = QLabel("설치된 외부 도구 상태를 확인하고 선택 설정을 점검합니다. 건너뛰어도 앱은 계속 사용할 수 있습니다.")
+        intro_text = (
+            "필수 모델을 다운로드하고 준비합니다. 준비가 끝날 때까지 앱 사용을 시작할 수 없습니다."
+            if self._prepare_steps
+            else "설치된 외부 도구 상태를 확인하고 선택 설정을 점검합니다. 건너뛰어도 앱은 계속 사용할 수 있습니다."
+        )
+        intro = QLabel(intro_text)
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
@@ -533,6 +539,8 @@ class OnboardingDialog(QDialog):
         action_row = QHBoxLayout()
         action_row.addStretch(1)
         self.skip_button = QPushButton("건너뛰기")
+        self.skip_button.setVisible(self._can_skip)
+        self.skip_button.setEnabled(self._can_skip)
         self.skip_button.clicked.connect(self.reject)
         action_row.addWidget(self.skip_button)
         self.done_button = QPushButton("준비 후 시작" if self._prepare_steps else "확인")
@@ -580,7 +588,7 @@ class OnboardingDialog(QDialog):
     def _prepare_failed(self, message: str) -> None:
         self.prepare_status_label.setText(f"필수 모델 준비 실패: {message}")
         QMessageBox.warning(self, "초기 준비 실패", message)
-        self.skip_button.setEnabled(True)
+        self.skip_button.setEnabled(self._can_skip)
         self.done_button.setEnabled(True)
 
     def _prepare_finished(self, worker: OnboardingPrepareWorker) -> None:
@@ -795,7 +803,7 @@ class MainWindow(QMainWindow):
         self.scheduler.job_started.connect(self._on_scheduled_job_started)
         self.scheduler.idle.connect(self._on_scheduler_idle)
         self._load_jobs_from_store()
-        if not _settings_bool(self._settings.value("onboarding/completed", False), default=False):
+        if self._should_open_startup_onboarding():
             self._open_onboarding()
 
     def _build_ui(self) -> None:
@@ -1394,6 +1402,14 @@ class MainWindow(QMainWindow):
     def _complete_onboarding(self) -> None:
         self._settings.setValue("onboarding/completed", True)
         self._settings.sync()
+        self._refresh_settings_status_label()
+
+    def _should_open_startup_onboarding(self) -> bool:
+        if not _settings_bool(self._settings.value("onboarding/completed", False), default=False):
+            return True
+        if QApplication.platformName() == "offscreen":
+            return False
+        return bool(self._startup_model_prepare_steps())
 
     def _onboarding_finished(self, dialog: OnboardingDialog) -> None:
         if self.onboarding_dialog is dialog:
@@ -1432,6 +1448,9 @@ class MainWindow(QMainWindow):
     def _onboarding_prepare_steps(self) -> list[OnboardingPrepareStep]:
         if QApplication.platformName() == "offscreen":
             return []
+        return self._startup_model_prepare_steps()
+
+    def _startup_model_prepare_steps(self) -> list[OnboardingPrepareStep]:
         if semantic_model_cached():
             steps = []
         else:

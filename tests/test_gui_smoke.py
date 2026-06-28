@@ -925,6 +925,10 @@ def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None
     )
     try:
         dialog.show()
+        assert dialog.skip_button.isHidden() is True
+        assert dialog.skip_button.isEnabled() is False
+        assert "필수 모델 준비 필요" in dialog.prepare_status_label.text()
+
         dialog._complete()
         assert dialog.skip_button.isEnabled() is False
         assert dialog.done_button.isEnabled() is False
@@ -940,6 +944,24 @@ def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None
     finally:
         dialog.close()
         parent.close()
+        app.processEvents()
+
+
+def test_completed_onboarding_reopens_when_required_model_is_missing(monkeypatch, tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    settings.setValue("onboarding/completed", True)
+    window = MainWindow(settings=settings)
+    try:
+        monkeypatch.setattr("cueforge.gui.main_window.QApplication.platformName", lambda: "windows")
+        monkeypatch.setattr("cueforge.gui.main_window.semantic_model_cached", lambda: False)
+        monkeypatch.setattr("cueforge.gui.main_window.gemma_e2b_cached", lambda: True)
+
+        assert window._should_open_startup_onboarding() is True
+        steps = window._onboarding_prepare_steps()
+        assert [label for label, _step in steps] == ["MiniLM 후보 평가 모델"]
+    finally:
+        window.close()
         app.processEvents()
 
 

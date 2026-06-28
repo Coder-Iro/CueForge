@@ -482,13 +482,14 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         assert "Use VIDEO DESCRIPTION line by line" in script_text
         assert "do not treat every credit line as the final tag artist/title" in script_text
         assert "For cover or performance videos, tag the performed recording" in script_text
+        assert "Cover artist priority" in script_text
         assert "Do not copy the entire VIDEO TITLE" in script_text
         assert "Your previous JSON was valid" in script_text
         assert "prefer the local-script display name" in script_text
         assert "description credit names a performer only with a romanized alias" in script_text
         assert "VIDEO CHANNEL or VIDEO UPLOADER shows that same performer" in script_text
         assert "Original/원곡/原曲 source-work artist" in script_text
-        assert "must not override VIDEO CHANNEL" in script_text
+        assert "negative evidence for tag artist" in script_text
         assert 'Use this exact schema: {\\"title\\":\\"...\\",\\"artist\\":\\"...\\"}' in script_text
         assert '\\"reason\\"' not in script_text
         assert "Do not use Markdown, prose, code fences, comments, arrays, or extra keys" in script_text

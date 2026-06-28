@@ -27,7 +27,7 @@ from cueforge.runtime import find_executable
 DEFAULT_GEMMA_E2B_MODEL_REPO = "onnx-community/gemma-4-E2B-it-ONNX"
 DEFAULT_GEMMA_E2B_MARKER = "gemma-e2b-it.ready.json"
 DEFAULT_GEMMA_E2B_MARKER_VERSION = 3
-GEMMA_E2B_PROMPT_VERSION = 7
+GEMMA_E2B_PROMPT_VERSION = 8
 GEMMA_E2B_REQUIRED_FILES = (
     "chat_template.jinja",
     "config.json",
@@ -970,8 +970,9 @@ function buildBasePrompt(input) {
         "Reasoning order: first decide what recording is being uploaded; then decide the tag title; then decide the tag artist.",
         "Use VIDEO DESCRIPTION line by line together with VIDEO TITLE, VIDEO CHANNEL, VIDEO UPLOADER, and VIDEO CREATOR.",
         "Credit-like lines may mention title, artist, vocal, chorus, cover, performer, singer, music, composer, lyrics, translation, arrangement, original work, or source work. Use them as evidence, but do not treat every credit line as the final tag artist/title.",
-        "For cover or performance videos, tag the performed recording in this upload, not the original source work. Prefer explicit performer, vocal, chorus, cover, singer, channel, or uploader evidence for artist. Use music/composer/lyrics/original credits as artist only when no performer is identified.",
-        "Lines labeled Original, Orig., 원곡, or 原曲 identify the source work or original artist; for a COVER video they must not override VIDEO CHANNEL, VIDEO UPLOADER, or a performer name shown beside COVER in VIDEO TITLE.",
+        "For cover or performance videos, tag the performed recording in this upload, not the original source work.",
+        "Cover artist priority: 1) explicit performer/vocal/chorus/cover/singer credit, 2) performer name beside COVER in VIDEO TITLE, 3) VIDEO CHANNEL or VIDEO UPLOADER, 4) music/composer/lyrics/original credits only when no performer evidence exists.",
+        "Lines labeled Original, Orig., 원곡, or 原曲 identify the source work or original artist; for a COVER video treat them as negative evidence for tag artist when performer, channel, uploader, or title-side COVER artist evidence exists.",
         "Prefer a concise display song title. Do not copy the entire VIDEO TITLE when it contains upload packaging.",
         "If VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate-language titles, composer/original-artist names, performer names, COVER/MV/live labels, or other packaging text, the short leading display title is usually the tag title.",
         "Treat channel names, uploader names, project names, franchise names, album/OST section names, MV labels, and upload packaging as context, not as title or artist unless the source text clearly credits them as the recording artist/title.",

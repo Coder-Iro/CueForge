@@ -80,6 +80,25 @@ class SemanticCandidateRanker:
         return ranked
 
 
+def semantic_model_cached(config: SemanticRankerConfig | None = None) -> bool:
+    try:
+        _resolve_model_files(config or SemanticRankerConfig(allow_download=False))
+    except Exception:
+        return False
+    return True
+
+
+def prepare_semantic_model(
+    config: SemanticRankerConfig | None = None,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    resolved = config or SemanticRankerConfig(allow_download=True)
+    _log(log, "MiniLM 후보 평가 모델 준비 중")
+    _load_model(resolved)
+    _log(log, "MiniLM 후보 평가 모델 준비 완료")
+
+
 class _OnnxEmbeddingModel:
     def __init__(self, *, model_path: Path, tokenizer_path: Path, max_length: int) -> None:
         import onnxruntime as ort

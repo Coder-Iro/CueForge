@@ -1,13 +1,14 @@
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, Qt
-from PySide6.QtWidgets import QApplication, QHeaderView
+from PySide6.QtWidgets import QApplication, QHeaderView, QWidget
 
 from cueforge.download import PlaylistExpansionResult
-from cueforge.gui.main_window import MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls, _supported_urls
+from cueforge.gui.main_window import OnboardingDialog, MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls, _supported_urls
 from cueforge.models import ErrorCategory, DownloadStatus, MetadataCandidate, TrackMetadata
 from cueforge.runtime import DependencyStatus
 
@@ -901,6 +902,44 @@ def test_first_run_onboarding_skip_does_not_mark_completed(tmp_path) -> None:
         assert window.onboarding_dialog is None
     finally:
         window.close()
+        app.processEvents()
+
+
+def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    calls: list[str] = []
+    completed: list[bool] = []
+
+    def prepare(log):
+        log("MiniLM 다운로드 중")
+        calls.append("prepared")
+
+    dialog = OnboardingDialog(
+        parent=parent,
+        dependency_rows=[("MiniLM", "첫 실행 준비 필요")],
+        optional_rows=[],
+        prepare_steps=[("MiniLM 후보 평가 모델", prepare)],
+        auto_prepare=False,
+        on_done=lambda: completed.append(True),
+    )
+    try:
+        dialog.show()
+        dialog._complete()
+        assert dialog.skip_button.isEnabled() is False
+        assert dialog.done_button.isEnabled() is False
+
+        deadline = time.monotonic() + 2
+        while not completed and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+
+        assert calls == ["prepared"]
+        assert completed == [True]
+        assert dialog.isVisible() is False
+    finally:
+        dialog.close()
+        parent.close()
         app.processEvents()
 
 

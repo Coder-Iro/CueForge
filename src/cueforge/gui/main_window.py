@@ -60,8 +60,10 @@ from cueforge.metadata import (
     google_oauth_account_label,
     load_ytmusic_oauth_client,
     read_ytmusic_oauth_account,
+    prepare_semantic_model,
     refresh_ytmusic_oauth_token_if_needed,
     run_ytmusic_oauth_desktop_flow,
+    semantic_model_cached,
     write_ytmusic_oauth_account,
     write_ytmusic_oauth_token,
 )
@@ -81,6 +83,7 @@ ResolverFactory = Callable[[], MetadataResolver]
 AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
 CoverArtProviderFactory = Callable[[], Any]
 TagWriterFactory = Callable[[], Any]
+OnboardingPrepareStep = tuple[str, Callable[[Callable[[str], None]], None]]
 YOUTUBE_DATA_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 YOUTUBE_YTDLP_REQUEST_INTERVAL_SECONDS = 1.5
 _ACTIVE_STATUSES = {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}
@@ -461,6 +464,25 @@ class GoogleOAuthWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class OnboardingPrepareWorker(QThread):
+    status_changed = Signal(str)
+    succeeded = Signal()
+    failed = Signal(str)
+
+    def __init__(self, steps: list[OnboardingPrepareStep]) -> None:
+        super().__init__()
+        self.steps = steps
+
+    def run(self) -> None:
+        try:
+            for label, step in self.steps:
+                self.status_changed.emit(f"{label} 준비 중...")
+                step(lambda message: self.status_changed.emit(message))
+            self.succeeded.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class OnboardingDialog(QDialog):
     def __init__(
         self,
@@ -468,11 +490,18 @@ class OnboardingDialog(QDialog):
         parent: QWidget,
         dependency_rows: list[tuple[str, str]],
         optional_rows: list[tuple[str, str]],
+        prepare_steps: list[OnboardingPrepareStep],
+        auto_prepare: bool,
         on_done: Callable[[], None],
     ) -> None:
         super().__init__(parent)
         self._on_done = on_done
+        self._prepare_steps = prepare_steps
+        self._auto_prepare = auto_prepare
+        self._prepare_started = False
+        self._prepare_worker: OnboardingPrepareWorker | None = None
         self.setWindowTitle("초기 환경 점검")
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
         self.resize(560, 420)
 
         layout = QVBoxLayout(self)
@@ -496,19 +525,73 @@ class OnboardingDialog(QDialog):
             optional_layout.addRow(name, label)
         layout.addWidget(optional_group)
 
+        self.prepare_status_label = QLabel(self._initial_prepare_status())
+        self.prepare_status_label.setWordWrap(True)
+        layout.addWidget(self.prepare_status_label)
+
         action_row = QHBoxLayout()
         action_row.addStretch(1)
-        skip_button = QPushButton("건너뛰기")
-        skip_button.clicked.connect(self.reject)
-        action_row.addWidget(skip_button)
-        done_button = QPushButton("확인")
-        done_button.clicked.connect(self._complete)
-        action_row.addWidget(done_button)
+        self.skip_button = QPushButton("건너뛰기")
+        self.skip_button.clicked.connect(self.reject)
+        action_row.addWidget(self.skip_button)
+        self.done_button = QPushButton("준비 후 시작" if self._prepare_steps else "확인")
+        self.done_button.clicked.connect(self._complete)
+        action_row.addWidget(self.done_button)
         layout.addLayout(action_row)
 
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        if self._auto_prepare and self._prepare_steps and not self._prepare_started:
+            self._start_prepare()
+
+    def reject(self) -> None:
+        if self._prepare_worker and self._prepare_worker.isRunning():
+            return
+        super().reject()
+
     def _complete(self) -> None:
+        if self._prepare_steps:
+            self._start_prepare()
+            return
         self._on_done()
         self.accept()
+
+    def _start_prepare(self) -> None:
+        if self._prepare_worker and self._prepare_worker.isRunning():
+            return
+        self._prepare_started = True
+        self.skip_button.setEnabled(False)
+        self.done_button.setEnabled(False)
+        self.prepare_status_label.setText("필수 모델을 준비하는 중입니다. 창을 닫지 말고 기다려 주세요.")
+        worker = OnboardingPrepareWorker(self._prepare_steps)
+        worker.status_changed.connect(self.prepare_status_label.setText)
+        worker.succeeded.connect(self._prepare_succeeded)
+        worker.failed.connect(self._prepare_failed)
+        worker.finished.connect(lambda worker=worker: self._prepare_finished(worker))
+        self._prepare_worker = worker
+        worker.start()
+
+    def _prepare_succeeded(self) -> None:
+        self.prepare_status_label.setText("필수 모델 준비 완료")
+        self._on_done()
+        self.accept()
+
+    def _prepare_failed(self, message: str) -> None:
+        self.prepare_status_label.setText(f"필수 모델 준비 실패: {message}")
+        QMessageBox.warning(self, "초기 준비 실패", message)
+        self.skip_button.setEnabled(True)
+        self.done_button.setEnabled(True)
+
+    def _prepare_finished(self, worker: OnboardingPrepareWorker) -> None:
+        if self._prepare_worker is worker:
+            self._prepare_worker = None
+        worker.deleteLater()
+
+    def _initial_prepare_status(self) -> str:
+        if not self._prepare_steps:
+            return "추가 다운로드가 필요하지 않습니다."
+        labels = ", ".join(label for label, _step in self._prepare_steps)
+        return f"필수 모델 준비 필요: {labels}"
 
 
 class UrlInput(QPlainTextEdit):
@@ -1155,6 +1238,7 @@ class MainWindow(QMainWindow):
         fpcalc = find_executable("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))
         acoustid = "설정됨" if self.acoustid_key_input.text().strip() else "미설정"
         cookie_file = "설정됨" if self.cookie_file_input.text().strip() else "미설정"
+        semantic_model = self._semantic_model_setup_status()
         google_oauth = (
             f"연결됨: {self._google_oauth_account_label()}"
             if self._ytmusic_oauth_connected() and self._google_oauth_account_label()
@@ -1178,7 +1262,7 @@ class MainWindow(QMainWindow):
             f"fpcalc {fpcalc.source if fpcalc.available else '없음'}; "
             f"AcoustID {acoustid}; 쿠키 파일 {cookie_file}; "
             f"Google OAuth {google_oauth}; YTMusic 인증 {ytmusic_auth}; "
-            f"MiniLM {'사용' if self.semantic_ranking_checkbox.isChecked() else '꺼짐'}; "
+            f"MiniLM {semantic_model}; "
             f"병렬 {self.metadata_parallel_spin.value()}/{self.download_parallel_spin.value()}/{self.tagging_parallel_spin.value()}."
         )
         self._dependency_status_cache_key = cache_key
@@ -1302,6 +1386,8 @@ class MainWindow(QMainWindow):
             parent=self,
             dependency_rows=self._onboarding_dependency_rows(),
             optional_rows=self._onboarding_optional_rows(),
+            prepare_steps=self._onboarding_prepare_steps(),
+            auto_prepare=QApplication.platformName() != "offscreen",
             on_done=self._complete_onboarding,
         )
         dialog.finished.connect(lambda _result: self._onboarding_finished(dialog))
@@ -1322,6 +1408,7 @@ class MainWindow(QMainWindow):
             ("ffmpeg", _dependency_setup_status("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text()))),
             ("Deno", _dependency_setup_status("deno")),
             ("fpcalc", _dependency_setup_status("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))),
+            ("MiniLM", self._semantic_model_setup_status()),
         ]
 
     def _onboarding_optional_rows(self) -> list[tuple[str, str]]:
@@ -1343,6 +1430,25 @@ class MainWindow(QMainWindow):
             ("YTMusic 인증 JSON", "고급 fallback 설정됨" if self.auth_path_input.text().strip() else "고급 fallback 미설정"),
             ("AcoustID 클라이언트 키", "설정됨" if self.acoustid_key_input.text().strip() else "미설정"),
         ]
+
+    def _onboarding_prepare_steps(self) -> list[OnboardingPrepareStep]:
+        if QApplication.platformName() == "offscreen":
+            return []
+        if not self.semantic_ranking_checkbox.isChecked():
+            return []
+        if semantic_model_cached():
+            return []
+        return [
+            (
+                "MiniLM 후보 평가 모델",
+                lambda log: prepare_semantic_model(SemanticRankerConfig(allow_download=True), log=log),
+            )
+        ]
+
+    def _semantic_model_setup_status(self) -> str:
+        if not self.semantic_ranking_checkbox.isChecked():
+            return "꺼짐"
+        return "준비됨" if semantic_model_cached() else "첫 실행 준비 필요"
 
     def closeEvent(self, event: Any) -> None:
         if self._work_running():

@@ -175,17 +175,14 @@ def test_gemma_suggester_prefers_local_artist_alias_without_refine(tmp_path: Pat
     assert candidates[0].metadata.album_artist == "아카네 리제"
 
 
-def test_gemma_suggester_refines_original_artist_for_cover_video(tmp_path: Path) -> None:
+def test_gemma_suggester_prefers_cover_performer_over_original_artist_without_refine(tmp_path: Path) -> None:
     calls = []
 
     def runner(payload, config):
         calls.append(payload)
-        if payload["mode"] == "suggest":
-            assert payload["promptVersion"] == GEMMA_E2B_PROMPT_VERSION
-            return '{"title":"꽃에 망령","artist":"Yorushika"}'
-        assert payload["mode"] == "refine"
-        assert "Yorushika" in payload["badOutput"]
-        return '{"title":"꽃에 망령","artist":"계화"}'
+        assert payload["mode"] == "suggest"
+        assert payload["promptVersion"] == GEMMA_E2B_PROMPT_VERSION
+        return '{"title":"꽃에 망령","artist":"Yorushika"}'
 
     suggester = GemmaE2BMetadataSuggester(GemmaE2BConfig(cache_dir=tmp_path), runner=runner)
 
@@ -202,10 +199,11 @@ def test_gemma_suggester_refines_original_artist_for_cover_video(tmp_path: Path)
         candidates=[],
     )
 
-    assert [call["mode"] for call in calls] == ["suggest", "refine"]
+    assert [call["mode"] for call in calls] == ["suggest"]
     assert len(candidates) == 1
     assert candidates[0].metadata.title == "꽃에 망령"
     assert candidates[0].metadata.artist == "계화"
+    assert candidates[0].metadata.album_artist == "계화"
 
 
 def test_gemma_context_key_prefers_url_then_source_id() -> None:

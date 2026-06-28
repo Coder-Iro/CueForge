@@ -124,12 +124,12 @@ class GemmaE2BMetadataSuggester:
             parsed, metadata = _parse_suggestion_output(repair_output, log=log, final=True)
         if not metadata or parsed is None:
             return []
-        metadata = _prefer_local_artist_alias(metadata, info)
+        metadata = _normalize_gemma_metadata(metadata, info)
         if _needs_gemma_refinement(metadata, info):
             refine_output = self._refine_suggestion_output(payload, output, log=log)
             refined_parsed, refined_metadata = _parse_suggestion_output(refine_output, log=log, final=False)
             if refined_metadata:
-                refined_metadata = _prefer_local_artist_alias(refined_metadata, info)
+                refined_metadata = _normalize_gemma_metadata(refined_metadata, info)
             if refined_parsed is not None and refined_metadata and _model_metadata_is_supported(
                 refined_metadata, info, reference
             ):
@@ -684,11 +684,72 @@ def _metadata_from_model_json(payload: dict[str, Any]) -> TrackMetadata | None:
     return metadata if metadata.is_minimum_viable() else None
 
 
+def _normalize_gemma_metadata(metadata: TrackMetadata, info: dict[str, Any]) -> TrackMetadata:
+    metadata = _prefer_local_artist_alias(metadata, info)
+    metadata = _prefer_cover_performer_for_original_artist(metadata, info)
+    return _prefer_local_artist_alias(metadata, info)
+
+
 def _prefer_local_artist_alias(metadata: TrackMetadata, info: dict[str, Any]) -> TrackMetadata:
     local_artist = _local_artist_alias(metadata.artist, info)
     if not local_artist or local_artist == metadata.artist:
         return metadata
     return replace(metadata, artist=local_artist, album_artist=local_artist)
+
+
+def _prefer_cover_performer_for_original_artist(metadata: TrackMetadata, info: dict[str, Any]) -> TrackMetadata:
+    if not _looks_like_cover_source(info) or not _artist_is_original_credit(metadata.artist, info):
+        return metadata
+    performer = _cover_performer_artist(info)
+    if not performer or performer.casefold() == metadata.artist.casefold():
+        return metadata
+    return replace(metadata, artist=performer, album_artist=performer)
+
+
+def _cover_performer_artist(info: dict[str, Any]) -> str:
+    return (
+        _performer_credit_from_description(info)
+        or _performer_from_cover_title(info)
+        or _performer_from_channel(info)
+    )
+
+
+def _performer_credit_from_description(info: dict[str, Any]) -> str:
+    for raw_line in str(info.get("description") or "").splitlines():
+        line = squash_spaces(raw_line)
+        if not line or _original_credit_line(line):
+            continue
+        match = re.match(
+            r"^(?:[#\s\\/:：|.\-_*·•🩸]*)(?:vocal(?:s)?|chorus|cover(?:ed by)?|singer|performed by|performer)\b\s*(?:&\s*chorus)?\s*[:：\-]?\s*(?P<artist>.+)$",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        artist = _clean_performer_name(match.group("artist"))
+        if artist:
+            return _local_artist_alias(artist, info) or artist
+    return ""
+
+
+def _performer_from_cover_title(info: dict[str, Any]) -> str:
+    title = squash_spaces(str(info.get("fulltitle") or info.get("title") or info.get("track") or ""))
+    if not title:
+        return ""
+    for segment in re.split(r"[|｜ㅣ]", title):
+        if re.search(r"\bcover\b|커버|歌ってみた", segment, flags=re.IGNORECASE):
+            artist = _clean_performer_name(segment)
+            if artist:
+                return artist
+    return ""
+
+
+def _performer_from_channel(info: dict[str, Any]) -> str:
+    for key in ("channel", "uploader", "creator"):
+        artist = _clean_performer_name(str(info.get(key) or ""))
+        if artist:
+            return artist
+    return ""
 
 
 def _local_artist_alias(artist: str, info: dict[str, Any]) -> str:
@@ -725,6 +786,38 @@ def _local_alias_from_source(alias: str, source: str) -> str:
         if local and _has_local_script(local):
             return local
     return ""
+
+
+def _clean_performer_name(value: str) -> str:
+    value = squash_spaces(value)
+    value = re.sub(r"https?://\S+", "", value).strip()
+    value = re.sub(r"@\s*", "@", value)
+    value = re.sub(r"[#🩸]+", "", value).strip()
+    value = re.sub(r"[\[\(【]\s*(?:cover|covered|커버|歌ってみた)\s*[\]\)】]", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bcover(?:ed)?(?:\s+by)?\b|커버|歌ってみた", "", value, flags=re.IGNORECASE)
+    value = _clean_local_alias(value)
+    local = _parenthesized_local_name(value)
+    if local:
+        return local
+    local = _trailing_romanized_alias_local_name(value)
+    if local:
+        return local
+    return value
+
+
+def _parenthesized_local_name(value: str) -> str:
+    match = re.match(r"^(?P<local>.+?)\s*[\(\[]\s*(?P<alias>[A-Za-z][A-Za-z0-9 ._'~-]*)\s*[\)\]]$", value)
+    if not match:
+        return ""
+    local = _clean_local_alias(match.group("local"))
+    return local if _has_local_script(local) else ""
+
+
+def _trailing_romanized_alias_local_name(value: str) -> str:
+    match = re.match(r"^(?P<local>.*?[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af].*?)\s+[A-Za-z][A-Za-z0-9 ._'~-]*$", value)
+    if not match:
+        return ""
+    return _clean_local_alias(match.group("local"))
 
 
 def _clean_local_alias(value: str) -> str:
@@ -804,9 +897,13 @@ def _artist_is_original_credit(artist: str, info: dict[str, Any]) -> bool:
         line = squash_spaces(line)
         if not line or artist_norm not in line.casefold():
             continue
-        if re.match(r"^(?:[#\s\\/:：|.\-_*·•🩸]*)(?:original|orig\.?|원곡|原曲)\b", line, flags=re.IGNORECASE):
+        if _original_credit_line(line):
             return True
     return False
+
+
+def _original_credit_line(line: str) -> bool:
+    return bool(re.match(r"^(?:[#\s\\/:：|.\-_*·•🩸]*)(?:original|orig\.?|원곡|原曲)\b", line, flags=re.IGNORECASE))
 
 
 def _supported_text(value: str, source: str) -> bool:

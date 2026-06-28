@@ -696,14 +696,13 @@ def _to_float(value: Any) -> float | None:
 
 
 def _prompt_input(info: dict[str, Any], reference: TrackMetadata) -> dict[str, str]:
+    del reference
     return {
-        "video_title": squash_spaces(str(info.get("fulltitle") or info.get("title") or info.get("track") or reference.title)),
+        "video_title": squash_spaces(str(info.get("fulltitle") or info.get("title") or info.get("track") or "")),
         "video_channel": squash_spaces(str(info.get("channel") or "")),
         "video_uploader": squash_spaces(str(info.get("uploader") or "")),
         "video_creator": squash_spaces(str(info.get("creator") or "")),
         "video_description": _description_excerpt(str(info.get("description") or "")),
-        "current_guess_title": reference.title,
-        "current_guess_artist": reference.artist,
     }
 
 
@@ -976,7 +975,7 @@ const prompt = [
   {
     role: "system",
     content:
-      "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, performer, singer, music, composer, and lyrics credits, but do not assume every such line is the final artist/title. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Choose the song title from the clearest title/track line or from the meaningful song phrase in VIDEO TITLE. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. CURRENT GUESS may be wrong and must not override stronger source text. Do not swap artist and title. Return only compact JSON with title, artist, and reason. Do not invent values that are not supported by the provided text.",
+      "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, performer, singer, music, composer, and lyrics credits, but do not assume every such line is the final artist/title. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Choose the song title from the clearest title/track line or from the meaningful song phrase in VIDEO TITLE. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. Do not swap artist and title. Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}. Do not use Markdown, prose, code fences, comments, arrays, or extra keys. Do not omit any key. Do not invent values that are not supported by the provided text.",
   },
   {
     role: "user",
@@ -990,7 +989,6 @@ function renderPromptInput(value) {
     `VIDEO CHANNEL:\n${value?.video_channel ?? ""}`,
     `VIDEO UPLOADER:\n${value?.video_uploader ?? ""}`,
     `VIDEO CREATOR:\n${value?.video_creator ?? ""}`,
-    `CURRENT GUESS:\nTitle: ${value?.current_guess_title ?? ""}\nArtist: ${value?.current_guess_artist ?? ""}`,
     `VIDEO DESCRIPTION:\n${value?.video_description ?? ""}`,
   ].join("\n\n");
 }
@@ -1075,7 +1073,7 @@ function promptFor(input) {
       {
         role: "user",
         content:
-          "Your previous answer for this same track was not valid compact JSON or missed title/artist. Using only the same source text and your previous answer, return only compact JSON with title, artist, and reason.\n\nPREVIOUS ANSWER:\n" +
+          "Your previous answer for this same track was not valid compact JSON or missed title/artist. Using only the same source text and your previous answer, return exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}. Do not use Markdown, prose, code fences, comments, arrays, or extra keys.\n\nPREVIOUS ANSWER:\n" +
           String(input.badOutput ?? ""),
       },
     ];
@@ -1088,7 +1086,7 @@ function buildBasePrompt(input) {
     {
       role: "system",
       content:
-        "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, performer, singer, music, composer, and lyrics credits, but do not assume every such line is the final artist/title. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Choose the song title from the clearest title/track line or from the meaningful song phrase in VIDEO TITLE. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. CURRENT GUESS may be wrong and must not override stronger source text. Do not swap artist and title. Return only compact JSON with title, artist, and reason. Do not invent values that are not supported by the provided text.",
+        "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, performer, singer, music, composer, and lyrics credits, but do not assume every such line is the final artist/title. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Choose the song title from the clearest title/track line or from the meaningful song phrase in VIDEO TITLE. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. Do not swap artist and title. Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}. Do not use Markdown, prose, code fences, comments, arrays, or extra keys. Do not omit any key. Do not invent values that are not supported by the provided text.",
     },
     {
       role: "user",
@@ -1116,7 +1114,6 @@ function renderPromptInput(value) {
     `VIDEO CHANNEL:\n${value?.video_channel ?? ""}`,
     `VIDEO UPLOADER:\n${value?.video_uploader ?? ""}`,
     `VIDEO CREATOR:\n${value?.video_creator ?? ""}`,
-    `CURRENT GUESS:\nTitle: ${value?.current_guess_title ?? ""}\nArtist: ${value?.current_guess_artist ?? ""}`,
     `VIDEO DESCRIPTION:\n${value?.video_description ?? ""}`,
   ].join("\n\n");
 }

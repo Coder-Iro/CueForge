@@ -117,7 +117,7 @@ def test_gemma_context_key_prefers_url_then_source_id() -> None:
     assert _gemma_context_key({"id": "abc123", "extractor_key": "Youtube"}, TrackMetadata()) == "Youtube:abc123"
 
 
-def test_gemma_prompt_input_includes_video_title_channel_and_description() -> None:
+def test_gemma_prompt_input_includes_only_source_video_fields() -> None:
     payload = _prompt_input(
         {
             "fulltitle": "Game OST - Actual Song (Official MV)",
@@ -135,8 +135,6 @@ def test_gemma_prompt_input_includes_video_title_channel_and_description() -> No
         "video_uploader": "Uploader Name",
         "video_creator": "Composer Name",
         "video_description": "Track: Actual Song\nArtist: Real Artist\nAlbum: Soundtrack",
-        "current_guess_title": "Bad Guess",
-        "current_guess_artist": "Wrong Artist",
     }
 
 
@@ -363,6 +361,9 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         assert "npm:@huggingface/transformers" in script_text
         assert "Read VIDEO DESCRIPTION line by line" in script_text
         assert "do not assume every such line is the final artist/title" in script_text
+        assert 'Use this exact schema: {\\"title\\":\\"...\\",\\"artist\\":\\"...\\",\\"reason\\":\\"...\\"}' in script_text
+        assert "Do not use Markdown, prose, code fences, comments, arrays, or extra keys" in script_text
+        assert "CURRENT GUESS" not in script_text
         assert "renderPromptInput(input.input)" in script_text
         assert "VIDEO DESCRIPTION:" in script_text
         assert "local_files_only" in script_text

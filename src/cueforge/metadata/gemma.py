@@ -124,9 +124,12 @@ class GemmaE2BMetadataSuggester:
             parsed, metadata = _parse_suggestion_output(repair_output, log=log, final=True)
         if not metadata or parsed is None:
             return []
+        metadata = _prefer_local_artist_alias(metadata, info)
         if _needs_gemma_refinement(metadata, info):
             refine_output = self._refine_suggestion_output(payload, output, log=log)
             refined_parsed, refined_metadata = _parse_suggestion_output(refine_output, log=log, final=False)
+            if refined_metadata:
+                refined_metadata = _prefer_local_artist_alias(refined_metadata, info)
             if refined_parsed is not None and refined_metadata and _model_metadata_is_supported(
                 refined_metadata, info, reference
             ):
@@ -679,6 +682,60 @@ def _metadata_from_model_json(payload: dict[str, Any]) -> TrackMetadata | None:
         return None
     metadata = clean_metadata(TrackMetadata(title=title, artist=artist, album_artist=artist))
     return metadata if metadata.is_minimum_viable() else None
+
+
+def _prefer_local_artist_alias(metadata: TrackMetadata, info: dict[str, Any]) -> TrackMetadata:
+    local_artist = _local_artist_alias(metadata.artist, info)
+    if not local_artist or local_artist == metadata.artist:
+        return metadata
+    return replace(metadata, artist=local_artist, album_artist=local_artist)
+
+
+def _local_artist_alias(artist: str, info: dict[str, Any]) -> str:
+    artist = squash_spaces(artist)
+    if not artist or _has_local_script(artist):
+        return ""
+    sources = (
+        str(info.get("channel") or ""),
+        str(info.get("uploader") or ""),
+        str(info.get("creator") or ""),
+        str(info.get("fulltitle") or info.get("title") or info.get("track") or ""),
+    )
+    for source in sources:
+        local = _local_alias_from_source(artist, source)
+        if local:
+            return local
+    return ""
+
+
+def _local_alias_from_source(alias: str, source: str) -> str:
+    source = squash_spaces(source)
+    if not source or alias.casefold() not in source.casefold():
+        return ""
+    alias_pattern = re.escape(alias)
+    patterns = (
+        rf"(?P<local>.+?)\s*[\(\[]\s*{alias_pattern}\s*[\)\]]",
+        rf"(?P<local>.+?)\s+{alias_pattern}$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, source, flags=re.IGNORECASE)
+        if not match:
+            continue
+        local = _clean_local_alias(match.group("local"))
+        if local and _has_local_script(local):
+            return local
+    return ""
+
+
+def _clean_local_alias(value: str) -> str:
+    value = squash_spaces(value)
+    value = re.sub(r"[\s|｜ㅣ\-_/·:：]+$", "", value).strip()
+    value = re.sub(r"^[\s|｜ㅣ\-_/·:：]+", "", value).strip()
+    return value
+
+
+def _has_local_script(value: str) -> bool:
+    return bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", value))
 
 
 def _model_metadata_is_supported(metadata: TrackMetadata, info: dict[str, Any], reference: TrackMetadata) -> bool:

@@ -145,6 +145,36 @@ def test_gemma_suggester_refines_noisy_video_title_candidate(tmp_path: Path) -> 
     assert candidates[0].metadata.artist == "아카네 리제"
 
 
+def test_gemma_suggester_prefers_local_artist_alias_without_refine(tmp_path: Path) -> None:
+    calls = []
+
+    def runner(payload, config):
+        calls.append(payload)
+        assert payload["mode"] == "suggest"
+        return '{"title":"출항","artist":"Akane Lize"}'
+
+    suggester = GemmaE2BMetadataSuggester(GemmaE2BConfig(cache_dir=tmp_path), runner=runner)
+
+    candidates = suggester.suggest(
+        info={
+            "id": "R_B4tmy2DVA",
+            "extractor_key": "Youtube",
+            "title": "출항 [抜錨(발묘) / 나나호시 관현악단] ㅣ아카네 리제(Akane Lize) 【COVER】",
+            "channel": "아카네 리제 AKANE LIZE",
+            "uploader": "아카네 리제 AKANE LIZE",
+            "description": "Vocal & Chorus : Akane Lize",
+        },
+        reference=TrackMetadata(title="출항", artist="아카네 리제"),
+        candidates=[],
+    )
+
+    assert [call["mode"] for call in calls] == ["suggest"]
+    assert len(candidates) == 1
+    assert candidates[0].metadata.title == "출항"
+    assert candidates[0].metadata.artist == "아카네 리제"
+    assert candidates[0].metadata.album_artist == "아카네 리제"
+
+
 def test_gemma_suggester_refines_original_artist_for_cover_video(tmp_path: Path) -> None:
     calls = []
 

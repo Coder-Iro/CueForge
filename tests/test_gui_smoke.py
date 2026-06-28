@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QHeaderView
 
 from cueforge.download import PlaylistExpansionResult
 from cueforge.gui.main_window import MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls, _supported_urls
@@ -52,6 +52,27 @@ def test_main_window_can_queue_url(tmp_path) -> None:
         assert job.status == DownloadStatus.PENDING
         assert window.table.item(0, 2).text() == "YouTube Music"
         assert window.table.item(0, 3).text() == "https://music.youtube.com/watch?v=abc"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_queue_url_column_can_be_resized_narrower(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.resize(900, 520)
+        window.show()
+        app.processEvents()
+
+        header = window.table.horizontalHeader()
+        assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Interactive
+        assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Stretch
+
+        header.resizeSection(3, 80)
+        app.processEvents()
+
+        assert header.sectionSize(3) == 80
     finally:
         window.close()
         app.processEvents()

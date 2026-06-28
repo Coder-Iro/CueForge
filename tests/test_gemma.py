@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from cueforge.metadata.gemma import GemmaE2BConfig, GemmaE2BMetadataSuggester, gemma_e2b_cached, prepare_gemma_e2b
+from cueforge.metadata.gemma import (
+    GemmaE2BConfig,
+    GemmaE2BMetadataSuggester,
+    _run_gemma_script,
+    gemma_e2b_cached,
+    prepare_gemma_e2b,
+)
 from cueforge.models import MetadataCandidate, TrackMetadata
 
 
@@ -97,3 +103,32 @@ def test_prepare_gemma_writes_ready_marker(tmp_path: Path) -> None:
     )
 
     assert gemma_e2b_cached(config) is True
+
+
+def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> None:
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = '{"ok":true}'
+        stderr = ""
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        script_path = Path(args[-1])
+        assert script_path.exists()
+        assert "npm:@huggingface/transformers" in script_path.read_text(encoding="utf-8")
+        return Result()
+
+    monkeypatch.setattr("cueforge.metadata.gemma.subprocess.run", fake_run)
+
+    output = _run_gemma_script({"mode": "prepare"}, GemmaE2BConfig(deno_path=tmp_path / "deno.exe"))
+
+    args, kwargs = calls[0]
+    assert output == '{"ok":true}'
+    assert args[1] == "run"
+    assert "--no-prompt" not in args
+    assert "--allow-env" in args
+    assert "--allow-net" in args
+    assert kwargs["input"] == '{"mode": "prepare"}'
+    assert not Path(args[-1]).exists()

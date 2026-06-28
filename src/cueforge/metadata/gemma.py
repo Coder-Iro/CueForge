@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -140,27 +141,35 @@ def _run_gemma_script(payload: dict[str, Any], config: GemmaE2BConfig) -> str:
         raise RuntimeError("Deno executable not found")
     env = os.environ.copy()
     env.setdefault("NO_COLOR", "1")
-    result = subprocess.run(
-        [
-            str(deno),
-            "eval",
-            "--quiet",
-            "--no-prompt",
-            "--allow-env",
-            "--allow-net",
-            "--allow-read",
-            "--allow-write",
-            _GEMMA_DENO_SCRIPT,
-        ],
-        input=json.dumps(payload, ensure_ascii=False),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=config.timeout_seconds,
-        check=False,
-        env=env,
-    )
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", encoding="utf-8", delete=False) as script_file:
+        script_file.write(_GEMMA_DENO_SCRIPT)
+        script_path = Path(script_file.name)
+    try:
+        result = subprocess.run(
+            [
+                str(deno),
+                "run",
+                "--quiet",
+                "--allow-env",
+                "--allow-net",
+                "--allow-read",
+                "--allow-write",
+                str(script_path),
+            ],
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=config.timeout_seconds,
+            check=False,
+            env=env,
+        )
+    finally:
+        try:
+            script_path.unlink()
+        except OSError:
+            pass
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(message or f"Deno exited with {result.returncode}")

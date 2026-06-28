@@ -9,9 +9,11 @@ import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Callable
 
+from huggingface_hub import HfApi, snapshot_download
 from platformdirs import user_cache_path
 
 from cueforge.metadata.matching import text_similarity
@@ -21,7 +23,24 @@ from cueforge.runtime import find_executable
 
 DEFAULT_GEMMA_E2B_MODEL_REPO = "onnx-community/gemma-4-E2B-it-ONNX"
 DEFAULT_GEMMA_E2B_MARKER = "gemma-e2b-it.ready.json"
-DEFAULT_GEMMA_E2B_MARKER_VERSION = 2
+DEFAULT_GEMMA_E2B_MARKER_VERSION = 3
+GEMMA_E2B_REQUIRED_FILES = (
+    "chat_template.jinja",
+    "config.json",
+    "generation_config.json",
+    "preprocessor_config.json",
+    "processor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "onnx/audio_encoder_q4.onnx",
+    "onnx/audio_encoder_q4.onnx_data",
+    "onnx/decoder_model_merged_q4.onnx",
+    "onnx/decoder_model_merged_q4.onnx_data",
+    "onnx/embed_tokens_q4.onnx",
+    "onnx/embed_tokens_q4.onnx_data",
+    "onnx/vision_encoder_q4.onnx",
+    "onnx/vision_encoder_q4.onnx_data",
+)
 GENERIC_SUPPORT_TOKENS = {
     "artist",
     "audio",
@@ -59,6 +78,7 @@ class GemmaE2BMetadataSuggester:
     ) -> None:
         self.config = config or GemmaE2BConfig()
         self._runner = runner or _run_gemma_script
+        self._uses_default_runner = runner is None
 
     def suggest(
         self,
@@ -70,10 +90,14 @@ class GemmaE2BMetadataSuggester:
     ) -> list[MetadataCandidate]:
         if not self.config.enabled or _has_strong_external_candidate(candidates):
             return []
+        if not self.config.allow_download and self._uses_default_runner and not gemma_e2b_cached(self.config):
+            _log(log, "Gemma E2B 모델이 아직 준비되지 않아 fallback 후보 생성을 건너뜀")
+            return []
         payload = {
             "mode": "suggest",
             "model": self.config.model_repo,
-            "cacheDir": str(_gemma_cache_dir(self.config)),
+            "modelPath": _path_for_js(_gemma_model_dir(self.config)),
+            "cacheDir": _path_for_js(_gemma_cache_dir(self.config)),
             "allowDownload": self.config.allow_download,
             "maxNewTokens": self.config.max_new_tokens,
             "input": _prompt_input(info, reference),
@@ -125,7 +149,12 @@ def gemma_e2b_cached(config: GemmaE2BConfig | None = None) -> bool:
         return False
     if not isinstance(payload, dict):
         return False
-    return payload.get("model") == resolved.model_repo and payload.get("marker_version") == DEFAULT_GEMMA_E2B_MARKER_VERSION
+    return (
+        payload.get("model") == resolved.model_repo
+        and payload.get("marker_version") == DEFAULT_GEMMA_E2B_MARKER_VERSION
+        and payload.get("model_dir") == str(_gemma_model_dir(resolved))
+        and _gemma_required_files_present(resolved)
+    )
 
 
 def prepare_gemma_e2b(
@@ -139,16 +168,20 @@ def prepare_gemma_e2b(
     payload = {
         "mode": "prepare",
         "model": resolved.model_repo,
-        "cacheDir": str(_gemma_cache_dir(resolved)),
-        "allowDownload": resolved.allow_download,
+        "modelPath": _path_for_js(_gemma_model_dir(resolved)),
+        "cacheDir": _path_for_js(_gemma_cache_dir(resolved)),
+        "allowDownload": False,
         "maxNewTokens": 1,
-        "emitProgress": True,
+        "emitProgress": False,
     }
     _log(log, "Gemma E2B 모델 준비 중")
     _emit_progress(progress, 0.0)
     if runner:
         runner(payload, resolved)
     else:
+        _download_gemma_e2b_model(resolved, log=log, progress=progress)
+        _log(log, "Gemma E2B 로컬 모델 실행 확인 중")
+        _emit_progress(progress, 96.0)
         _run_gemma_script(payload, resolved, log=log, progress=progress)
     marker = _gemma_marker_path(resolved)
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +191,8 @@ def prepare_gemma_e2b(
                 "model": resolved.model_repo,
                 "marker_version": DEFAULT_GEMMA_E2B_MARKER_VERSION,
                 "cache_dir": str(_gemma_cache_dir(resolved)),
+                "model_dir": str(_gemma_model_dir(resolved)),
+                "files": list(GEMMA_E2B_REQUIRED_FILES),
             },
             ensure_ascii=False,
         ),
@@ -235,6 +270,128 @@ def _run_gemma_script(
         message = (stderr or stdout).strip()
         raise RuntimeError(message or f"Deno exited with {returncode}")
     return stdout
+
+
+def _download_gemma_e2b_model(
+    config: GemmaE2BConfig,
+    *,
+    log: Callable[[str], None] | None,
+    progress: Callable[[float | None], None] | None,
+) -> Path:
+    if not config.allow_download:
+        return _gemma_model_dir(config)
+    model_dir = _gemma_model_dir(config)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    total_bytes = _gemma_required_remote_bytes(config)
+    if total_bytes:
+        _log(log, f"Gemma E2B q4 모델 다운로드 시작 ({_format_bytes(total_bytes)})")
+    else:
+        _log(log, "Gemma E2B q4 모델 다운로드 시작")
+    tracker = _HuggingFaceDownloadProgress(total_bytes=total_bytes, log=log, progress=progress)
+    snapshot_download(
+        config.model_repo,
+        local_dir=model_dir,
+        allow_patterns=list(GEMMA_E2B_REQUIRED_FILES),
+        max_workers=4,
+        tqdm_class=tracker.tqdm_class(),
+    )
+    missing = _missing_gemma_required_files(config)
+    if missing:
+        raise RuntimeError(f"Gemma E2B 모델 파일이 누락되었습니다: {', '.join(missing[:3])}")
+    _emit_progress(progress, 95.0)
+    _log(log, "Gemma E2B q4 모델 다운로드 완료")
+    return model_dir
+
+
+class _HuggingFaceDownloadProgress:
+    def __init__(
+        self,
+        *,
+        total_bytes: int,
+        log: Callable[[str], None] | None,
+        progress: Callable[[float | None], None] | None,
+    ) -> None:
+        self.total_bytes = max(total_bytes, 0)
+        self.downloaded_bytes = 0
+        self.log = log
+        self.progress = progress
+        self.lock = threading.Lock()
+        self.last_percent = -1.0
+        self.next_log_percent = 5
+
+    def tqdm_class(self) -> type:
+        tracker = self
+
+        class ProgressBar:
+            _lock = threading.RLock()
+
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                self.iterable = args[0] if args else None
+                self.unit = str(kwargs.get("unit") or "")
+                self.total = kwargs.get("total") or 0
+                self.n = kwargs.get("initial") or 0
+                if self.unit == "B" and self.n:
+                    tracker.update_bytes(self.n)
+
+            @classmethod
+            def get_lock(cls) -> threading.RLock:
+                return cls._lock
+
+            @classmethod
+            def set_lock(cls, lock: threading.RLock) -> None:
+                cls._lock = lock
+
+            def __iter__(self):
+                if self.iterable is None:
+                    return
+                for item in self.iterable:
+                    yield item
+                    self.update(1)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+                return None
+
+            def update(self, n: int | float | None = 1) -> None:
+                amount = _to_float(n) or 0.0
+                self.n += amount
+                if self.unit == "B" and amount:
+                    tracker.update_bytes(amount)
+
+            def refresh(self) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+            def set_description(self, _description: str) -> None:
+                return None
+
+        return ProgressBar
+
+    def update_bytes(self, amount: int | float) -> None:
+        with self.lock:
+            self.downloaded_bytes += int(amount)
+            if self.total_bytes <= 0:
+                _emit_progress(self.progress, None)
+                return
+            percent = max(0.0, min((self.downloaded_bytes / self.total_bytes) * 95.0, 95.0))
+            if percent < self.last_percent:
+                return
+            if percent - self.last_percent >= 0.5 or percent >= 95.0:
+                self.last_percent = percent
+                _emit_progress(self.progress, percent)
+            display_percent = int((percent / 95.0) * 100.0)
+            if display_percent >= self.next_log_percent:
+                _log(
+                    self.log,
+                    f"Gemma E2B 다운로드: {display_percent}% "
+                    f"({_format_bytes(self.downloaded_bytes)} / {_format_bytes(self.total_bytes)})",
+                )
+                while self.next_log_percent <= display_percent:
+                    self.next_log_percent += 5
 
 
 def _read_stream(stream: Any, lines: list[str]) -> None:
@@ -420,8 +577,57 @@ def _gemma_cache_dir(config: GemmaE2BConfig) -> Path:
     return config.cache_dir or user_cache_path("CueForge") / "transformersjs"
 
 
+def _gemma_model_dir(config: GemmaE2BConfig) -> Path:
+    return _gemma_cache_dir(config) / "models" / config.model_repo
+
+
 def _gemma_marker_path(config: GemmaE2BConfig) -> Path:
     return _gemma_cache_dir(config) / DEFAULT_GEMMA_E2B_MARKER
+
+
+def _gemma_required_remote_bytes(config: GemmaE2BConfig) -> int:
+    try:
+        files = HfApi().list_repo_tree(config.model_repo, recursive=True, expand=True)
+    except Exception:
+        return 0
+    total = 0
+    for file_info in files:
+        path = str(getattr(file_info, "path", "") or "")
+        if not _is_required_gemma_file(path):
+            continue
+        try:
+            size = int(getattr(file_info, "size", 0) or 0)
+        except (TypeError, ValueError):
+            size = 0
+        total += max(size, 0)
+    return total
+
+
+def _is_required_gemma_file(path: str) -> bool:
+    return any(fnmatch(path, pattern) for pattern in GEMMA_E2B_REQUIRED_FILES)
+
+
+def _gemma_required_files_present(config: GemmaE2BConfig) -> bool:
+    return not _missing_gemma_required_files(config)
+
+
+def _missing_gemma_required_files(config: GemmaE2BConfig) -> list[str]:
+    model_dir = _gemma_model_dir(config)
+    return [file_name for file_name in GEMMA_E2B_REQUIRED_FILES if not (model_dir / file_name).is_file()]
+
+
+def _path_for_js(path: Path) -> str:
+    return path.as_posix()
+
+
+def _format_bytes(value: int | float) -> str:
+    size = float(max(value, 0))
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{size:.0f} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024
 
 
 def _description_excerpt(description: str, *, limit: int = 900) -> str:
@@ -462,8 +668,11 @@ function reportProgress(payload) {
   }));
 }
 
-const generator = await pipeline("text-generation", input.model, {
+const modelPath = input.modelPath || input.model;
+const generator = await pipeline("text-generation", modelPath, {
   dtype: "q4",
+  cache_dir: input.cacheDir,
+  local_files_only: !Boolean(input.allowDownload),
   progress_callback: reportProgress,
 });
 

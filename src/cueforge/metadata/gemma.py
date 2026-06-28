@@ -27,7 +27,7 @@ from cueforge.runtime import find_executable
 DEFAULT_GEMMA_E2B_MODEL_REPO = "onnx-community/gemma-4-E2B-it-ONNX"
 DEFAULT_GEMMA_E2B_MARKER = "gemma-e2b-it.ready.json"
 DEFAULT_GEMMA_E2B_MARKER_VERSION = 3
-GEMMA_E2B_PROMPT_VERSION = 4
+GEMMA_E2B_PROMPT_VERSION = 5
 GEMMA_E2B_REQUIRED_FILES = (
     "chat_template.jinja",
     "config.json",
@@ -137,18 +137,21 @@ class GemmaE2BMetadataSuggester:
             _log(log, "Gemma E2B fallback 폐기: 원본과 맞지 않는 후보")
             return []
         _log(log, f"Gemma E2B fallback 후보: {metadata.artist} - {metadata.title}")
+        raw: dict[str, Any] = {
+            "model": self.config.model_repo,
+            "review_only": True,
+            "requires_semantic_score": True,
+        }
+        reason = squash_spaces(str(parsed.get("reason") or ""))
+        if reason:
+            raw["reason"] = reason
         return [
             MetadataCandidate(
                 provider="gemma_e2b",
                 score=0.0,
                 matched_fields=("gemma_e2b", "title", "artist"),
                 metadata=metadata,
-                raw={
-                    "model": self.config.model_repo,
-                    "reason": squash_spaces(str(parsed.get("reason") or "")),
-                    "review_only": True,
-                    "requires_semantic_score": True,
-                },
+                raw=raw,
             )
         ]
 
@@ -904,7 +907,7 @@ function promptFor(input) {
       {
         role: "user",
         content:
-          "Your previous answer for this same track was not valid compact JSON or missed title/artist. Using only the same source text and your previous answer, return exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}. Do not use Markdown, prose, code fences, comments, arrays, or extra keys.\n\nPREVIOUS ANSWER:\n" +
+          "Your previous answer for this same track was not valid compact JSON or missed title/artist. Using only the same source text and your previous answer, return exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\"}. Do not use Markdown, prose, code fences, comments, arrays, or extra keys.\n\nPREVIOUS ANSWER:\n" +
           String(input.badOutput ?? ""),
       },
     ];
@@ -920,7 +923,7 @@ function promptFor(input) {
       {
         role: "user",
         content:
-          "Your previous JSON was valid, but it may have copied the noisy YouTube upload title or a romanized channel alias instead of the tag metadata. Re-read the same source text. If the video is a cover or performance, identify the performed recording title and the performer/vocal/cover artist. If the VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate titles, creators, performer names, or COVER/MV/live packaging, use the short display title as title. If a performer has both local-script and romanized display names, prefer the local-script display name. If your previous answer is still best, return it unchanged. Return exactly one compact JSON object with schema {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"} and nothing else.",
+          "Your previous JSON was valid, but it may have copied the noisy YouTube upload title or a romanized channel alias instead of the tag metadata. Re-read the same source text. If the video is a cover or performance, identify the performed recording title and the performer/vocal/cover artist. If the VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate titles, creators, performer names, or COVER/MV/live packaging, use the short display title as title. If a performer has both local-script and romanized display names, prefer the local-script display name. If your previous answer is still best, return it unchanged. Return exactly one compact JSON object with schema {\"title\":\"...\",\"artist\":\"...\"} and nothing else.",
       },
     ];
   }
@@ -942,7 +945,7 @@ function buildBasePrompt(input) {
         "Treat channel names, uploader names, project names, franchise names, album/OST section names, MV labels, and upload packaging as context, not as title or artist unless the source text clearly credits them as the recording artist/title.",
         "When a performer name appears in local script with a romanized alias in parentheses or a trailing uppercase alias, prefer the local-script display name unless only the romanized form is present.",
         "Do not swap artist and title.",
-        "Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}.",
+        "Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\"}.",
         "Do not use Markdown, prose, code fences, comments, arrays, or extra keys. Do not omit any key. Do not invent values that are not supported by the provided text.",
       ].join(" "),
     },

@@ -25,7 +25,7 @@ def test_gemma_suggester_maps_json_output_to_review_candidate(tmp_path: Path) ->
     def runner(payload, config):
         assert payload["mode"] == "suggest"
         assert payload["model"] == config.model_repo
-        return '{"title":"Correct Song","artist":"Correct Artist","reason":"visible in title"}'
+        return '{"title":"Correct Song","artist":"Correct Artist"}'
 
     suggester = GemmaE2BMetadataSuggester(
         GemmaE2BConfig(cache_dir=tmp_path),
@@ -45,6 +45,7 @@ def test_gemma_suggester_maps_json_output_to_review_candidate(tmp_path: Path) ->
     assert candidates[0].metadata.artist == "Correct Artist"
     assert candidates[0].raw["review_only"] is True
     assert candidates[0].raw["requires_semantic_score"] is True
+    assert "reason" not in candidates[0].raw
 
 
 def test_gemma_suggester_discards_unsupported_hallucination(tmp_path: Path) -> None:
@@ -90,7 +91,7 @@ def test_gemma_suggester_repairs_malformed_json_in_song_context(tmp_path: Path) 
         assert payload["mode"] == "repair"
         assert payload["contextKey"] == "Youtube:abc123"
         assert payload["badOutput"] == "Title is Correct Song and artist is Correct Artist."
-        return '{"title":"Correct Song","artist":"Correct Artist","reason":"repaired malformed output"}'
+        return '{"title":"Correct Song","artist":"Correct Artist"}'
 
     suggester = GemmaE2BMetadataSuggester(GemmaE2BConfig(cache_dir=tmp_path), runner=runner)
 
@@ -117,11 +118,11 @@ def test_gemma_suggester_refines_noisy_video_title_candidate(tmp_path: Path) -> 
             assert payload["promptVersion"] == GEMMA_E2B_PROMPT_VERSION
             return (
                 '{"title":"출항 [抜錨(발묘) / 나나호시 관현악단] ㅣ아카네 리제(Akane Lize) 【COVER】",'
-                '"artist":"Akane Lize","reason":"copied upload title"}'
+                '"artist":"Akane Lize"}'
             )
         assert payload["mode"] == "refine"
-        assert "copied upload title" in payload["badOutput"]
-        return '{"title":"출항","artist":"아카네 리제","reason":"cover performer and concise display title"}'
+        assert noisy_title in payload["badOutput"]
+        return '{"title":"출항","artist":"아카네 리제"}'
 
     suggester = GemmaE2BMetadataSuggester(GemmaE2BConfig(cache_dir=tmp_path), runner=runner)
 
@@ -451,7 +452,8 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         assert "Do not copy the entire VIDEO TITLE" in script_text
         assert "Your previous JSON was valid" in script_text
         assert "prefer the local-script display name" in script_text
-        assert 'Use this exact schema: {\\"title\\":\\"...\\",\\"artist\\":\\"...\\",\\"reason\\":\\"...\\"}' in script_text
+        assert 'Use this exact schema: {\\"title\\":\\"...\\",\\"artist\\":\\"...\\"}' in script_text
+        assert '\\"reason\\"' not in script_text
         assert "Do not use Markdown, prose, code fences, comments, arrays, or extra keys" in script_text
         assert "CURRENT GUESS" not in script_text
         assert "renderPromptInput(input.input)" in script_text

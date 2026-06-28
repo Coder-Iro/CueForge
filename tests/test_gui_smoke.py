@@ -1604,6 +1604,39 @@ def test_approve_loads_next_waiting_review_item(tmp_path) -> None:
         app.processEvents()
 
 
+def test_review_tab_can_delete_loaded_review_item(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        for url in ("https://youtu.be/first", "https://youtu.be/second"):
+            window.url_input.setText(url)
+            window._add_url()
+        first, second = window.jobs[window.row_job_ids[0]], window.jobs[window.row_job_ids[1]]
+        first.status = DownloadStatus.REVIEW_REQUIRED
+        first.selected_metadata = TrackMetadata(title="First Review", artist="Artist A")
+        second.status = DownloadStatus.REVIEW_REQUIRED
+        second.selected_metadata = TrackMetadata(title="Second Review", artist="Artist B")
+        window._update_row(first)
+        window._update_row(second)
+        window._load_job_for_review(first)
+
+        assert window.remove_review_button is not None
+        assert window.remove_review_button.isEnabled() is True
+
+        window._remove_active_review_job()
+
+        assert first.id not in window.jobs
+        assert window.table.rowCount() == 1
+        assert window.review_queue_table.rowCount() == 1
+        assert window.active_review_job_id == second.id
+        assert window.review_fields["title"].text() == "Second Review"
+        assert window.review_fields["artist"].text() == "Artist B"
+        assert window.tabs.tabText(window.review_tab_index) == "검수 (1)"
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_approve_while_queue_running_queues_reviewed_job_first(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))

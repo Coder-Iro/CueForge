@@ -548,6 +548,7 @@ class MainWindow(QMainWindow):
         self.cancel_current_button: QPushButton | None = None
         self.approve_button: QPushButton | None = None
         self.reopen_review_button: QPushButton | None = None
+        self.remove_review_button: QPushButton | None = None
         self.open_onboarding_button: QPushButton | None = None
         self.google_oauth_connect_button: QPushButton | None = None
         self.google_oauth_disconnect_button: QPushButton | None = None
@@ -944,6 +945,10 @@ class MainWindow(QMainWindow):
 
         review_action_row = QHBoxLayout()
         review_action_row.addStretch(1)
+        self.remove_review_button = QPushButton("검수 항목 삭제")
+        self.remove_review_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        self.remove_review_button.clicked.connect(self._remove_active_review_job)
+        review_action_row.addWidget(self.remove_review_button)
         self.reopen_review_button = QPushButton("검수 큐로 이동")
         self.reopen_review_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.reopen_review_button.clicked.connect(self._move_active_to_review_queue)
@@ -2101,6 +2106,18 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(self.review_tab_index)
         self._refresh_actions()
 
+    def _remove_active_review_job(self) -> None:
+        job = self._loaded_review_job()
+        if not job:
+            QMessageBox.warning(self, "트랙 없음", "삭제할 검수 항목이 없습니다.")
+            return
+        if self._work_running() or job.status in _ACTIVE_STATUSES:
+            QMessageBox.warning(self, "삭제할 수 없음", "실행 중인 작업이 끝난 뒤 삭제하세요.")
+            return
+        self._append_log(job.id, "검수 화면에서 큐에서 삭제됨")
+        self._remove_job(job)
+        self._refresh_actions()
+
     def _remove_selected(self) -> None:
         jobs = self._selected_jobs()
         if not jobs:
@@ -2791,6 +2808,8 @@ class MainWindow(QMainWindow):
         can_retry_selected = bool(selected_job and _can_retry_job(selected_job) and not running)
         selected_jobs = self._selected_jobs()
         can_remove_selected = any(job.status not in _ACTIVE_STATUSES for job in selected_jobs)
+        loaded_review = self._loaded_review_job()
+        can_remove_active_review = bool(loaded_review and loaded_review.status not in _ACTIVE_STATUSES and not running)
         can_cancel_current = running and not self.cancel_requested
         self._refresh_review_queue()
 
@@ -2824,6 +2843,8 @@ class MainWindow(QMainWindow):
             self.approve_button.setEnabled(can_approve)
         if self.reopen_review_button:
             self.reopen_review_button.setEnabled(can_move_active_to_review)
+        if self.remove_review_button:
+            self.remove_review_button.setEnabled(can_remove_active_review)
         if self.pipeline_start_button:
             self.pipeline_start_button.setEnabled((pending_count > 0 or approved_count > 0) and not running)
         if self.pipeline_download_button:

@@ -8,6 +8,7 @@ from cueforge.metadata.gemma import (
     GemmaE2BConfig,
     GemmaE2BMetadataSuggester,
     _HuggingFaceDownloadProgress,
+    _gemma_context_key,
     _gemma_model_dir,
     _prompt_input,
     _run_gemma_script,
@@ -76,6 +77,44 @@ def test_gemma_suggester_logs_raw_output_when_json_parse_fails(tmp_path: Path) -
 
     assert candidates == []
     assert any("원본 출력: The likely title is Correct Song by Correct Artist." in message for message in logs)
+
+
+def test_gemma_suggester_repairs_malformed_json_in_song_context(tmp_path: Path) -> None:
+    calls = []
+
+    def runner(payload, config):
+        calls.append(payload)
+        if payload["mode"] == "suggest":
+            return "Title is Correct Song and artist is Correct Artist."
+        assert payload["mode"] == "repair"
+        assert payload["contextKey"] == "Youtube:abc123"
+        assert payload["badOutput"] == "Title is Correct Song and artist is Correct Artist."
+        return '{"title":"Correct Song","artist":"Correct Artist","reason":"repaired malformed output"}'
+
+    suggester = GemmaE2BMetadataSuggester(GemmaE2BConfig(cache_dir=tmp_path), runner=runner)
+
+    candidates = suggester.suggest(
+        info={"id": "abc123", "extractor_key": "Youtube", "title": "Correct Artist - Correct Song"},
+        reference=TrackMetadata(title="Correct Song", artist="Correct Artist"),
+        candidates=[],
+    )
+
+    assert len(candidates) == 1
+    assert [call["mode"] for call in calls] == ["suggest", "repair"]
+    assert calls[0]["contextKey"] == "Youtube:abc123"
+    assert candidates[0].metadata.title == "Correct Song"
+    assert candidates[0].metadata.artist == "Correct Artist"
+
+
+def test_gemma_context_key_prefers_url_then_source_id() -> None:
+    assert (
+        _gemma_context_key(
+            {"webpage_url": "https://www.youtube.com/watch?v=abc123", "id": "ignored"},
+            TrackMetadata(title="Song", artist="Artist"),
+        )
+        == "https://www.youtube.com/watch?v=abc123"
+    )
+    assert _gemma_context_key({"id": "abc123", "extractor_key": "Youtube"}, TrackMetadata()) == "Youtube:abc123"
 
 
 def test_gemma_prompt_input_includes_video_title_channel_and_description() -> None:

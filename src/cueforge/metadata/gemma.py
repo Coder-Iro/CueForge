@@ -103,6 +103,7 @@ class GemmaE2BMetadataSuggester:
             "cacheDir": _path_for_js(_gemma_cache_dir(self.config)),
             "allowDownload": self.config.allow_download,
             "maxNewTokens": self.config.max_new_tokens,
+            "contextKey": _gemma_context_key(info, reference),
             "input": _prompt_input(info, reference),
         }
         try:
@@ -115,14 +116,11 @@ class GemmaE2BMetadataSuggester:
                 return []
             _log(log, f"Gemma E2B fallback 실행 실패: {exc}")
             raise RuntimeError(f"Gemma E2B 모델을 실행할 수 없습니다: {exc}") from exc
-        try:
-            parsed = _parse_model_json(output)
-            metadata = _metadata_from_model_json(parsed)
-        except Exception as exc:
-            _log(log, f"Gemma E2B fallback 생략: {exc}; 원본 출력: {_model_output_excerpt(output)}")
-            return []
+        parsed, metadata = _parse_suggestion_output(output, log=log, final=False)
         if not metadata:
-            _log(log, f"Gemma E2B fallback 생략: title/artist 누락; 원본 출력: {_model_output_excerpt(output)}")
+            repair_output = self._repair_suggestion_output(payload, output, log=log)
+            parsed, metadata = _parse_suggestion_output(repair_output, log=log, final=True)
+        if not metadata or parsed is None:
             return []
         if not _model_metadata_is_supported(metadata, info, reference):
             _log(log, "Gemma E2B fallback 폐기: 원본과 맞지 않는 후보")
@@ -142,6 +140,25 @@ class GemmaE2BMetadataSuggester:
                 },
             )
         ]
+
+    def _repair_suggestion_output(
+        self,
+        payload: dict[str, Any],
+        output: str,
+        *,
+        log: Callable[[str], None] | None,
+    ) -> str:
+        if not output:
+            return ""
+        repair_payload = dict(payload)
+        repair_payload["mode"] = "repair"
+        repair_payload["badOutput"] = output
+        _log(log, "Gemma E2B fallback JSON 복구 재시도")
+        try:
+            return self._runner(repair_payload, self.config)
+        except Exception as exc:
+            _log(log, f"Gemma E2B fallback JSON 복구 실패: {exc}")
+            return ""
 
 
 def gemma_e2b_cached(config: GemmaE2BConfig | None = None) -> bool:
@@ -707,6 +724,26 @@ def _parse_model_json(output: str) -> dict[str, Any]:
     raise ValueError("Gemma output did not contain a JSON object")
 
 
+def _parse_suggestion_output(
+    output: str,
+    *,
+    log: Callable[[str], None] | None,
+    final: bool,
+) -> tuple[dict[str, Any] | None, TrackMetadata | None]:
+    try:
+        parsed = _parse_model_json(output)
+        metadata = _metadata_from_model_json(parsed)
+    except Exception as exc:
+        action = "생략" if final else "JSON 파싱 실패"
+        _log(log, f"Gemma E2B fallback {action}: {exc}; 원본 출력: {_model_output_excerpt(output)}")
+        return None, None
+    if not metadata:
+        action = "생략" if final else "JSON 필드 누락"
+        _log(log, f"Gemma E2B fallback {action}: title/artist 누락; 원본 출력: {_model_output_excerpt(output)}")
+        return parsed, None
+    return parsed, metadata
+
+
 def _model_output_excerpt(output: str, *, limit: int = 500) -> str:
     text = squash_spaces(output)
     if not text:
@@ -714,6 +751,27 @@ def _model_output_excerpt(output: str, *, limit: int = 500) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit].rstrip()}..."
+
+
+def _gemma_context_key(info: dict[str, Any], reference: TrackMetadata) -> str:
+    for key in ("webpage_url", "original_url", "url"):
+        value = squash_spaces(str(info.get(key) or ""))
+        if value:
+            return value
+    extractor = squash_spaces(str(info.get("extractor_key") or info.get("extractor") or ""))
+    source_id = squash_spaces(str(info.get("id") or info.get("display_id") or ""))
+    if source_id:
+        return f"{extractor}:{source_id}" if extractor else source_id
+    fallback = "|".join(
+        part
+        for part in (
+            reference.artist,
+            reference.title,
+            squash_spaces(str(info.get("channel") or info.get("uploader") or "")),
+        )
+        if part
+    )
+    return fallback[:500]
 
 
 def _metadata_from_model_json(payload: dict[str, Any]) -> TrackMetadata | None:
@@ -963,6 +1021,8 @@ import { env, pipeline } from "npm:@huggingface/transformers";
 
 let generatorPromise = null;
 let generatorKey = "";
+const songContexts = new Map();
+const maxSongContexts = 128;
 
 async function generatorFor(input) {
   env.cacheDir = input.cacheDir;
@@ -993,6 +1053,37 @@ async function handleRequest(input) {
     return JSON.stringify({ ok: true });
   }
 
+  const prompt = promptFor(input);
+  const result = await generator(prompt, {
+    max_new_tokens: input.maxNewTokens ?? 96,
+    do_sample: false,
+    temperature: 0,
+    return_full_text: false,
+  });
+  const output = generatedText(result);
+  rememberContext(input, [...prompt, { role: "assistant", content: output }]);
+  return output;
+}
+
+function promptFor(input) {
+  if (input.mode === "repair") {
+    const contextKey = String(input.contextKey ?? "");
+    const previous = contextKey ? songContexts.get(contextKey) : null;
+    const base = previous ?? buildBasePrompt(input);
+    return [
+      ...base,
+      {
+        role: "user",
+        content:
+          "Your previous answer for this same track was not valid compact JSON or missed title/artist. Using only the same source text and your previous answer, return only compact JSON with title, artist, and reason.\n\nPREVIOUS ANSWER:\n" +
+          String(input.badOutput ?? ""),
+      },
+    ];
+  }
+  return buildBasePrompt(input);
+}
+
+function buildBasePrompt(input) {
   const prompt = [
     {
       role: "system",
@@ -1004,14 +1095,19 @@ async function handleRequest(input) {
       content: renderPromptInput(input.input),
     },
   ];
+  return prompt;
+}
 
-  const result = await generator(prompt, {
-    max_new_tokens: input.maxNewTokens ?? 96,
-    do_sample: false,
-    temperature: 0,
-    return_full_text: false,
-  });
-  return generatedText(result);
+function rememberContext(input, messages) {
+  const contextKey = String(input.contextKey ?? "");
+  if (!contextKey) {
+    return;
+  }
+  if (!songContexts.has(contextKey) && songContexts.size >= maxSongContexts) {
+    const oldest = songContexts.keys().next().value;
+    songContexts.delete(oldest);
+  }
+  songContexts.set(contextKey, messages);
 }
 
 function renderPromptInput(value) {

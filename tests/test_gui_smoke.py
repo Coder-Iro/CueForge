@@ -68,6 +68,7 @@ def test_queue_url_column_can_be_resized_narrower(tmp_path) -> None:
         header = window.table.horizontalHeader()
         assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Interactive
         assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Stretch
+        assert header.sectionSize(3) >= 320
 
         header.resizeSection(3, 80)
         app.processEvents()

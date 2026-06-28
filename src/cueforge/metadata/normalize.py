@@ -190,7 +190,11 @@ def merge_metadata(
     best_candidate = max(candidates, key=lambda candidate: candidate.score, default=None)
     state = ReviewState.MANUAL_REQUIRED
     if best_candidate:
-        if best_candidate.score >= 0.85 or not resolved.is_minimum_viable():
+        if (
+            best_candidate.score >= 0.85
+            or not resolved.is_minimum_viable()
+            or (best_candidate.score >= 0.65 and best_candidate.raw.get("prefer_initial_metadata"))
+        ):
             resolved = resolved.overlay(best_candidate.metadata.normalized())
         state = best_candidate.review_state
 

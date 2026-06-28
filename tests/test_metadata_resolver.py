@@ -378,6 +378,33 @@ def test_youtube_resolver_keeps_compact_title_pattern_as_review_candidate() -> N
     assert resolution.candidates[0].metadata.artist == "린"
 
 
+def test_youtube_resolver_uses_cover_hint_as_initial_review_metadata() -> None:
+    class EmptyYTMusicProvider:
+        def lookup(self, url: str) -> TrackMetadata:
+            return TrackMetadata()
+
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=lambda auth_path: EmptyYTMusicProvider(),
+        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
+    )
+
+    resolution = resolver.resolve(
+        url="https://youtu.be/MvbPY6mrcy4",
+        info={
+            "extractor_key": "Youtube",
+            "title": "체인소맨 레제편 그 노래 / IRIS OUT - 요네즈 켄시 (COVER)",
+            "channel": "계화",
+            "uploader": "계화",
+            "description": "Original: IRIS OUT - 米津玄師 (yonezu kenshi)",
+        },
+    )
+
+    assert resolution.metadata.title == "IRIS OUT"
+    assert resolution.metadata.artist == "계화"
+    assert resolution.state == ReviewState.REVIEW_REQUIRED
+    assert resolution.candidates[0].provider == "title_cover"
+
+
 def test_youtube_resolver_adds_gemma_fallback_as_review_candidate() -> None:
     class EmptyYTMusicProvider:
         def lookup(self, url: str) -> TrackMetadata:

@@ -1,4 +1,10 @@
-from cueforge.metadata.hints import build_hint_candidates, extract_credit_hints, extract_metadata_hints, preferred_theme_types
+from cueforge.metadata.hints import (
+    build_hint_candidates,
+    extract_cover_hints,
+    extract_credit_hints,
+    extract_metadata_hints,
+    preferred_theme_types,
+)
 
 
 def test_extract_japanese_ending_theme_from_next_line() -> None:
@@ -122,6 +128,49 @@ def test_extracts_compact_artist_title_from_user_upload_title() -> None:
     assert candidates[0].metadata.artist == "린"
     assert candidates[0].metadata.title == "개미관찰"
     assert candidates[0].metadata.release_date == "2014-04-27"
+
+
+def test_extracts_cover_song_from_title_tail_and_uses_channel_performer() -> None:
+    candidates = build_hint_candidates(
+        {
+            "title": "체인소맨 레제편 그 노래 / IRIS OUT - 요네즈 켄시 (COVER)",
+            "channel": "계화",
+            "uploader": "계화",
+            "description": "Original: IRIS OUT - 米津玄師 (yonezu kenshi)",
+        }
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].provider == "title_cover"
+    assert candidates[0].metadata.title == "IRIS OUT"
+    assert candidates[0].metadata.artist == "계화"
+    assert candidates[0].metadata.album_artist == "계화"
+    assert candidates[0].raw["prefer_initial_metadata"] is True
+
+
+def test_extracts_cover_song_before_bracket_when_performer_is_title_suffix() -> None:
+    hints = extract_cover_hints(
+        {
+            "title": "출항 [抜錨(발묘) / 나나호시 관현악단] ㅣ아카네 리제(Akane Lize) 【COVER】",
+            "channel": "아카네 리제 AKANE LIZE",
+        }
+    )
+
+    assert len(hints) == 1
+    assert hints[0].metadata.title == "출항"
+    assert hints[0].metadata.artist == "아카네 리제 AKANE LIZE"
+
+
+def test_cover_video_does_not_create_ambiguous_artist_dash_title_hint() -> None:
+    candidates = build_hint_candidates(
+        {
+            "title": "요네즈 켄시 - IRIS OUT (COVER)",
+            "channel": "계화",
+            "description": "Original: 米津玄師 - IRIS OUT",
+        }
+    )
+
+    assert candidates == []
 
 
 def test_generic_vocaloid_prefix_does_not_create_artist_title_candidate() -> None:

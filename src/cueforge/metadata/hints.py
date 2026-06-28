@@ -96,10 +96,16 @@ class MetadataHint:
     context: str
     source: str
     raw_text: str
+    prefer_initial: bool = False
 
     def to_candidate(self) -> MetadataCandidate:
         provider_prefix = self.source.casefold().replace(" ", "_")
         matched_fields = tuple(dict.fromkeys((self.source, self.context, "title", "artist")))
+        reason = (
+            "Cover metadata extracted from the video title and channel."
+            if self.context == "cover"
+            else "Anime theme metadata extracted from the video description."
+        )
         return MetadataCandidate(
             provider=f"{provider_prefix}_{self.context.casefold().replace(' ', '_')}",
             score=0.78,
@@ -109,7 +115,8 @@ class MetadataHint:
                 "source": self.source,
                 "context": self.context,
                 "raw_text": self.raw_text,
-                "reason": "Anime theme metadata extracted from the video description.",
+                "reason": reason,
+                **({"prefer_initial_metadata": True} if self.prefer_initial else {}),
             },
         )
 
@@ -150,7 +157,13 @@ def extract_metadata_hints(info: dict[str, Any]) -> list[MetadataHint]:
 def build_hint_candidates(info: dict[str, Any]) -> list[MetadataCandidate]:
     hints = extract_metadata_hints(info)
     if not hints:
-        hints = [*extract_title_hints(info), *extract_credit_hints(info)]
+        hints = extract_cover_hints(info)
+    if not hints:
+        hints = (
+            extract_credit_hints(info)
+            if _looks_like_cover_source(info)
+            else [*extract_title_hints(info), *extract_credit_hints(info)]
+        )
     preferred_types = preferred_theme_types(info)
     if preferred_types:
         matching_hints = [hint for hint in hints if theme_type_from_context(hint.context) in preferred_types]
@@ -158,6 +171,28 @@ def build_hint_candidates(info: dict[str, Any]) -> list[MetadataCandidate]:
             hints = matching_hints
     fallback = build_safe_fallback(info)
     return [_candidate_with_fallback(hint.to_candidate(), fallback) for hint in hints]
+
+
+def extract_cover_hints(info: dict[str, Any]) -> list[MetadataHint]:
+    title = squash_spaces(str(info.get("title") or ""))
+    if not title or not _looks_like_cover_source(info):
+        return []
+    artist = _cover_performer_artist(info)
+    song_title = _cover_song_title_from_video_title(title, artist)
+    if not artist or not song_title:
+        return []
+    metadata = clean_metadata(TrackMetadata(title=song_title, artist=artist, album_artist=artist))
+    if not metadata.is_minimum_viable():
+        return []
+    return [
+        MetadataHint(
+            metadata=metadata,
+            context="cover",
+            source="title",
+            raw_text=title,
+            prefer_initial=True,
+        )
+    ]
 
 
 def extract_title_hints(info: dict[str, Any]) -> list[MetadataHint]:
@@ -330,6 +365,107 @@ def _description_song_title(lines: list[str]) -> str:
             continue
         return _strip_parenthetical_alias(line)
     return ""
+
+
+def _looks_like_cover_source(info: dict[str, Any]) -> bool:
+    source = squash_spaces(
+        " ".join(
+            str(value or "")
+            for value in (
+                info.get("fulltitle"),
+                info.get("title"),
+                info.get("track"),
+                info.get("description"),
+            )
+        )
+    ).casefold()
+    return any(token in source for token in ("cover", "커버", "歌ってみた", "covered by"))
+
+
+def _cover_performer_artist(info: dict[str, Any]) -> str:
+    for key in ("channel", "uploader"):
+        artist = _clean_cover_performer(str(info.get(key) or ""))
+        if artist:
+            return artist
+    return ""
+
+
+def _clean_cover_performer(value: str) -> str:
+    value = squash_spaces(value)
+    value = re.sub(r"\s+-\s+topic$", "", value, flags=re.IGNORECASE)
+    return value
+
+
+def _cover_song_title_from_video_title(title: str, artist: str) -> str:
+    title = _strip_cover_markers(title)
+    segments = [squash_spaces(segment) for segment in re.split(r"[|｜ㅣ]", title) if squash_spaces(segment)]
+    for segment in reversed(segments or [title]):
+        if _segment_looks_like_cover_performer(segment, artist):
+            continue
+        candidate = _cover_song_title_from_segment(segment)
+        if candidate:
+            return candidate
+    return ""
+
+
+def _strip_cover_markers(value: str) -> str:
+    value = squash_spaces(value)
+    value = re.sub(r"\s*[【\[\(]\s*(?:cover|covered|커버|歌ってみた)\s*[】\]\)]\s*", " ", value, flags=re.IGNORECASE)
+    value = re.sub(r"\bcover(?:ed)?(?:\s+by)?\b|커버|歌ってみた", " ", value, flags=re.IGNORECASE)
+    return squash_spaces(value).strip(" -–—/|｜ㅣ")
+
+
+def _cover_song_title_from_segment(segment: str) -> str:
+    segment = squash_spaces(segment).strip(" -–—/|｜ㅣ")
+    if not segment:
+        return ""
+
+    leading = _leading_title_before_bracket(segment)
+    if leading:
+        return leading
+
+    had_slash_context = "/" in segment
+    if "/" in segment:
+        segment = squash_spaces(segment.rsplit("/", 1)[-1]).strip(" -–—")
+
+    if had_slash_context:
+        for separator in (" - ", " – ", " — "):
+            if separator in segment:
+                left, _right = segment.split(separator, 1)
+                return _clean_cover_song_title(left)
+        match = re.match(r"^(?P<title>.+?)\s*[-–—]\s*(?P<artist>.+)$", segment)
+        if match:
+            return _clean_cover_song_title(match.group("title"))
+    elif re.search(r"\s[-–—]\s", segment):
+        return ""
+
+    return _clean_cover_song_title(segment)
+
+
+def _segment_looks_like_cover_performer(segment: str, artist: str) -> bool:
+    segment = squash_spaces(segment)
+    artist = squash_spaces(artist)
+    if not segment or not artist:
+        return False
+    segment_base = squash_spaces(re.sub(r"\s*[（(].*?[）)]", "", segment))
+    if not segment_base:
+        return False
+    segment_norm = segment_base.casefold()
+    artist_norm = artist.casefold()
+    return segment_norm in artist_norm or artist_norm in segment_norm
+
+
+def _leading_title_before_bracket(value: str) -> str:
+    match = re.match(r"^(?P<title>.+?)\s*[【\[\(（].+[】\]\)）]\s*$", value)
+    if not match:
+        return ""
+    return _clean_cover_song_title(match.group("title"))
+
+
+def _clean_cover_song_title(value: str) -> str:
+    value = squash_spaces(value)
+    value = re.sub(r"^\s*(?:song|title|track)\s*[:：]\s*", "", value, flags=re.IGNORECASE)
+    return squash_spaces(value).strip(" -–—/|｜ㅣ")
 
 
 def _is_auto_generated_youtube_description(lines: list[str]) -> bool:

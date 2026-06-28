@@ -452,6 +452,8 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         assert "Do not copy the entire VIDEO TITLE" in script_text
         assert "Your previous JSON was valid" in script_text
         assert "prefer the local-script display name" in script_text
+        assert "description credit names a performer only with a romanized alias" in script_text
+        assert "VIDEO CHANNEL or VIDEO UPLOADER shows that same performer" in script_text
         assert 'Use this exact schema: {\\"title\\":\\"...\\",\\"artist\\":\\"...\\"}' in script_text
         assert '\\"reason\\"' not in script_text
         assert "Do not use Markdown, prose, code fences, comments, arrays, or extra keys" in script_text

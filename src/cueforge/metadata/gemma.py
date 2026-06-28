@@ -27,7 +27,7 @@ from cueforge.runtime import find_executable
 DEFAULT_GEMMA_E2B_MODEL_REPO = "onnx-community/gemma-4-E2B-it-ONNX"
 DEFAULT_GEMMA_E2B_MARKER = "gemma-e2b-it.ready.json"
 DEFAULT_GEMMA_E2B_MARKER_VERSION = 3
-GEMMA_E2B_PROMPT_VERSION = 5
+GEMMA_E2B_PROMPT_VERSION = 6
 GEMMA_E2B_REQUIRED_FILES = (
     "chat_template.jinja",
     "config.json",
@@ -923,7 +923,7 @@ function promptFor(input) {
       {
         role: "user",
         content:
-          "Your previous JSON was valid, but it may have copied the noisy YouTube upload title or a romanized channel alias instead of the tag metadata. Re-read the same source text. If the video is a cover or performance, identify the performed recording title and the performer/vocal/cover artist. If the VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate titles, creators, performer names, or COVER/MV/live packaging, use the short display title as title. If a performer has both local-script and romanized display names, prefer the local-script display name. If your previous answer is still best, return it unchanged. Return exactly one compact JSON object with schema {\"title\":\"...\",\"artist\":\"...\"} and nothing else.",
+          "Your previous JSON was valid, but it may have copied the noisy YouTube upload title or a romanized channel alias instead of the tag metadata. Re-read the same source text. If the video is a cover or performance, identify the performed recording title and the performer/vocal/cover artist. If the VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate titles, creators, performer names, or COVER/MV/live packaging, use the short display title as title. If a performer has both local-script and romanized display names, prefer the local-script display name. If a description credit uses a romanized performer alias and VIDEO CHANNEL or VIDEO UPLOADER shows that same performer with a local-script display name, output the local-script display name. If your previous answer is still best, return it unchanged. Return exactly one compact JSON object with schema {\"title\":\"...\",\"artist\":\"...\"} and nothing else.",
       },
     ];
   }
@@ -944,6 +944,7 @@ function buildBasePrompt(input) {
         "If VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate-language titles, composer/original-artist names, performer names, COVER/MV/live labels, or other packaging text, the short leading display title is usually the tag title.",
         "Treat channel names, uploader names, project names, franchise names, album/OST section names, MV labels, and upload packaging as context, not as title or artist unless the source text clearly credits them as the recording artist/title.",
         "When a performer name appears in local script with a romanized alias in parentheses or a trailing uppercase alias, prefer the local-script display name unless only the romanized form is present.",
+        "If a description credit names a performer only with a romanized alias, and VIDEO CHANNEL or VIDEO UPLOADER shows the same performer as local-script display name plus that romanized alias, output the local-script display name as artist.",
         "Do not swap artist and title.",
         "Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\"}.",
         "Do not use Markdown, prose, code fences, comments, arrays, or extra keys. Do not omit any key. Do not invent values that are not supported by the provided text.",

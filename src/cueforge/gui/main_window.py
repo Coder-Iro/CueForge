@@ -90,6 +90,7 @@ _ANALYZABLE_STATUSES = {
     DownloadStatus.FAILED,
     DownloadStatus.CANCELED,
 }
+_NON_RETRYABLE_ERROR_CATEGORIES = {ErrorCategory.VIDEO_UNAVAILABLE.value}
 _PIPELINE_STATUSES = (
     DownloadStatus.PENDING,
     DownloadStatus.METADATA,
@@ -1597,6 +1598,10 @@ class MainWindow(QMainWindow):
         if not job or job.status not in _ANALYZABLE_STATUSES:
             self._refresh_actions()
             return
+        if job.status == DownloadStatus.FAILED and not _can_retry_job(job):
+            self._append_log(job.id, "재시도 대상이 아닌 실패 항목이라 분석을 다시 시작하지 않음")
+            self._refresh_actions()
+            return
         if _is_playlist_url(job.url):
             if self._start_playlist_expansion(job, mode="playlist_single"):
                 return
@@ -1631,8 +1636,12 @@ class MainWindow(QMainWindow):
             self._refresh_actions()
             return
         retried = 0
+        skipped = 0
         for job in list(self.jobs.values()):
             if job.status != DownloadStatus.FAILED:
+                continue
+            if not _can_retry_job(job):
+                skipped += 1
                 continue
             if _is_playlist_url(job.url):
                 job.status = DownloadStatus.PENDING
@@ -1655,6 +1664,8 @@ class MainWindow(QMainWindow):
             self._append_log(job.id, "재시도를 위해 큐에 추가됨")
             retried += 1
         self._refresh_actions()
+        if skipped:
+            self._append_log("system", f"재시도 대상이 아닌 실패 항목 {skipped}개는 건너뜀")
         if retried:
             self._process_next()
 
@@ -1663,7 +1674,7 @@ class MainWindow(QMainWindow):
             self._refresh_actions()
             return
         job = self._selected_job()
-        if not job or job.status not in {DownloadStatus.FAILED, DownloadStatus.CANCELED}:
+        if not job or not _can_retry_job(job):
             self._refresh_actions()
             return
         if _is_playlist_url(job.url):
@@ -2758,18 +2769,26 @@ class MainWindow(QMainWindow):
         approved_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.APPROVED)
         review_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.REVIEW_REQUIRED)
         failed_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.FAILED)
+        retryable_failed_count = sum(
+            1 for job in self.jobs.values() if _can_retry_job(job) and job.status == DownloadStatus.FAILED
+        )
         done_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.DONE)
         selected_job = self._selected_job()
         active_review = self._active_review_job()
         can_start_pipeline = (pending_count > 0 or approved_count > 0) and not running
         can_download = approved_count > 0 and not running
-        can_retry = failed_count > 0 and not running
+        can_retry = retryable_failed_count > 0 and not running
         can_approve = bool(active_review and active_review.status == DownloadStatus.REVIEW_REQUIRED)
         can_move_selected_to_review = bool(selected_job and selected_job.status == DownloadStatus.APPROVED and not running)
         can_move_active_to_review = bool(active_review and active_review.status == DownloadStatus.APPROVED and not running)
-        can_analyze_selected = bool(selected_job and selected_job.status in _ANALYZABLE_STATUSES and not running)
+        can_analyze_selected = bool(
+            selected_job
+            and selected_job.status in _ANALYZABLE_STATUSES
+            and (selected_job.status != DownloadStatus.FAILED or _can_retry_job(selected_job))
+            and not running
+        )
         can_download_selected = bool(selected_job and selected_job.status == DownloadStatus.APPROVED and not running)
-        can_retry_selected = bool(selected_job and selected_job.status in {DownloadStatus.FAILED, DownloadStatus.CANCELED} and not running)
+        can_retry_selected = bool(selected_job and _can_retry_job(selected_job) and not running)
         selected_jobs = self._selected_jobs()
         can_remove_selected = any(job.status not in _ACTIVE_STATUSES for job in selected_jobs)
         can_cancel_current = running and not self.cancel_requested
@@ -2830,8 +2849,10 @@ class MainWindow(QMainWindow):
             text = f"{review_count}개 트랙은 메타데이터 검수가 필요합니다."
         elif pending_count:
             text = f"{pending_count}개 트랙이 추가되었습니다. 전체 처리 시작으로 분석을 시작하세요."
+        elif failed_count and retryable_failed_count:
+            text = f"{failed_count}개 트랙이 실패했습니다. 재시도 가능한 {retryable_failed_count}개는 실패 재시도로 다시 분석할 수 있습니다."
         elif failed_count:
-            text = f"{failed_count}개 트랙이 실패했습니다. 실패 재시도로 다시 분석할 수 있습니다."
+            text = f"{failed_count}개 트랙이 실패했습니다. 이 실패는 재시도 대상이 아닙니다."
         elif self.jobs:
             text = "대기 중인 트랙이 없습니다."
         else:
@@ -3081,6 +3102,14 @@ def _cover_source_from_url(url: str) -> str:
     if "ytimg.com" in lowered or "youtube" in lowered:
         return "YouTube 대체 썸네일"
     return "수동" if url else ""
+
+
+def _can_retry_job(job: DownloadJob) -> bool:
+    if job.status == DownloadStatus.CANCELED:
+        return True
+    if job.status != DownloadStatus.FAILED:
+        return False
+    return job.error_category not in _NON_RETRYABLE_ERROR_CATEGORIES
 
 
 def _download_status_label(status: DownloadStatus | str) -> str:

@@ -35,6 +35,7 @@ class ErrorCategory(str, Enum):
     COOKIE_COPY_FAILED = "cookie_copy_failed"
     NETWORK_TIMEOUT = "network_timeout"
     RATE_LIMITED = "rate_limited"
+    VIDEO_UNAVAILABLE = "video_unavailable"
     DOWNLOAD_FAILED = "download_failed"
     TAG_FAILED = "tag_failed"
     FILE_CONFLICT = "file_conflict"

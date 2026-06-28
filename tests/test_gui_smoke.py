@@ -1363,6 +1363,45 @@ def test_selected_queue_actions_start_selected_jobs(tmp_path, monkeypatch) -> No
         app.processEvents()
 
 
+def test_video_unavailable_failure_is_not_retryable(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/unavailable")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        started = []
+
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, continue_queue=True, worker_mode=None):
+            started.append((job, approved_metadata, analyze_only, continue_queue, worker_mode))
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+
+        window._on_job_failed(job.id, "ERROR: Video unavailable. This video is not available")
+        window.table.selectRow(0)
+        window._refresh_actions()
+
+        assert job.status == DownloadStatus.FAILED
+        assert job.error_category == ErrorCategory.VIDEO_UNAVAILABLE.value
+        assert window.retry_failed_button is not None
+        assert window.retry_selected_button is not None
+        assert window.analyze_selected_button is not None
+        assert window.retry_failed_button.isEnabled() is False
+        assert window.retry_selected_button.isEnabled() is False
+        assert window.analyze_selected_button.isEnabled() is False
+
+        window._retry_failed()
+        window._retry_selected()
+        window._analyze_selected()
+
+        assert started == []
+        assert job.status == DownloadStatus.FAILED
+        assert job.retry_count == 0
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_cancel_current_job_requests_worker_interruption(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))

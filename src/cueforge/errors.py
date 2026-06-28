@@ -15,6 +15,10 @@ def classify_error(error: object) -> ErrorCategory:
         return ErrorCategory.MISSING_DEPENDENCY
     if "sign in" in message or "login" in message or "private video" in message or "auth" in message:
         return ErrorCategory.AUTH_REQUIRED
+    if "video unavailable" in message and (
+        "this video is not available" in message or "this video is unavailable" in message
+    ):
+        return ErrorCategory.VIDEO_UNAVAILABLE
     if "could not copy" in message and "cookie" in message and "database" in message:
         return ErrorCategory.COOKIE_COPY_FAILED
     if "failed to decrypt" in message and "dpapi" in message:
@@ -41,6 +45,7 @@ def action_hint(category: ErrorCategory | str) -> str:
         ErrorCategory.COOKIE_COPY_FAILED: "브라우저 쿠키 직접 읽기는 지원하지 않습니다. Netscape 형식 쿠키 파일을 지정한 뒤 재시도하세요.",
         ErrorCategory.NETWORK_TIMEOUT: "네트워크 상태를 확인하고 잠시 뒤 재시도하세요.",
         ErrorCategory.RATE_LIMITED: "외부 서비스 제한에 걸렸습니다. 잠시 기다린 뒤 재시도하세요.",
+        ErrorCategory.VIDEO_UNAVAILABLE: "YouTube에서 더 이상 제공하지 않는 영상입니다. 큐에서 삭제하거나 다른 URL을 사용하세요.",
         ErrorCategory.DOWNLOAD_FAILED: "URL 접근 가능 여부와 yt-dlp/쿠키 파일 설정을 확인하세요.",
         ErrorCategory.TAG_FAILED: "커버 URL과 파일 권한을 확인한 뒤 재시도하세요.",
         ErrorCategory.FILE_CONFLICT: "출력 폴더 권한, 파일명 충돌, 열려 있는 파일을 확인하세요.",

@@ -737,6 +737,52 @@ def test_tag_editor_places_cover_preview_beside_fields(tmp_path) -> None:
         app.processEvents()
 
 
+def test_review_tab_hides_secondary_details_until_needed(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.REVIEW_REQUIRED
+        job.selected_metadata = TrackMetadata(title="Fallback", artist="Uploader")
+        job.source_title = "Original Video Title"
+        job.source_channel = "Original Channel"
+        job.candidates = [
+            MetadataCandidate(
+                provider="musicbrainz",
+                score=0.70,
+                matched_fields=("title",),
+                metadata=TrackMetadata(title="Candidate A", artist="Artist A"),
+            )
+        ]
+
+        window.resize(900, 760)
+        window.tabs.setCurrentIndex(window.review_tab_index)
+        window.show()
+        window._load_job_for_review(job)
+        app.processEvents()
+
+        assert window.source_details_group is not None
+        assert window.source_fields_panel is not None
+        assert window.candidate_preview_group is not None
+        assert window.source_details_group.isChecked() is False
+        assert window.source_fields_panel.isVisible() is False
+        assert window.candidate_preview_group.isVisible() is False
+        assert "https://youtu.be/abc" not in window.review_state_label.text()
+
+        window.source_details_group.setChecked(True)
+        window.candidate_table.selectRow(0)
+        app.processEvents()
+
+        assert window.source_fields_panel.isVisible() is True
+        assert window.source_title_input.text() == "Original Video Title"
+        assert window.candidate_preview_group.isVisible() is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_main_window_marks_soundcloud_source(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))

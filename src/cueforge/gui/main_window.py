@@ -705,6 +705,9 @@ class MainWindow(QMainWindow):
         self.pending_candidate_index: int | None = None
         self.review_scroll_area: QScrollArea | None = None
         self.review_splitter: QSplitter | None = None
+        self.source_details_group: QGroupBox | None = None
+        self.source_fields_panel: QWidget | None = None
+        self.candidate_preview_group: QGroupBox | None = None
         self._loading_review = False
         self._loading_review_queue = False
         self._cover_preview_workers: list[CoverPreviewWorker] = []
@@ -1032,7 +1035,7 @@ class MainWindow(QMainWindow):
         self.review_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
         content = QWidget()
-        content.setMinimumHeight(760)
+        content.setMinimumHeight(680)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(8, 8, 8, 8)
         splitter = QSplitter(Qt.Orientation.Vertical)
@@ -1055,8 +1058,11 @@ class MainWindow(QMainWindow):
         provider_layout.addWidget(self.candidate_label)
         provider_layout.addWidget(self.confidence_detail_label)
         provider_layout.addWidget(self.candidate_table)
-        provider_layout.addWidget(QLabel("후보 미리보기"))
-        provider_layout.addWidget(self.candidate_preview_table)
+        self.candidate_preview_group = QGroupBox("후보 변경 미리보기")
+        candidate_preview_layout = QVBoxLayout(self.candidate_preview_group)
+        candidate_preview_layout.addWidget(self.candidate_preview_table)
+        self.candidate_preview_group.setVisible(False)
+        provider_layout.addWidget(self.candidate_preview_group)
         candidate_action_row = QHBoxLayout()
         candidate_action_row.addStretch(1)
         self.apply_candidate_button = QPushButton("선택 후보를 태그에 반영")
@@ -1072,9 +1078,7 @@ class MainWindow(QMainWindow):
         tag_editor_layout = QVBoxLayout(tag_editor_group)
 
         form = QFormLayout()
-        form.addRow("원본 URL", self.source_url_input)
-        form.addRow("원본 제목", self.source_title_input)
-        form.addRow("원본 채널", self.source_channel_input)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         labels = {
             "title": "제목",
             "artist": "아티스트",
@@ -1089,19 +1093,34 @@ class MainWindow(QMainWindow):
         for key, label in labels.items():
             form.addRow(label, self.review_fields[key])
 
+        self.source_details_group = QGroupBox("원본 정보")
+        self.source_details_group.setCheckable(True)
+        self.source_details_group.setChecked(False)
+        source_details_layout = QVBoxLayout(self.source_details_group)
+        self.source_fields_panel = QWidget()
+        source_form = QFormLayout(self.source_fields_panel)
+        source_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        source_form.addRow("URL", self.source_url_input)
+        source_form.addRow("제목", self.source_title_input)
+        source_form.addRow("채널", self.source_channel_input)
+        source_details_layout.addWidget(self.source_fields_panel)
+        self.source_fields_panel.setVisible(False)
+        self.source_details_group.toggled.connect(self.source_fields_panel.setVisible)
+
         cover_panel = QWidget()
         cover_layout = QVBoxLayout(cover_panel)
         cover_layout.setContentsMargins(0, 0, 0, 0)
         cover_layout.addWidget(self.cover_preview_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         cover_layout.addWidget(self.cover_source_label)
         cover_layout.addStretch(1)
-        cover_panel.setFixedWidth(220)
+        cover_panel.setFixedWidth(200)
 
         editor_body = QWidget()
         editor_body_layout = QGridLayout(editor_body)
         editor_body_layout.setContentsMargins(0, 0, 0, 0)
-        editor_body_layout.addLayout(form, 0, 0)
-        editor_body_layout.addWidget(cover_panel, 0, 1, Qt.AlignmentFlag.AlignTop)
+        editor_body_layout.addWidget(self.source_details_group, 0, 0)
+        editor_body_layout.addLayout(form, 1, 0)
+        editor_body_layout.addWidget(cover_panel, 0, 1, 2, 1, Qt.AlignmentFlag.AlignTop)
         editor_body_layout.setColumnStretch(0, 1)
         editor_body_layout.setColumnStretch(1, 0)
         tag_editor_layout.addWidget(editor_body)
@@ -2428,7 +2447,7 @@ class MainWindow(QMainWindow):
         metadata = job.selected_metadata
         platform = detect_source_platform(job.url)
         self._loading_review = True
-        self.review_state_label.setText(f"{_download_status_label(job.status)}: {platform.display_name}: {job.url}")
+        self.review_state_label.setText(f"{_download_status_label(job.status)}: {platform.display_name}")
         if job.status == DownloadStatus.REVIEW_REQUIRED:
             self.review_hint_label.setText("필요하면 태그를 수정하세요. 승인하면 이 트랙이 다운로드 준비 상태가 됩니다.")
         elif job.status == DownloadStatus.APPROVED:
@@ -2577,6 +2596,8 @@ class MainWindow(QMainWindow):
     def _populate_candidate_preview(self, current: TrackMetadata, applied: TrackMetadata) -> None:
         rows = _candidate_preview_rows(current, applied)
         self.candidate_preview_table.setRowCount(len(rows))
+        if self.candidate_preview_group:
+            self.candidate_preview_group.setVisible(bool(rows))
         conflict_fields = set(_metadata_conflict_fields(current, applied))
         changed_color = QColor("#fff4cc")
         conflict_color = QColor("#ffd6d6")
@@ -2592,6 +2613,8 @@ class MainWindow(QMainWindow):
 
     def _clear_candidate_preview(self) -> None:
         self.candidate_preview_table.setRowCount(0)
+        if self.candidate_preview_group:
+            self.candidate_preview_group.setVisible(False)
         if self.apply_candidate_button:
             self.apply_candidate_button.setEnabled(False)
 

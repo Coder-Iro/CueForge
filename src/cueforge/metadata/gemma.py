@@ -151,6 +151,7 @@ def _run_gemma_script(payload: dict[str, Any], config: GemmaE2BConfig) -> str:
                 "run",
                 "--quiet",
                 "--allow-env",
+                "--allow-ffi",
                 "--allow-net",
                 "--allow-read",
                 "--allow-write",

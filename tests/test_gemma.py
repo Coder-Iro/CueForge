@@ -129,6 +129,7 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
     assert args[1] == "run"
     assert "--no-prompt" not in args
     assert "--allow-env" in args
+    assert "--allow-ffi" in args
     assert "--allow-net" in args
     assert kwargs["input"] == '{"mode": "prepare"}'
     assert not Path(args[-1]).exists()

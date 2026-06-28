@@ -13,6 +13,7 @@ def test_job_store_persists_jobs_candidate_summaries_and_sanitized_events(tmp_pa
     job.status = DownloadStatus.REVIEW_REQUIRED
     job.platform = "youtube"
     job.selected_metadata = TrackMetadata(title="Song", artist="Artist")
+    job.source_id = "abc123"
     job.source_title = "Original Video Title"
     job.source_channel = "Original Channel"
     job.candidates = [
@@ -33,6 +34,7 @@ def test_job_store_persists_jobs_candidate_summaries_and_sanitized_events(tmp_pa
 
     assert len(loaded) == 1
     assert loaded[0].selected_metadata.title == "Song"
+    assert loaded[0].source_id == "abc123"
     assert loaded[0].source_title == "Original Video Title"
     assert loaded[0].source_channel == "Original Channel"
     assert loaded[0].candidates[0].provider == "musicbrainz"
@@ -119,7 +121,8 @@ def test_job_store_migrates_source_metadata_columns(tmp_path: Path) -> None:
     store = JobStore(path)
     loaded = store.load_jobs()
 
-    assert store.schema_version == 2
+    assert store.schema_version == 3
+    assert loaded[0].source_id == ""
     assert loaded[0].source_title == ""
     assert loaded[0].source_channel == ""
 

@@ -17,7 +17,7 @@ class DownloadConfig:
     ffmpeg_location: Path | None = None
     cookie_file: Path | None = None
     allow_playlists: bool = False
-    audio_bitrate_kbps: int = 320
+    audio_bitrate_kbps: int = 0
     keep_original: bool = False
     allow_remote_js_components: bool = True
     youtube_request_interval_seconds: float = 0.0

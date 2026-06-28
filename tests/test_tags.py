@@ -12,10 +12,17 @@ def test_safe_track_filename_removes_windows_invalid_chars() -> None:
     assert filename == "A_B - T_ _Mix_.mp3"
 
 
+def test_safe_track_filename_appends_source_id() -> None:
+    filename = safe_track_filename(TrackMetadata(artist="Artist", title="Song"), source_id="ab:c/12")
+
+    assert filename == "Artist - Song [ab_c_12].mp3"
+
+
 def test_safe_track_filename_limits_length() -> None:
-    long_name = safe_track_filename(TrackMetadata(artist="A" * 300, title="Title"))
+    long_name = safe_track_filename(TrackMetadata(artist="A" * 300, title="Title"), source_id="abc123")
 
     assert len(long_name) <= 184
+    assert long_name.endswith(" [abc123].mp3")
 
 
 def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:

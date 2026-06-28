@@ -98,6 +98,7 @@ class SourceInfoDownloader(FakeDownloader):
     def fetch_info(self, url: str) -> dict:
         return {
             "extractor_key": "Youtube",
+            "id": "abc",
             "title": "Original Video Title",
             "channel": "Original Channel",
         }
@@ -172,6 +173,7 @@ def test_worker_stores_original_source_title_and_channel(tmp_path: Path) -> None
     assert state == ReviewState.REVIEW_REQUIRED
     assert candidates == []
     assert platform == SourcePlatform.YOUTUBE
+    assert job.source_id == "abc"
     assert job.source_title == "Original Video Title"
     assert job.source_channel == "Original Channel"
 
@@ -335,7 +337,7 @@ def test_worker_reuses_prepared_download_after_review_approval(tmp_path: Path) -
 
     worker.run()
 
-    final_path = tmp_path / "Artist - Title.mp3"
+    final_path = tmp_path / "Artist - Title [abc].mp3"
     assert final_path.exists()
     assert not prepared.exists()
     assert FakeDownloader.downloads == []
@@ -369,7 +371,7 @@ def test_worker_leaves_no_final_file_when_tagging_fails(tmp_path: Path) -> None:
 
     assert failed == ["tag failed"]
     assert prepared.exists()
-    assert not (tmp_path / "Artist - Title.mp3").exists()
+    assert not (tmp_path / "Artist - Title [abc].mp3").exists()
 
 
 def test_worker_cancellation_cleans_prepared_temp_download(tmp_path: Path) -> None:

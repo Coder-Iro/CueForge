@@ -20,7 +20,7 @@ from cueforge.models import (
     TrackMetadata,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _SECRET_PATTERNS = (
     re.compile(r"(__Secure-[A-Za-z0-9_]+|SAPISID|SID|LOGIN_INFO)=([^;\s]+)", re.IGNORECASE),
     re.compile(r"(client[_ -]?key|authorization|cookie)\s*[:=]\s*([^\s;]+)", re.IGNORECASE),
@@ -53,8 +53,8 @@ class JobStore:
                 INSERT INTO jobs (
                     id, url, platform, status, progress, output_dir, downloaded_path, final_path,
                     error, error_category, error_message, retry_count, selected_metadata,
-                    source_title, source_channel, candidate_summaries, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_id, source_title, source_channel, candidate_summaries, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     url=excluded.url,
                     platform=excluded.platform,
@@ -68,6 +68,7 @@ class JobStore:
                     error_message=excluded.error_message,
                     retry_count=excluded.retry_count,
                     selected_metadata=excluded.selected_metadata,
+                    source_id=excluded.source_id,
                     source_title=excluded.source_title,
                     source_channel=excluded.source_channel,
                     candidate_summaries=excluded.candidate_summaries,
@@ -87,6 +88,7 @@ class JobStore:
                     job.error_message,
                     job.retry_count,
                     _metadata_json(job.selected_metadata),
+                    job.source_id,
                     job.source_title,
                     job.source_channel,
                     _summaries_json(candidate_summaries),
@@ -125,7 +127,7 @@ class JobStore:
                 """
                 SELECT id, url, platform, status, progress, output_dir, downloaded_path, final_path,
                        error, error_category, error_message, retry_count, selected_metadata,
-                       source_title, source_channel, candidate_summaries, created_at, updated_at
+                       source_id, source_title, source_channel, candidate_summaries, created_at, updated_at
                 FROM jobs
                 ORDER BY created_at ASC, id ASC
                 """
@@ -210,6 +212,7 @@ class JobStore:
                     error_message TEXT NOT NULL DEFAULT '',
                     retry_count INTEGER NOT NULL DEFAULT 0,
                     selected_metadata TEXT NOT NULL,
+                    source_id TEXT NOT NULL DEFAULT '',
                     source_title TEXT NOT NULL DEFAULT '',
                     source_channel TEXT NOT NULL DEFAULT '',
                     candidate_summaries TEXT NOT NULL DEFAULT '[]',
@@ -232,6 +235,7 @@ class JobStore:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_job_events_job_id ON job_events(job_id, created_at DESC)")
+            self._ensure_column(conn, "jobs", "source_id", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "jobs", "source_title", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "jobs", "source_channel", "TEXT NOT NULL DEFAULT ''")
             if not row:
@@ -298,6 +302,7 @@ def _job_from_row(row: tuple[Any, ...]) -> DownloadJob:
         error_message,
         retry_count,
         selected_metadata,
+        source_id,
         source_title,
         source_channel,
         candidate_summaries,
@@ -328,6 +333,7 @@ def _job_from_row(row: tuple[Any, ...]) -> DownloadJob:
         error_message=str(error_message or ""),
         retry_count=int(retry_count or 0),
         selected_metadata=_load_metadata(str(selected_metadata or "{}")),
+        source_id=str(source_id or ""),
         source_title=str(source_title or ""),
         source_channel=str(source_channel or ""),
         candidate_summaries=summaries,

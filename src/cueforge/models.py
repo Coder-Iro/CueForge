@@ -167,6 +167,7 @@ class DownloadJob:
     retry_count: int = 0
     error_category: str = ""
     error_message: str = ""
+    source_id: str = ""
     source_title: str = ""
     source_channel: str = ""
     candidate_summaries: list[StoredCandidateSummary] = field(default_factory=list)

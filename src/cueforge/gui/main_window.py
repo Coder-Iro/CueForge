@@ -184,6 +184,7 @@ class JobWorker(QThread):
                 result = self._new_downloader(_temp_output_dir(self.job)).download_audio(self.job.url)
                 downloaded_path = result.path
                 self.job.downloaded_path = downloaded_path
+                self.job.source_id = _source_id_from_info_or_url(result.info, self.job.url) or self.job.source_id
             self._check_canceled()
             self.progress_changed.emit(self.job.id, 100.0, DownloadStatus.TAGGING.value)
             self._check_canceled()
@@ -193,7 +194,8 @@ class JobWorker(QThread):
             finally:
                 self._release_tag_slot()
             self._check_canceled()
-            final_path = _move_to_final(downloaded_path, self.job.output_dir, metadata)
+            source_id = self.job.source_id or _source_id_from_url(self.job.url)
+            final_path = _move_to_final(downloaded_path, self.job.output_dir, metadata, source_id=source_id)
             self.job.downloaded_path = None
             if tag_result.written_fields:
                 self.log_message.emit(self.job.id, f"기록된 태그: {', '.join(tag_result.written_fields)}")
@@ -239,6 +241,7 @@ class JobWorker(QThread):
         started_at = time.monotonic()
         self.log_message.emit(self.job.id, "yt-dlp 정보 조회 시작")
         info = downloader.fetch_info(self.job.url)
+        self.job.source_id = _source_id_from_info_or_url(info, self.job.url)
         self.job.source_title = _source_text_from_info(info, "fulltitle", "title", "track")
         self.job.source_channel = _source_text_from_info(
             info,
@@ -3035,6 +3038,25 @@ def _source_text_from_info(info: dict[str, Any], *keys: str) -> str:
     return ""
 
 
+def _source_id_from_info_or_url(info: dict[str, Any], url: str) -> str:
+    return _source_text_from_info(info, "id", "display_id") or _source_id_from_url(url)
+
+
+def _source_id_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.casefold()
+    query = parse_qs(parsed.query)
+    video_id = (query.get("v") or [""])[0].strip()
+    if video_id and ("youtube.com" in host or "youtu.be" in host):
+        return video_id
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if "youtu.be" in host and path_parts:
+        return path_parts[0]
+    if "youtube.com" in host and path_parts and path_parts[0] in {"shorts", "embed", "live"} and len(path_parts) > 1:
+        return path_parts[1]
+    return path_parts[-1] if path_parts else ""
+
+
 def _create_downloader(config: DownloadConfig, progress_callback: Any) -> YTDLPDownloader:
     return YTDLPDownloader(config, progress_callback=progress_callback)
 
@@ -3139,8 +3161,8 @@ def _unlink_if_job_temp_file(path: Path, temp_dir: Path) -> None:
         pass
 
 
-def _move_to_final(downloaded: Path, output_dir: Path, metadata: TrackMetadata) -> Path:
-    target = _unique_path(output_dir / safe_track_filename(metadata))
+def _move_to_final(downloaded: Path, output_dir: Path, metadata: TrackMetadata, *, source_id: str = "") -> Path:
+    target = _unique_path(output_dir / safe_track_filename(metadata, source_id=source_id))
     if downloaded.resolve() == target.resolve():
         return downloaded
     target.parent.mkdir(parents=True, exist_ok=True)

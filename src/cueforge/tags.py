@@ -40,6 +40,7 @@ WINDOWS_RESERVED_NAMES = {
     *(f"LPT{index}" for index in range(1, 10)),
 }
 MAX_FILENAME_STEM_LENGTH = 180
+MAX_SOURCE_ID_LENGTH = 64
 MAX_COVER_BYTES = 8 * 1024 * 1024
 
 
@@ -125,17 +126,24 @@ class RekordboxTagWriter:
         )
 
 
-def safe_track_filename(metadata: TrackMetadata, suffix: str = ".mp3") -> str:
+def safe_track_filename(metadata: TrackMetadata, suffix: str = ".mp3", source_id: str = "") -> str:
     artist = metadata.artist or "Unknown Artist"
     title = metadata.title or "Unknown Title"
-    stem = f"{artist} - {title}"
-    stem = INVALID_FILENAME_CHARS.sub("_", stem)
-    stem = re.sub(r"\s+", " ", stem).strip(" .")
+    name_stem = _clean_filename_stem(f"{artist} - {title}")
+    clean_source_id = _clean_filename_stem(source_id)[:MAX_SOURCE_ID_LENGTH].rstrip(" .")
+    id_suffix = f" [{clean_source_id}]" if clean_source_id else ""
+    stem = f"{name_stem}{id_suffix}"
     if stem.upper() in WINDOWS_RESERVED_NAMES:
         stem = f"_{stem}"
     if len(stem) > MAX_FILENAME_STEM_LENGTH:
-        stem = stem[:MAX_FILENAME_STEM_LENGTH].rstrip(" .")
+        name_limit = max(1, MAX_FILENAME_STEM_LENGTH - len(id_suffix))
+        stem = f"{name_stem[:name_limit].rstrip(' .')}{id_suffix}".rstrip(" .")
     return f"{stem or 'track'}{suffix}"
+
+
+def _clean_filename_stem(value: str) -> str:
+    stem = INVALID_FILENAME_CHARS.sub("_", str(value or ""))
+    return re.sub(r"\s+", " ", stem).strip(" .")
 
 
 def _set_text(

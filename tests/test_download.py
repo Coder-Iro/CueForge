@@ -169,7 +169,7 @@ def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
 
     options = FakeYDL.calls[-1]
     assert options["postprocessors"][0]["preferredcodec"] == "mp3"
-    assert options["postprocessors"][0]["preferredquality"] == "320"
+    assert options["postprocessors"][0]["preferredquality"] == "0"
     assert result.path == Path("D:/music/abc.mp3")
     assert progresses[0].percent == 50.0
 

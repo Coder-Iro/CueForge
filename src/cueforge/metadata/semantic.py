@@ -58,8 +58,8 @@ class SemanticCandidateRanker:
             _log(log, "MiniLM 후보 평가 준비")
             model = self._model or _load_model(self.config)
         except Exception as exc:
-            _log(log, f"MiniLM 후보 평가 생략: {exc}")
-            return candidates
+            _log(log, f"MiniLM 후보 평가 실패: {exc}")
+            raise RuntimeError(f"MiniLM 후보 평가 모델을 준비할 수 없습니다: {exc}") from exc
 
         source_text = _source_text(info, reference)
         if not source_text:
@@ -231,8 +231,11 @@ def _candidate_with_semantic_score(
     config: SemanticRankerConfig,
 ) -> MetadataCandidate:
     score = max(0.0, min(float(score), 1.0))
-    adjusted = round((candidate.score * 0.82) + (score * 0.18), 3)
-    if _is_unverified_title_hint(candidate):
+    if candidate.raw.get("requires_semantic_score"):
+        adjusted = round(score, 3)
+    else:
+        adjusted = round((candidate.score * 0.82) + (score * 0.18), 3)
+    if _is_review_only_candidate(candidate):
         adjusted = min(adjusted, config.title_hint_cap)
     matched = list(candidate.matched_fields)
     if score >= 0.70 and "semantic" not in matched:
@@ -253,6 +256,10 @@ def _candidate_with_semantic_score(
 def _is_unverified_title_hint(candidate: MetadataCandidate) -> bool:
     provider = candidate.provider.casefold()
     return provider.startswith(("title_", "description_"))
+
+
+def _is_review_only_candidate(candidate: MetadataCandidate) -> bool:
+    return bool(candidate.raw.get("review_only")) or _is_unverified_title_hint(candidate)
 
 
 def _source_text(info: dict[str, Any], reference: TrackMetadata) -> str:

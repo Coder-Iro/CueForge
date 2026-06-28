@@ -56,3 +56,26 @@ def test_semantic_ranker_caps_unverified_title_hints_below_auto_approval() -> No
     )
 
     assert ranked[0].score == 0.84
+
+
+def test_semantic_ranker_uses_onnx_score_for_gemma_candidates() -> None:
+    ranker = SemanticCandidateRanker(
+        config=SemanticRankerConfig(title_hint_cap=0.84),
+        model=FakeEmbeddingModel(),
+    )
+    candidate = MetadataCandidate(
+        provider="gemma_e2b",
+        score=0.0,
+        matched_fields=("gemma_e2b", "title", "artist"),
+        metadata=TrackMetadata(title="Correct Song", artist="Correct Artist"),
+        raw={"review_only": True, "requires_semantic_score": True},
+    )
+
+    ranked = ranker.rerank(
+        info={"title": "Correct Artist - Correct Song"},
+        reference=TrackMetadata(title="Correct Artist - Correct Song", artist="Uploader"),
+        candidates=[candidate],
+    )
+
+    assert ranked[0].score == 0.84
+    assert ranked[0].raw["semantic_score"] == 0.95

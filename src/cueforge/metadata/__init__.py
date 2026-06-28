@@ -7,6 +7,7 @@ from cueforge.metadata.normalize import (
     parse_artist_title,
 )
 from cueforge.metadata.cover_art import CoverArtConfig, CoverArtProvider
+from cueforge.metadata.gemma import GemmaE2BConfig, GemmaE2BMetadataSuggester, gemma_e2b_cached, prepare_gemma_e2b
 from cueforge.metadata.hints import MetadataHint, build_hint_candidates, extract_metadata_hints
 from cueforge.metadata.fingerprint import AcoustIDConfig, AcoustIDProvider, AudioFingerprint, FpcalcFingerprinter
 from cueforge.metadata.musicbrainz import MusicBrainzConfig, MusicBrainzProvider
@@ -49,6 +50,8 @@ __all__ = [
     "CoverArtConfig",
     "CoverArtProvider",
     "FpcalcFingerprinter",
+    "GemmaE2BConfig",
+    "GemmaE2BMetadataSuggester",
     "MusicBrainzConfig",
     "MetadataHint",
     "MusicBrainzProvider",
@@ -78,9 +81,11 @@ __all__ = [
     "build_soundcloud_native_candidate",
     "extract_metadata_hints",
     "fetch_ytmusic_oauth_account",
+    "gemma_e2b_cached",
     "load_ytmusic_oauth_client",
     "merge_metadata",
     "parse_artist_title",
+    "prepare_gemma_e2b",
     "google_oauth_account_label",
     "default_ytmusic_oauth_account_path",
     "read_ytmusic_oauth_account",

@@ -12,7 +12,7 @@ CueForge is a Windows-first desktop app for preparing authorized YouTube, YouTub
 - YouTube description/YTMusic metadata first, MusicBrainz enrichment second
 - Cover Art Archive release artwork preferred over YouTube thumbnails when MusicBrainz release metadata is available
 - AcoustID/Chromaprint audio recognition for low-confidence YouTube metadata
-- MiniLM ONNX semantic scoring for metadata candidates, used as review assistance rather than blind approval
+- MiniLM ONNX semantic scoring and Gemma E2B fallback candidate generation, used as review assistance rather than blind approval
 - Separate metadata analysis, review approval, and approved download/tagging steps
 - Low-confidence metadata review queue before final tagging
 
@@ -29,7 +29,7 @@ python -m venv .venv
 .\.venv\Scripts\python -m cueforge
 ```
 
-The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings. MiniLM metadata candidate scoring uses ONNX Runtime on CPU and prepares `Xenova/paraphrase-multilingual-MiniLM-L12-v2` during the first-run onboarding flow unless the model is already cached or bundled under `models/semantic-ranker`.
+The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component and runs Gemma E2B metadata fallback suggestions through Transformers.js. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings. MiniLM metadata candidate scoring uses ONNX Runtime on CPU and prepares `Xenova/paraphrase-multilingual-MiniLM-L12-v2` during the first-run onboarding flow unless the model is already cached or bundled under `models/semantic-ranker`. Gemma E2B prepares `onnx-community/gemma-4-E2B-it-ONNX` during onboarding as a required metadata model; Gemma only generates review-only fallback candidates, and MiniLM assigns their semantic score.
 For account-scoped YouTube Music metadata and playlist expansion, packaged builds can include `config/google_oauth_client.json`; end users then use Settings > Google Account to connect their Google account through the browser. CueForge stores only the user's refresh token under the app data directory and prefers OAuth over manual JSON or cookies for YouTube Music metadata. A Netscape-format cookies.txt file is still supported as a fallback and is still passed to yt-dlp for download authorization when a video itself requires a logged-in session. Direct browser-cookie extraction is intentionally not exposed because Chromium-based browser cookie decryption is unreliable on current Windows builds. Manual YTMusic auth JSON remains available as an advanced fallback.
 Use `python -m cueforge --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
 

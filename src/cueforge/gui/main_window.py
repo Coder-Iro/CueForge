@@ -50,6 +50,8 @@ from cueforge.metadata import (
     AcoustIDConfig,
     AcoustIDProvider,
     CoverArtProvider,
+    GemmaE2BConfig,
+    GemmaE2BMetadataSuggester,
     MetadataResolver,
     SemanticCandidateRanker,
     SemanticRankerConfig,
@@ -60,6 +62,8 @@ from cueforge.metadata import (
     google_oauth_account_label,
     load_ytmusic_oauth_client,
     read_ytmusic_oauth_account,
+    gemma_e2b_cached,
+    prepare_gemma_e2b,
     prepare_semantic_model,
     refresh_ytmusic_oauth_token_if_needed,
     run_ytmusic_oauth_desktop_flow,
@@ -127,7 +131,6 @@ class JobWorker(QThread):
         acoustid_config: AcoustIDConfig | None = None,
         audio_recognition_enabled: bool = True,
         verify_auto_approved_metadata: bool = False,
-        semantic_ranking_enabled: bool = True,
         approved_metadata: TrackMetadata | None = None,
         analyze_only: bool = False,
         downloader_factory: DownloaderFactory | None = None,
@@ -147,7 +150,6 @@ class JobWorker(QThread):
         self.acoustid_config = acoustid_config or AcoustIDConfig()
         self.audio_recognition_enabled = audio_recognition_enabled
         self.verify_auto_approved_metadata = verify_auto_approved_metadata
-        self.semantic_ranking_enabled = semantic_ranking_enabled
         self.approved_metadata = approved_metadata
         self.analyze_only = analyze_only
         self._downloader_factory = downloader_factory or _create_downloader
@@ -241,10 +243,9 @@ class JobWorker(QThread):
             return self._resolver_factory()
         return MetadataResolver(
             cover_art_provider_factory=self._cover_art_provider_factory,
-            semantic_ranker_factory=(
-                (lambda: SemanticCandidateRanker(SemanticRankerConfig(allow_download=True)))
-                if self.semantic_ranking_enabled
-                else None
+            semantic_ranker_factory=lambda: SemanticCandidateRanker(SemanticRankerConfig(allow_download=True)),
+            generative_suggester_factory=lambda: GemmaE2BMetadataSuggester(
+                GemmaE2BConfig(allow_download=False, timeout_seconds=90)
             ),
         )
 
@@ -682,7 +683,6 @@ class MainWindow(QMainWindow):
         self.audio_recognition_checkbox = QCheckBox("메타데이터 신뢰도가 낮으면 AcoustID 사용")
         self.audio_recognition_checkbox.setChecked(True)
         self.verify_auto_approved_checkbox = QCheckBox("YouTube 자동 승인 메타데이터를 AcoustID로 검증")
-        self.semantic_ranking_checkbox = QCheckBox("MiniLM 후보 평가 사용")
         self.acoustid_key_input = QLineEdit()
         self.acoustid_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.fpcalc_path_input = QLineEdit()
@@ -1129,7 +1129,6 @@ class MainWindow(QMainWindow):
         recognition_form = QFormLayout(recognition_group)
         recognition_form.addRow(self.audio_recognition_checkbox)
         recognition_form.addRow(self.verify_auto_approved_checkbox)
-        recognition_form.addRow(self.semantic_ranking_checkbox)
         recognition_form.addRow("AcoustID 클라이언트 키", self.acoustid_key_input)
         recognition_form.addRow("fpcalc 경로", self._path_row(self.fpcalc_path_input, self._browse_fpcalc))
 
@@ -1177,9 +1176,6 @@ class MainWindow(QMainWindow):
         self.verify_auto_approved_checkbox.setChecked(
             _settings_bool(self._settings.value("acoustid/verify_auto_approved", False), default=False)
         )
-        self.semantic_ranking_checkbox.setChecked(
-            _settings_bool(self._settings.value("metadata/semantic_ranking", True), default=True)
-        )
         self.metadata_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/metadata_parallel", 3), default=3))
         self.download_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/download_parallel", 2), default=2))
         self.tagging_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/tagging_parallel", 1), default=1))
@@ -1205,7 +1201,8 @@ class MainWindow(QMainWindow):
         self._settings.setValue("acoustid/client_key", self.acoustid_key_input.text().strip())
         self._settings.setValue("acoustid/enabled", self.audio_recognition_checkbox.isChecked())
         self._settings.setValue("acoustid/verify_auto_approved", self.verify_auto_approved_checkbox.isChecked())
-        self._settings.setValue("metadata/semantic_ranking", self.semantic_ranking_checkbox.isChecked())
+        self._settings.remove("metadata/semantic_ranking")
+        self._settings.remove("metadata/gemma_suggestions")
         self._settings.remove("auth/cookie_browser")
         self._settings.remove("auth/unlock_browser_cookie_database")
         self._settings.setValue("scheduler/metadata_parallel", self.metadata_parallel_spin.value())
@@ -1227,7 +1224,6 @@ class MainWindow(QMainWindow):
             str(self._ytmusic_oauth_client_file() or ""),
             str(self._ytmusic_oauth_token_file().exists()),
             self._google_oauth_account_label(),
-            str(self.semantic_ranking_checkbox.isChecked()),
             str(self.metadata_parallel_spin.value()),
             str(self.download_parallel_spin.value()),
             str(self.tagging_parallel_spin.value()),
@@ -1239,6 +1235,7 @@ class MainWindow(QMainWindow):
         acoustid = "설정됨" if self.acoustid_key_input.text().strip() else "미설정"
         cookie_file = "설정됨" if self.cookie_file_input.text().strip() else "미설정"
         semantic_model = self._semantic_model_setup_status()
+        gemma_model = self._gemma_model_setup_status()
         google_oauth = (
             f"연결됨: {self._google_oauth_account_label()}"
             if self._ytmusic_oauth_connected() and self._google_oauth_account_label()
@@ -1263,6 +1260,7 @@ class MainWindow(QMainWindow):
             f"AcoustID {acoustid}; 쿠키 파일 {cookie_file}; "
             f"Google OAuth {google_oauth}; YTMusic 인증 {ytmusic_auth}; "
             f"MiniLM {semantic_model}; "
+            f"Gemma E2B {gemma_model}; "
             f"병렬 {self.metadata_parallel_spin.value()}/{self.download_parallel_spin.value()}/{self.tagging_parallel_spin.value()}."
         )
         self._dependency_status_cache_key = cache_key
@@ -1281,7 +1279,6 @@ class MainWindow(QMainWindow):
         self.metadata_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
         self.download_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
         self.tagging_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
-        self.semantic_ranking_checkbox.stateChanged.connect(self._refresh_settings_status_label)
 
     def _refresh_settings_status_label(self, *args: Any) -> None:
         self._dependency_status_cache_key = None
@@ -1409,6 +1406,7 @@ class MainWindow(QMainWindow):
             ("Deno", _dependency_setup_status("deno")),
             ("fpcalc", _dependency_setup_status("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))),
             ("MiniLM", self._semantic_model_setup_status()),
+            ("Gemma E2B", self._gemma_model_setup_status()),
         ]
 
     def _onboarding_optional_rows(self) -> list[tuple[str, str]]:
@@ -1434,21 +1432,32 @@ class MainWindow(QMainWindow):
     def _onboarding_prepare_steps(self) -> list[OnboardingPrepareStep]:
         if QApplication.platformName() == "offscreen":
             return []
-        if not self.semantic_ranking_checkbox.isChecked():
-            return []
         if semantic_model_cached():
-            return []
-        return [
-            (
-                "MiniLM 후보 평가 모델",
-                lambda log: prepare_semantic_model(SemanticRankerConfig(allow_download=True), log=log),
+            steps = []
+        else:
+            steps = [
+                (
+                    "MiniLM 후보 평가 모델",
+                    lambda log: prepare_semantic_model(SemanticRankerConfig(allow_download=True), log=log),
+                )
+            ]
+        if not gemma_e2b_cached():
+            steps.append(
+                (
+                    "Gemma E2B fallback 모델",
+                    lambda log: prepare_gemma_e2b(
+                        GemmaE2BConfig(allow_download=True, timeout_seconds=600),
+                        log=log,
+                    ),
+                )
             )
-        ]
+        return steps
 
     def _semantic_model_setup_status(self) -> str:
-        if not self.semantic_ranking_checkbox.isChecked():
-            return "꺼짐"
         return "준비됨" if semantic_model_cached() else "첫 실행 준비 필요"
+
+    def _gemma_model_setup_status(self) -> str:
+        return "준비됨" if gemma_e2b_cached() else "첫 실행 준비 필요"
 
     def closeEvent(self, event: Any) -> None:
         if self._work_running():
@@ -2089,7 +2098,6 @@ class MainWindow(QMainWindow):
             ),
             audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
             verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
-            semantic_ranking_enabled=self.semantic_ranking_checkbox.isChecked(),
             approved_metadata=approved_metadata,
             analyze_only=analyze_only,
             tag_semaphore=self.scheduler.tag_semaphore if self.scheduler else None,
@@ -2728,7 +2736,6 @@ class MainWindow(QMainWindow):
             ),
             audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
             verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
-            semantic_ranking_enabled=self.semantic_ranking_checkbox.isChecked(),
             approved_metadata=approved_metadata,
             analyze_only=stage == "metadata",
             tag_semaphore=tag_semaphore,

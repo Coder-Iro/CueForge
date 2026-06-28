@@ -70,6 +70,26 @@ class EmptyMusicBrainzProvider:
         return []
 
 
+class FakeGemmaSuggester:
+    def suggest(
+        self,
+        *,
+        info: dict,
+        reference: TrackMetadata,
+        candidates: list[MetadataCandidate],
+        log=None,
+    ) -> list[MetadataCandidate]:
+        return [
+            MetadataCandidate(
+                provider="gemma_e2b",
+                score=0.0,
+                matched_fields=("gemma_e2b", "title", "artist"),
+                metadata=TrackMetadata(title="Gemma Song", artist="Gemma Artist"),
+                raw={"review_only": True, "requires_semantic_score": True},
+            )
+        ]
+
+
 def test_soundcloud_resolver_trusts_native_metadata_and_downgrades_external() -> None:
     resolver = MetadataResolver(
         ytmusic_provider_factory=lambda auth_path: FailingYTMusicProvider(),
@@ -330,3 +350,28 @@ def test_youtube_resolver_keeps_compact_title_pattern_as_review_candidate() -> N
     assert resolution.candidates[0].provider == "title_artist_title"
     assert resolution.candidates[0].metadata.title == "개미관찰"
     assert resolution.candidates[0].metadata.artist == "린"
+
+
+def test_youtube_resolver_adds_gemma_fallback_as_review_candidate() -> None:
+    class EmptyYTMusicProvider:
+        def lookup(self, url: str) -> TrackMetadata:
+            return TrackMetadata()
+
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=lambda auth_path: EmptyYTMusicProvider(),
+        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
+        generative_suggester_factory=FakeGemmaSuggester,
+    )
+
+    resolution = resolver.resolve(
+        url="https://youtu.be/abc",
+        info={
+            "extractor_key": "Youtube",
+            "title": "Noisy Video Title",
+            "uploader": "Uploader",
+        },
+    )
+
+    assert any(candidate.provider == "gemma_e2b" for candidate in resolution.candidates)
+    assert resolution.metadata.title == "Noisy Video Title"
+    assert resolution.metadata.artist == "Uploader"

@@ -18,6 +18,8 @@ CueForge depends on Python packages and external command-line tools. This file i
 ## Metadata Models
 
 - `Xenova/paraphrase-multilingual-MiniLM-L12-v2`: ONNX export of `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`, Apache-2.0, used for local CPU semantic scoring of metadata candidates.
+- `onnx-community/gemma-4-E2B-it-ONNX`: ONNX export of Google's Gemma E2B instruction model, used through Transformers.js to generate review-only fallback metadata candidates. MiniLM ONNX scoring evaluates those candidates before they appear in the review flow. Review model terms before public redistribution.
+- `@huggingface/transformers`: Apache-2.0, loaded by Deno for Gemma E2B ONNX inference.
 
 ## Vendored / Adapted Code
 

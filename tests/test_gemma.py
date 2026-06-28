@@ -9,6 +9,7 @@ from cueforge.metadata.gemma import (
     GemmaE2BMetadataSuggester,
     _HuggingFaceDownloadProgress,
     _gemma_model_dir,
+    _prompt_input,
     _run_gemma_script,
     gemma_e2b_cached,
     prepare_gemma_e2b,
@@ -55,6 +56,29 @@ def test_gemma_suggester_discards_unsupported_hallucination(tmp_path: Path) -> N
     )
 
     assert candidates == []
+
+
+def test_gemma_prompt_input_includes_video_title_channel_and_description() -> None:
+    payload = _prompt_input(
+        {
+            "fulltitle": "Game OST - Actual Song (Official MV)",
+            "channel": "Official Music Channel",
+            "uploader": "Uploader Name",
+            "creator": "Composer Name",
+            "description": "Track: Actual Song\nArtist: Real Artist\nAlbum: Soundtrack",
+        },
+        TrackMetadata(title="Bad Guess", artist="Wrong Artist"),
+    )
+
+    assert payload == {
+        "video_title": "Game OST - Actual Song (Official MV)",
+        "video_channel": "Official Music Channel",
+        "video_uploader": "Uploader Name",
+        "video_creator": "Composer Name",
+        "video_description": "Track: Actual Song Artist: Real Artist Album: Soundtrack",
+        "current_guess_title": "Bad Guess",
+        "current_guess_artist": "Wrong Artist",
+    }
 
 
 def test_gemma_suggester_skips_when_strong_external_candidate_exists(tmp_path: Path) -> None:
@@ -276,9 +300,11 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         calls.append((args, kwargs))
         script_path = Path(args[-1])
         assert script_path.exists()
-        assert "npm:@huggingface/transformers" in script_path.read_text(encoding="utf-8")
-        assert "local_files_only" in script_path.read_text(encoding="utf-8")
-        assert "cache_dir" in script_path.read_text(encoding="utf-8")
+        script_text = script_path.read_text(encoding="utf-8")
+        assert "npm:@huggingface/transformers" in script_text
+        assert "video_title and video_description as the primary evidence" in script_text
+        assert "local_files_only" in script_text
+        assert "cache_dir" in script_text
         return Process(args, **kwargs)
 
     monkeypatch.setattr("cueforge.metadata.gemma.subprocess.Popen", fake_popen)

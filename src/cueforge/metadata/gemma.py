@@ -492,10 +492,12 @@ def _to_float(value: Any) -> float | None:
 def _prompt_input(info: dict[str, Any], reference: TrackMetadata) -> dict[str, str]:
     return {
         "video_title": squash_spaces(str(info.get("fulltitle") or info.get("title") or info.get("track") or reference.title)),
-        "channel": squash_spaces(str(info.get("channel") or info.get("uploader") or info.get("creator") or reference.artist)),
-        "description": _description_excerpt(str(info.get("description") or "")),
-        "current_title": reference.title,
-        "current_artist": reference.artist,
+        "video_channel": squash_spaces(str(info.get("channel") or "")),
+        "video_uploader": squash_spaces(str(info.get("uploader") or "")),
+        "video_creator": squash_spaces(str(info.get("creator") or "")),
+        "video_description": _description_excerpt(str(info.get("description") or "")),
+        "current_guess_title": reference.title,
+        "current_guess_artist": reference.artist,
     }
 
 
@@ -664,7 +666,7 @@ def _format_eta(seconds: float | None) -> str:
     return f"{hours}시간 {minutes:02d}분"
 
 
-def _description_excerpt(description: str, *, limit: int = 900) -> str:
+def _description_excerpt(description: str, *, limit: int = 2000) -> str:
     lines = [squash_spaces(line) for line in description.splitlines()]
     return " ".join(line for line in lines if line)[:limit].rstrip()
 
@@ -719,7 +721,7 @@ const prompt = [
   {
     role: "system",
     content:
-      "Extract music metadata from noisy YouTube text. Return only compact JSON with title, artist, and reason. Do not invent values that are not supported by the provided text.",
+      "Extract track metadata from one noisy YouTube video. Use video_title and video_description as the primary evidence. Use video_channel, video_uploader, and video_creator only as weak hints unless the title or description supports them. current_guess_title and current_guess_artist may be wrong and must not override stronger source text. Preserve the actual song title instead of shortening it to a series, episode, OST, MV, or game name. Do not swap artist and title. Return only compact JSON with title, artist, and reason. Do not invent values that are not supported by the provided text.",
   },
   {
     role: "user",

@@ -53,8 +53,8 @@ class JobScheduler(QObject):
     def enqueue_analysis(self, jobs: Iterable[DownloadJob]) -> None:
         self._enqueue("metadata", jobs)
 
-    def enqueue_downloads(self, jobs: Iterable[DownloadJob]) -> None:
-        self._enqueue("download", jobs)
+    def enqueue_downloads(self, jobs: Iterable[DownloadJob], *, priority: bool = False) -> None:
+        self._enqueue("download", jobs, priority=priority)
 
     def cancel_all(self) -> None:
         for queue in self._queues.values():
@@ -79,15 +79,34 @@ class JobScheduler(QObject):
             return sum(len(queue) for queue in self._queues.values())
         return len(self._queues.get(stage, ()))
 
-    def _enqueue(self, stage: str, jobs: Iterable[DownloadJob]) -> None:
+    def _enqueue(self, stage: str, jobs: Iterable[DownloadJob], *, priority: bool = False) -> None:
         queued_ids = {job.id for queue in self._queues.values() for job in queue}
         active_ids = set(self._active)
+        ready: list[DownloadJob] = []
         for job in jobs:
-            if job.id in queued_ids or job.id in active_ids:
+            if job.id in active_ids:
                 continue
-            self._queues[stage].append(job)
+            if job.id in queued_ids:
+                if not priority:
+                    continue
+                self._remove_queued_job(job.id)
+                queued_ids.discard(job.id)
+            ready.append(job)
             queued_ids.add(job.id)
+        if priority:
+            for job in reversed(ready):
+                self._queues[stage].appendleft(job)
+        else:
+            self._queues[stage].extend(ready)
         self._pump()
+
+    def _remove_queued_job(self, job_id: str) -> None:
+        for queue in self._queues.values():
+            if not any(job.id == job_id for job in queue):
+                continue
+            retained = deque(job for job in queue if job.id != job_id)
+            queue.clear()
+            queue.extend(retained)
 
     def _pump(self) -> None:
         self._pump_stage("metadata", self._limits.metadata)

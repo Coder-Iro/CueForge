@@ -1739,6 +1739,40 @@ def test_approve_while_queue_running_queues_reviewed_job_first(tmp_path, monkeyp
         app.processEvents()
 
 
+def test_manual_review_approval_uses_priority_download_queue(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    queued: list[tuple[list[DownloadJob], bool]] = []
+
+    class RunningScheduler:
+        def is_running(self) -> bool:
+            return True
+
+        def enqueue_downloads(self, jobs, *, priority: bool = False) -> None:
+            queued.append((list(jobs), priority))
+
+        def set_limits(self, limits) -> None:
+            return None
+
+    try:
+        window.url_input.setText("https://youtu.be/reviewed")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.REVIEW_REQUIRED
+        job.selected_metadata = TrackMetadata(title="Reviewed Song", artist="Reviewed Artist")
+        window._load_job_for_review(job)
+        window.scheduler = RunningScheduler()
+
+        window._approve_selected()
+
+        assert job.status == DownloadStatus.APPROVED
+        assert queued == [([job], True)]
+    finally:
+        window.scheduler = None
+        window.close()
+        app.processEvents()
+
+
 def test_new_review_item_does_not_replace_active_review_form(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))

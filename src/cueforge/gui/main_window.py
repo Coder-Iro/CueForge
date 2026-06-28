@@ -2229,7 +2229,8 @@ class MainWindow(QMainWindow):
         if job.status != DownloadStatus.APPROVED:
             return
         if self.scheduler and self.scheduler.is_running():
-            self.scheduler.enqueue_downloads([job])
+            self.scheduler.enqueue_downloads([job], priority=True)
+            self._append_log(job.id, "현재 다운로드 슬롯 뒤 우선 다운로드 예정")
             return
         if self.worker and self.worker.isRunning():
             self._append_log(job.id, "현재 작업 뒤 다운로드 예정")

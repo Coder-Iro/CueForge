@@ -57,7 +57,6 @@ GENERIC_SUPPORT_TOKENS = {
     "track",
     "video",
 }
-LEADING_BRACKET_PATTERN = re.compile(r"^\s*(?:\[[^\]]+\]|【[^】]+】|「[^」]+」|『[^』]+』)\s*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -530,8 +529,6 @@ def _metadata_from_model_json(payload: dict[str, Any]) -> TrackMetadata | None:
 
 def _model_metadata_is_supported(metadata: TrackMetadata, info: dict[str, Any], reference: TrackMetadata) -> bool:
     del reference
-    if _artist_is_likely_bracketed_channel_tag(metadata.artist, info):
-        return False
     source = squash_spaces(
         " ".join(
             str(value or "")
@@ -549,66 +546,6 @@ def _model_metadata_is_supported(metadata: TrackMetadata, info: dict[str, Any], 
     if not source:
         return False
     return _supported_text(metadata.title, source) and _supported_text(metadata.artist, source)
-
-
-def _artist_is_likely_bracketed_channel_tag(artist: str, info: dict[str, Any]) -> bool:
-    artist = squash_spaces(artist)
-    if not artist:
-        return False
-    channel_values = [
-        squash_spaces(str(info.get(key) or ""))
-        for key in ("channel", "uploader")
-    ]
-    if not any(_same_text(artist, value) for value in channel_values if value):
-        return False
-    titles = [
-        squash_spaces(str(info.get(key) or ""))
-        for key in ("fulltitle", "title", "track")
-    ]
-    bracketed_artist = any(_same_text(artist, tag) for title in titles for tag in _leading_bracket_tags(title))
-    if not bracketed_artist:
-        return False
-    strong_source = squash_spaces(
-        " ".join(
-            [
-                *(_strip_leading_bracket_tags(title) for title in titles),
-                str(info.get("description") or ""),
-                str(info.get("creator") or ""),
-            ]
-        )
-    )
-    return not _phrase_in_text(artist, strong_source)
-
-
-def _leading_bracket_tags(value: str) -> list[str]:
-    tags: list[str] = []
-    text = value
-    while True:
-        match = LEADING_BRACKET_PATTERN.match(text)
-        if not match:
-            return tags
-        token = match.group(0).strip()
-        tags.append(token[1:-1].strip())
-        text = text[match.end():]
-
-
-def _strip_leading_bracket_tags(value: str) -> str:
-    text = value
-    while True:
-        match = LEADING_BRACKET_PATTERN.match(text)
-        if not match:
-            return squash_spaces(text)
-        text = text[match.end():]
-
-
-def _same_text(left: str, right: str) -> bool:
-    return squash_spaces(left).casefold() == squash_spaces(right).casefold()
-
-
-def _phrase_in_text(phrase: str, text: str) -> bool:
-    phrase = squash_spaces(phrase).casefold()
-    text = squash_spaces(text).casefold()
-    return bool(phrase and phrase in text)
 
 
 def _supported_text(value: str, source: str) -> bool:
@@ -783,7 +720,7 @@ const prompt = [
   {
     role: "system",
     content:
-      "Extract track metadata from one noisy YouTube video. Use VIDEO TITLE and VIDEO DESCRIPTION as the primary evidence. Preserve line boundaries in VIDEO DESCRIPTION: credit lines such as Music Mitsukiyo, Lyrics Name, Vocal Name, Artist Name, Composer Name, or Track Title are strong evidence even without a colon. Prefer Vocal/Artist/Performer as the track artist when present; use Music/Composer only when no performer is present. Use channel/uploader only as weak hints unless the title or description supports them. A leading bracketed franchise/project tag in VIDEO TITLE, such as [Game Name] or [Series Name], is not the artist by itself. CURRENT GUESS may be wrong and must not override stronger source text. Preserve the actual song title instead of shortening it to a series, episode, OST, MV, or game name. Remove MV, official video, OST section names, and franchise tags from the title when a cleaner track title is present in the description. Do not swap artist and title. Return only compact JSON with title, artist, and reason. Do not invent values that are not supported by the provided text.",
+      "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, performer, singer, music, composer, and lyrics credits, but do not assume every such line is the final artist/title. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Choose the song title from the clearest title/track line or from the meaningful song phrase in VIDEO TITLE. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. CURRENT GUESS may be wrong and must not override stronger source text. Do not swap artist and title. Return only compact JSON with title, artist, and reason. Do not invent values that are not supported by the provided text.",
   },
   {
     role: "user",

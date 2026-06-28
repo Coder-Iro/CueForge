@@ -9,7 +9,6 @@ from cueforge.metadata.gemma import (
     GemmaE2BMetadataSuggester,
     _HuggingFaceDownloadProgress,
     _gemma_model_dir,
-    _model_metadata_is_supported,
     _prompt_input,
     _run_gemma_script,
     gemma_e2b_cached,
@@ -80,33 +79,6 @@ def test_gemma_prompt_input_includes_video_title_channel_and_description() -> No
         "current_guess_title": "Bad Guess",
         "current_guess_artist": "Wrong Artist",
     }
-
-
-def test_gemma_rejects_bracketed_channel_tag_as_artist() -> None:
-    info = {
-        "title": "[블루 아카이브] 동경의 잔향 MV | Ex. 데카그라마톤편 OST",
-        "fulltitle": "[블루 아카이브] 동경의 잔향 MV | Ex. 데카그라마톤편 OST",
-        "channel": "블루 아카이브",
-        "uploader": "블루 아카이브",
-        "description": "동경의 잔향 (Korean Ver.)\nMusic Mitsukiyo\nLyrics 夕野ヨシミ(IOSYS)\nKorean Translation Mitsukiyo\nVocal 다즈비(DAZBEE)",
-    }
-
-    assert (
-        _model_metadata_is_supported(
-            TrackMetadata(title="[블루 아카이브] 동경의 잔향 MV | Ex. 데카그라마톤편 OST", artist="블루 아카이브"),
-            info,
-            TrackMetadata(),
-        )
-        is False
-    )
-    assert (
-        _model_metadata_is_supported(
-            TrackMetadata(title="동경의 잔향 (Korean Ver.)", artist="다즈비"),
-            info,
-            TrackMetadata(),
-        )
-        is True
-    )
 
 
 def test_gemma_suggester_skips_when_strong_external_candidate_exists(tmp_path: Path) -> None:
@@ -330,7 +302,8 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         assert script_path.exists()
         script_text = script_path.read_text(encoding="utf-8")
         assert "npm:@huggingface/transformers" in script_text
-        assert "VIDEO TITLE and VIDEO DESCRIPTION as the primary evidence" in script_text
+        assert "Read VIDEO DESCRIPTION line by line" in script_text
+        assert "do not assume every such line is the final artist/title" in script_text
         assert "renderPromptInput(input.input)" in script_text
         assert "VIDEO DESCRIPTION:" in script_text
         assert "local_files_only" in script_text

@@ -6,6 +6,7 @@ import pytest
 
 from cueforge.metadata.gemma import (
     GEMMA_E2B_REQUIRED_FILES,
+    GEMMA_E2B_PROMPT_VERSION,
     GemmaE2BConfig,
     GemmaE2BMetadataSuggester,
     _HuggingFaceDownloadProgress,
@@ -104,6 +105,43 @@ def test_gemma_suggester_repairs_malformed_json_in_song_context(tmp_path: Path) 
     assert calls[0]["contextKey"] == "Youtube:abc123"
     assert candidates[0].metadata.title == "Correct Song"
     assert candidates[0].metadata.artist == "Correct Artist"
+
+
+def test_gemma_suggester_refines_noisy_video_title_candidate(tmp_path: Path) -> None:
+    calls = []
+    noisy_title = "출항 [抜錨(발묘) / 나나호시 관현악단] ㅣ아카네 리제(Akane Lize) 【COVER】"
+
+    def runner(payload, config):
+        calls.append(payload)
+        if payload["mode"] == "suggest":
+            assert payload["promptVersion"] == GEMMA_E2B_PROMPT_VERSION
+            return (
+                '{"title":"출항 [抜錨(발묘) / 나나호시 관현악단] ㅣ아카네 리제(Akane Lize) 【COVER】",'
+                '"artist":"Akane Lize","reason":"copied upload title"}'
+            )
+        assert payload["mode"] == "refine"
+        assert "copied upload title" in payload["badOutput"]
+        return '{"title":"출항","artist":"아카네 리제","reason":"cover performer and concise display title"}'
+
+    suggester = GemmaE2BMetadataSuggester(GemmaE2BConfig(cache_dir=tmp_path), runner=runner)
+
+    candidates = suggester.suggest(
+        info={
+            "id": "R_B4tmy2DVA",
+            "extractor_key": "Youtube",
+            "title": noisy_title,
+            "channel": "아카네 리제 AKANE LIZE",
+            "uploader": "아카네 리제 AKANE LIZE",
+            "description": "Vocal 아카네 리제(Akane Lize)\nOriginal 나나호시 관현악단",
+        },
+        reference=TrackMetadata(title=noisy_title, artist="Akane Lize"),
+        candidates=[],
+    )
+
+    assert [call["mode"] for call in calls] == ["suggest", "refine"]
+    assert len(candidates) == 1
+    assert candidates[0].metadata.title == "출항"
+    assert candidates[0].metadata.artist == "아카네 리제"
 
 
 def test_gemma_context_key_prefers_url_then_source_id() -> None:
@@ -295,6 +333,7 @@ def test_prepare_gemma_downloads_model_with_python_before_deno(monkeypatch, tmp_
         assert payload["model"] == config.model_repo
         assert payload["modelPath"] == model_dir.as_posix()
         assert payload["allowDownload"] is False
+        assert payload["promptVersion"] == GEMMA_E2B_PROMPT_VERSION
         return '{"ok":true}'
 
     monkeypatch.setattr("cueforge.metadata.gemma.HfApi", lambda: Api())
@@ -406,9 +445,11 @@ def test_gemma_runner_uses_deno_run_permissions(monkeypatch, tmp_path: Path) -> 
         assert script_path.exists()
         script_text = script_path.read_text(encoding="utf-8")
         assert "npm:@huggingface/transformers" in script_text
-        assert "Read VIDEO DESCRIPTION line by line" in script_text
-        assert "do not assume every such line is the final artist/title" in script_text
-        assert "For cover or performance videos, extract metadata for the performed recording" in script_text
+        assert "Use VIDEO DESCRIPTION line by line" in script_text
+        assert "do not treat every credit line as the final tag artist/title" in script_text
+        assert "For cover or performance videos, tag the performed recording" in script_text
+        assert "Do not copy the entire VIDEO TITLE" in script_text
+        assert "Your previous JSON was valid" in script_text
         assert "prefer the local-script display name" in script_text
         assert 'Use this exact schema: {\\"title\\":\\"...\\",\\"artist\\":\\"...\\",\\"reason\\":\\"...\\"}' in script_text
         assert "Do not use Markdown, prose, code fences, comments, arrays, or extra keys" in script_text

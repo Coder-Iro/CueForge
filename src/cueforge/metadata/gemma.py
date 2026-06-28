@@ -27,6 +27,7 @@ from cueforge.runtime import find_executable
 DEFAULT_GEMMA_E2B_MODEL_REPO = "onnx-community/gemma-4-E2B-it-ONNX"
 DEFAULT_GEMMA_E2B_MARKER = "gemma-e2b-it.ready.json"
 DEFAULT_GEMMA_E2B_MARKER_VERSION = 3
+GEMMA_E2B_PROMPT_VERSION = 4
 GEMMA_E2B_REQUIRED_FILES = (
     "chat_template.jinja",
     "config.json",
@@ -103,11 +104,12 @@ class GemmaE2BMetadataSuggester:
             "cacheDir": _path_for_js(_gemma_cache_dir(self.config)),
             "allowDownload": self.config.allow_download,
             "maxNewTokens": self.config.max_new_tokens,
+            "promptVersion": GEMMA_E2B_PROMPT_VERSION,
             "contextKey": _gemma_context_key(info, reference),
             "input": _prompt_input(info, reference),
         }
         try:
-            _log(log, "Gemma E2B fallback 후보 생성 준비")
+            _log(log, f"Gemma E2B fallback 후보 생성 준비 (prompt v{GEMMA_E2B_PROMPT_VERSION})")
             output = self._runner(payload, self.config)
         except Exception as exc:
             if not self.config.allow_download and _is_missing_local_model_error(exc):
@@ -122,6 +124,15 @@ class GemmaE2BMetadataSuggester:
             parsed, metadata = _parse_suggestion_output(repair_output, log=log, final=True)
         if not metadata or parsed is None:
             return []
+        if _needs_gemma_refinement(metadata, info):
+            refine_output = self._refine_suggestion_output(payload, output, log=log)
+            refined_parsed, refined_metadata = _parse_suggestion_output(refine_output, log=log, final=False)
+            if refined_parsed is not None and refined_metadata and _model_metadata_is_supported(
+                refined_metadata, info, reference
+            ):
+                parsed, metadata = refined_parsed, refined_metadata
+            else:
+                _log(log, "Gemma E2B fallback 보정 후보가 유효하지 않아 1차 후보를 유지")
         if not _model_metadata_is_supported(metadata, info, reference):
             _log(log, "Gemma E2B fallback 폐기: 원본과 맞지 않는 후보")
             return []
@@ -160,6 +171,25 @@ class GemmaE2BMetadataSuggester:
             _log(log, f"Gemma E2B fallback JSON 복구 실패: {exc}")
             return ""
 
+    def _refine_suggestion_output(
+        self,
+        payload: dict[str, Any],
+        output: str,
+        *,
+        log: Callable[[str], None] | None,
+    ) -> str:
+        if not output:
+            return ""
+        refine_payload = dict(payload)
+        refine_payload["mode"] = "refine"
+        refine_payload["badOutput"] = output
+        _log(log, "Gemma E2B fallback 후보가 원본 영상 제목에 가까워 보정 재시도")
+        try:
+            return self._runner(refine_payload, self.config)
+        except Exception as exc:
+            _log(log, f"Gemma E2B fallback 후보 보정 실패: {exc}")
+            return ""
+
 
 def gemma_e2b_cached(config: GemmaE2BConfig | None = None) -> bool:
     resolved = config or GemmaE2BConfig()
@@ -195,6 +225,7 @@ def prepare_gemma_e2b(
         "cacheDir": _path_for_js(_gemma_cache_dir(resolved)),
         "allowDownload": False,
         "maxNewTokens": 1,
+        "promptVersion": GEMMA_E2B_PROMPT_VERSION,
     }
     _log(log, "Gemma E2B 모델 준비 중")
     _emit_progress(progress, 0.0)
@@ -225,7 +256,7 @@ def prepare_gemma_e2b(
 
 
 _GEMMA_SESSIONS_LOCK = threading.Lock()
-_GEMMA_SESSIONS: dict[tuple[str, str, str, str, bool], "_GemmaDenoSession"] = {}
+_GEMMA_SESSIONS: dict[tuple[str, str, str, str, bool, int], "_GemmaDenoSession"] = {}
 
 
 def _run_gemma_session(payload: dict[str, Any], config: GemmaE2BConfig) -> str:
@@ -243,13 +274,14 @@ def _get_gemma_session(config: GemmaE2BConfig) -> "_GemmaDenoSession":
         return session
 
 
-def _gemma_session_key(config: GemmaE2BConfig) -> tuple[str, str, str, str, bool]:
+def _gemma_session_key(config: GemmaE2BConfig) -> tuple[str, str, str, str, bool, int]:
     return (
         str(_gemma_deno_path(config)),
         config.model_repo,
         str(_gemma_model_dir(config)),
         str(_gemma_cache_dir(config)),
         bool(config.allow_download),
+        GEMMA_E2B_PROMPT_VERSION,
     )
 
 
@@ -261,7 +293,7 @@ def _gemma_deno_path(config: GemmaE2BConfig) -> Path:
 
 
 class _GemmaDenoSession:
-    def __init__(self, config: GemmaE2BConfig, *, key: tuple[str, str, str, str, bool]) -> None:
+    def __init__(self, config: GemmaE2BConfig, *, key: tuple[str, str, str, str, bool, int]) -> None:
         self.config = config
         self.key = key
         self._lock = threading.Lock()
@@ -667,6 +699,25 @@ def _model_metadata_is_supported(metadata: TrackMetadata, info: dict[str, Any], 
     return _supported_text(metadata.title, source) and _supported_text(metadata.artist, source)
 
 
+def _needs_gemma_refinement(metadata: TrackMetadata, info: dict[str, Any]) -> bool:
+    source_title = squash_spaces(str(info.get("fulltitle") or info.get("title") or info.get("track") or ""))
+    title = squash_spaces(metadata.title)
+    if not source_title or not title:
+        return False
+    if title.casefold() == source_title.casefold():
+        return _looks_like_packaged_video_title(source_title)
+    if text_similarity(title, source_title) >= 0.9 and _looks_like_packaged_video_title(title):
+        return True
+    return False
+
+
+def _looks_like_packaged_video_title(title: str) -> bool:
+    text = title.casefold()
+    if any(marker in title for marker in ("[", "]", "【", "】", "|", "｜", "ㅣ")):
+        return True
+    return any(token in text for token in (" cover", " mv", " official", " live", " ver.", " version"))
+
+
 def _supported_text(value: str, source: str) -> bool:
     value = squash_spaces(value)
     if not value:
@@ -858,6 +909,21 @@ function promptFor(input) {
       },
     ];
   }
+  if (input.mode === "refine") {
+    const base = buildBasePrompt(input);
+    return [
+      ...base,
+      {
+        role: "assistant",
+        content: String(input.badOutput ?? ""),
+      },
+      {
+        role: "user",
+        content:
+          "Your previous JSON was valid, but it may have copied the noisy YouTube upload title or a romanized channel alias instead of the tag metadata. Re-read the same source text. If the video is a cover or performance, identify the performed recording title and the performer/vocal/cover artist. If the VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate titles, creators, performer names, or COVER/MV/live packaging, use the short display title as title. If a performer has both local-script and romanized display names, prefer the local-script display name. If your previous answer is still best, return it unchanged. Return exactly one compact JSON object with schema {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"} and nothing else.",
+      },
+    ];
+  }
   return buildBasePrompt(input);
 }
 
@@ -865,8 +931,20 @@ function buildBasePrompt(input) {
   const prompt = [
     {
       role: "system",
-      content:
-        "Extract track metadata from one noisy YouTube video. Read VIDEO DESCRIPTION line by line and use it together with VIDEO TITLE as the primary evidence. Consider credit-like lines in the description, including title, artist, vocal, chorus, cover, performer, singer, music, composer, lyrics, and arrangement credits, but do not assume every such line is the final artist/title. For cover or performance videos, extract metadata for the performed recording, not for the original source work. Original, music, lyrics, composer, and arrangement credits may describe the source work or production credits; do not use those credits as the track artist when an explicit vocal, chorus, cover, performed by, singer, channel, or uploader performer is present. Prefer explicit performer or artist credits for the track artist when they are present and consistent with the rest of the text; use composer/music credits only if no performer is identified. Prefer a concise display song title. When the video title starts with a localized/display title and later adds bracketed original titles, alternate-language titles, composer/original-artist names, performer names, COVER/MV/live labels, or other packaging text, keep only the display title. Treat channel, uploader, project names, franchise names, album/OST section names, MV labels, and other packaging text as context, not as the track artist or title, unless the source text clearly credits them that way. When a performer name appears in local script with a romanized alias in parentheses or a trailing uppercase alias, prefer the local-script display name unless only the romanized form is present. Do not swap artist and title. Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}. Do not use Markdown, prose, code fences, comments, arrays, or extra keys. Do not omit any key. Do not invent values that are not supported by the provided text.",
+      content: [
+        "Extract tag metadata for one noisy YouTube video.",
+        "Reasoning order: first decide what recording is being uploaded; then decide the tag title; then decide the tag artist.",
+        "Use VIDEO DESCRIPTION line by line together with VIDEO TITLE, VIDEO CHANNEL, VIDEO UPLOADER, and VIDEO CREATOR.",
+        "Credit-like lines may mention title, artist, vocal, chorus, cover, performer, singer, music, composer, lyrics, translation, arrangement, original work, or source work. Use them as evidence, but do not treat every credit line as the final tag artist/title.",
+        "For cover or performance videos, tag the performed recording in this upload, not the original source work. Prefer explicit performer, vocal, chorus, cover, singer, channel, or uploader evidence for artist. Use music/composer/lyrics/original credits as artist only when no performer is identified.",
+        "Prefer a concise display song title. Do not copy the entire VIDEO TITLE when it contains upload packaging.",
+        "If VIDEO TITLE begins with a short display title and then adds bracketed original titles, alternate-language titles, composer/original-artist names, performer names, COVER/MV/live labels, or other packaging text, the short leading display title is usually the tag title.",
+        "Treat channel names, uploader names, project names, franchise names, album/OST section names, MV labels, and upload packaging as context, not as title or artist unless the source text clearly credits them as the recording artist/title.",
+        "When a performer name appears in local script with a romanized alias in parentheses or a trailing uppercase alias, prefer the local-script display name unless only the romanized form is present.",
+        "Do not swap artist and title.",
+        "Output must be exactly one compact JSON object and nothing else. Use this exact schema: {\"title\":\"...\",\"artist\":\"...\",\"reason\":\"...\"}.",
+        "Do not use Markdown, prose, code fences, comments, arrays, or extra keys. Do not omit any key. Do not invent values that are not supported by the provided text.",
+      ].join(" "),
     },
     {
       role: "user",

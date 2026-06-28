@@ -708,6 +708,7 @@ class MainWindow(QMainWindow):
         self.source_details_group: QGroupBox | None = None
         self.source_fields_panel: QWidget | None = None
         self.candidate_preview_group: QGroupBox | None = None
+        self.tag_fields_panel: QWidget | None = None
         self._loading_review = False
         self._loading_review_queue = False
         self._cover_preview_workers: list[CoverPreviewWorker] = []
@@ -1073,25 +1074,42 @@ class MainWindow(QMainWindow):
         provider_layout.addLayout(candidate_action_row)
 
         tag_editor_group = QGroupBox("태그 편집")
-        tag_editor_group.setMinimumHeight(140)
+        tag_editor_group.setMinimumHeight(240)
         tag_editor_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         tag_editor_layout = QVBoxLayout(tag_editor_group)
+        tag_editor_layout.setSpacing(10)
 
-        form = QFormLayout()
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-        labels = {
-            "title": "제목",
-            "artist": "아티스트",
-            "album": "앨범",
-            "album_artist": "앨범 아티스트",
-            "genre": "장르",
-            "release_date": "날짜",
-            "label": "레이블",
-            "isrc": "ISRC",
-            "cover_url": "커버 URL",
-        }
-        for key, label in labels.items():
-            form.addRow(label, self.review_fields[key])
+        self.tag_fields_panel = QWidget()
+        self.tag_fields_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        tag_fields_layout = QGridLayout(self.tag_fields_panel)
+        tag_fields_layout.setContentsMargins(0, 0, 0, 0)
+        tag_fields_layout.setHorizontalSpacing(18)
+        tag_fields_layout.setVerticalSpacing(10)
+
+        def tag_field(label: str, field: QLineEdit) -> QWidget:
+            row = QWidget()
+            row.setMinimumHeight(32)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+            label_widget = QLabel(label)
+            label_widget.setMinimumWidth(86)
+            label_widget.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
+            row_layout.addWidget(label_widget)
+            row_layout.addWidget(field, 1)
+            return row
+
+        tag_fields_layout.addWidget(tag_field("제목", self.review_fields["title"]), 0, 0)
+        tag_fields_layout.addWidget(tag_field("아티스트", self.review_fields["artist"]), 0, 1)
+        tag_fields_layout.addWidget(tag_field("앨범", self.review_fields["album"]), 1, 0)
+        tag_fields_layout.addWidget(tag_field("앨범 아티스트", self.review_fields["album_artist"]), 1, 1)
+        tag_fields_layout.addWidget(tag_field("장르", self.review_fields["genre"]), 2, 0)
+        tag_fields_layout.addWidget(tag_field("날짜", self.review_fields["release_date"]), 2, 1)
+        tag_fields_layout.addWidget(tag_field("레이블", self.review_fields["label"]), 3, 0)
+        tag_fields_layout.addWidget(tag_field("ISRC", self.review_fields["isrc"]), 3, 1)
+        tag_fields_layout.addWidget(tag_field("커버 URL", self.review_fields["cover_url"]), 4, 0, 1, 2)
+        tag_fields_layout.setColumnStretch(0, 1)
+        tag_fields_layout.setColumnStretch(1, 1)
 
         self.source_details_group = QGroupBox("원본 정보")
         self.source_details_group.setCheckable(True)
@@ -1107,20 +1125,27 @@ class MainWindow(QMainWindow):
         self.source_fields_panel.setVisible(False)
         self.source_details_group.toggled.connect(self.source_fields_panel.setVisible)
 
+        side_panel = QWidget()
+        side_panel.setFixedWidth(240)
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(10)
+
         cover_panel = QWidget()
         cover_layout = QVBoxLayout(cover_panel)
         cover_layout.setContentsMargins(0, 0, 0, 0)
         cover_layout.addWidget(self.cover_preview_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         cover_layout.addWidget(self.cover_source_label)
-        cover_layout.addStretch(1)
-        cover_panel.setFixedWidth(200)
+        side_layout.addWidget(cover_panel)
+        side_layout.addWidget(self.source_details_group)
+        side_layout.addStretch(1)
 
         editor_body = QWidget()
         editor_body_layout = QGridLayout(editor_body)
         editor_body_layout.setContentsMargins(0, 0, 0, 0)
-        editor_body_layout.addWidget(self.source_details_group, 0, 0)
-        editor_body_layout.addLayout(form, 1, 0)
-        editor_body_layout.addWidget(cover_panel, 0, 1, 2, 1, Qt.AlignmentFlag.AlignTop)
+        editor_body_layout.setHorizontalSpacing(18)
+        editor_body_layout.addWidget(self.tag_fields_panel, 0, 0, Qt.AlignmentFlag.AlignTop)
+        editor_body_layout.addWidget(side_panel, 0, 1, Qt.AlignmentFlag.AlignTop)
         editor_body_layout.setColumnStretch(0, 1)
         editor_body_layout.setColumnStretch(1, 0)
         tag_editor_layout.addWidget(editor_body)

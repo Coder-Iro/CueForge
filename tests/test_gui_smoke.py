@@ -727,9 +727,22 @@ def test_tag_editor_places_cover_preview_beside_fields(tmp_path) -> None:
         app.processEvents()
 
         title_field = window.review_fields["title"]
+        artist_field = window.review_fields["artist"]
+        album_field = window.review_fields["album"]
+        cover_url_field = window.review_fields["cover_url"]
         title_rect = QRect(title_field.mapTo(window, QPoint(0, 0)), title_field.size())
+        artist_rect = QRect(artist_field.mapTo(window, QPoint(0, 0)), artist_field.size())
+        album_rect = QRect(album_field.mapTo(window, QPoint(0, 0)), album_field.size())
+        cover_url_rect = QRect(cover_url_field.mapTo(window, QPoint(0, 0)), cover_url_field.size())
         cover_rect = QRect(window.cover_preview_label.mapTo(window, QPoint(0, 0)), window.cover_preview_label.size())
 
+        assert window.tag_fields_panel is not None
+        assert artist_rect.left() > title_rect.right()
+        assert abs(artist_rect.top() - title_rect.top()) <= 4
+        assert album_rect.top() > title_rect.bottom()
+        assert cover_url_rect.left() <= title_rect.left() + 4
+        assert cover_url_rect.right() >= artist_rect.right() - 4
+        assert cover_url_rect.top() > album_rect.bottom()
         assert cover_rect.left() > title_rect.right()
         assert cover_rect.top() <= title_rect.top() + 40
     finally:

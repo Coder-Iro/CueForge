@@ -151,3 +151,32 @@ def test_extracts_original_song_from_korean_translation_description() -> None:
     assert hints[0].context == "credits"
     assert hints[0].metadata.title == "ロストアンブレラ"
     assert hints[0].metadata.artist == "稲葉曇"
+
+
+def test_extracts_labeled_title_and_artist_from_description() -> None:
+    hints = extract_credit_hints(
+        {
+            "description": "Title: Midnight Runner\n"
+            "Artist: Neon Driver\n"
+            "Album: Night Drive Clips\n"
+            "Stream: https://example.com"
+        }
+    )
+
+    assert len(hints) == 1
+    assert hints[0].metadata.title == "Midnight Runner"
+    assert hints[0].metadata.artist == "Neon Driver"
+
+
+def test_extracts_japanese_labeled_title_and_artist_from_description() -> None:
+    hints = extract_credit_hints(
+        {
+            "description": "曲名：透明な夜\n"
+            "アーティスト：月灯り\n"
+            "映像：sample"
+        }
+    )
+
+    assert len(hints) == 1
+    assert hints[0].metadata.title == "透明な夜"
+    assert hints[0].metadata.artist == "月灯り"

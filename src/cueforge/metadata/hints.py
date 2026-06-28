@@ -38,6 +38,30 @@ BY_SONG_RE = re.compile(
 )
 
 CREDIT_RE = re.compile(r"^(?P<label>[^:：]{1,24})\s*[:：]\s*(?P<value>.+)$", re.IGNORECASE)
+TITLE_LABELS = {
+    "제목",
+    "곡",
+    "곡명",
+    "노래 제목",
+    "title",
+    "song",
+    "song title",
+    "track",
+    "track title",
+    "曲名",
+    "楽曲名",
+    "タイトル",
+}
+ARTIST_LABELS = {
+    "아티스트",
+    "가수",
+    "artist",
+    "artists",
+    "performer",
+    "performed by",
+    "アーティスト",
+    "歌手",
+}
 COMPOSER_LABELS = {
     "작사/작곡",
     "작곡/작사",
@@ -160,13 +184,11 @@ def extract_credit_hints(info: dict[str, Any]) -> list[MetadataHint]:
     if _is_auto_generated_youtube_description(lines):
         return []
 
-    title = _description_song_title(lines)
-    if not title:
-        return []
-
+    title = ""
+    explicit_artist = ""
     composer = ""
     vocalist = ""
-    for line in lines[1:12]:
+    for line in lines[:12]:
         match = CREDIT_RE.match(line)
         if not match:
             continue
@@ -174,12 +196,20 @@ def extract_credit_hints(info: dict[str, Any]) -> list[MetadataHint]:
         value = _clean_credit_value(match.group("value"))
         if not value:
             continue
+        if label in TITLE_LABELS and not title:
+            title = _strip_parenthetical_alias(value)
+        if label in ARTIST_LABELS and not explicit_artist:
+            explicit_artist = value
         if label in COMPOSER_LABELS and not composer:
             composer = value
         if label in VOCAL_LABELS and not vocalist:
             vocalist = value
 
-    artist = composer or vocalist
+    title = title or _description_song_title(lines)
+    if not title:
+        return []
+
+    artist = explicit_artist or composer or vocalist
     if not artist:
         return []
 

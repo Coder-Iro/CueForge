@@ -9,8 +9,10 @@ from typing import Any
 from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
 
 NOISE_PATTERNS = [
+    re.compile(r"^\s*[【\[\(](?:official\s*)?(?:mv|music\s*video|audio|lyric\s*video|lyrics?|visualizer|pv)[】\]\)]\s*", re.IGNORECASE),
     re.compile(r"\s*\[(?:official\s*)?(?:music\s*)?video\]\s*", re.IGNORECASE),
     re.compile(r"\s*\((?:official\s*)?(?:music\s*)?video\)\s*", re.IGNORECASE),
+    re.compile(r"\s*[【\[\(](?:official\s*)?(?:mv|music\s*video|audio|lyric\s*video|lyrics?|visualizer|pv)[】\]\)]\s*$", re.IGNORECASE),
     re.compile(r"\s*\[(?:official\s*)?audio\]\s*", re.IGNORECASE),
     re.compile(r"\s*\((?:official\s*)?audio\)\s*", re.IGNORECASE),
     re.compile(r"\s*\[(?:lyrics?|lyric video)\]\s*", re.IGNORECASE),

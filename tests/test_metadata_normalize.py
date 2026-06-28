@@ -9,6 +9,13 @@ def test_parse_artist_title_removes_video_noise() -> None:
     assert title == "Track Name"
 
 
+def test_parse_artist_title_removes_leading_mv_badge() -> None:
+    artist, title = parse_artist_title("【MV】Artist Name - Track Name")
+
+    assert artist == "Artist Name"
+    assert title == "Track Name"
+
+
 def test_parse_artist_title_accepts_compact_dash_for_user_uploads() -> None:
     artist, title = parse_artist_title("린-개미관찰")
 

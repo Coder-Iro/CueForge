@@ -345,6 +345,65 @@ def test_worker_reuses_prepared_download_after_review_approval(tmp_path: Path) -
     assert done == [str(final_path)]
 
 
+def test_worker_retags_existing_final_file_after_review_edit(tmp_path: Path) -> None:
+    FakeDownloader.downloads.clear()
+    FakeTagWriter.writes.clear()
+    existing = tmp_path / "Old Artist - Old Title [abc].mp3"
+    existing.write_bytes(b"fake mp3")
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    job.downloaded_path = existing
+    job.final_path = existing
+    job.source_id = "abc"
+    done: list[str] = []
+    worker = JobWorker(
+        job,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        approved_metadata=TrackMetadata(title="New Title", artist="New Artist"),
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+        tag_writer_factory=FakeTagWriter,
+    )
+    worker.job_done.connect(lambda job_id, final_path: done.append(final_path))
+
+    worker.run()
+
+    final_path = tmp_path / "New Artist - New Title [abc].mp3"
+    assert final_path.exists()
+    assert not existing.exists()
+    assert FakeDownloader.downloads == []
+    assert FakeTagWriter.writes == [existing]
+    assert done == [str(final_path)]
+
+
+def test_worker_keeps_existing_final_filename_when_review_edit_does_not_change_name(tmp_path: Path) -> None:
+    FakeDownloader.downloads.clear()
+    FakeTagWriter.writes.clear()
+    existing = tmp_path / "Artist - Title [abc].mp3"
+    existing.write_bytes(b"fake mp3")
+    job = DownloadJob(url="https://youtu.be/abc", output_dir=tmp_path)
+    job.downloaded_path = existing
+    job.final_path = existing
+    job.source_id = "abc"
+    done: list[str] = []
+    worker = JobWorker(
+        job,
+        ytmusic_auth_path=None,
+        ffmpeg_location=None,
+        approved_metadata=TrackMetadata(title="Title", artist="Artist"),
+        downloader_factory=lambda config, progress_callback: FakeDownloader(config, progress_callback),
+        tag_writer_factory=FakeTagWriter,
+    )
+    worker.job_done.connect(lambda job_id, final_path: done.append(final_path))
+
+    worker.run()
+
+    assert existing.exists()
+    assert not (tmp_path / "Artist - Title [abc] (2).mp3").exists()
+    assert FakeDownloader.downloads == []
+    assert FakeTagWriter.writes == [existing]
+    assert done == [str(existing)]
+
+
 def test_worker_leaves_no_final_file_when_tagging_fails(tmp_path: Path) -> None:
     prepared = tmp_path / ".cueforge-temp" / "job" / "abc.mp3"
     prepared.parent.mkdir(parents=True)

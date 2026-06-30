@@ -2321,10 +2321,16 @@ class MainWindow(QMainWindow):
         if not metadata.is_minimum_viable():
             QMessageBox.warning(self, "필수 태그 누락", "제목과 아티스트를 입력한 뒤 승인하세요.")
             return
+        retag_existing = bool(job.final_path and job.final_path.exists())
         job.selected_metadata = metadata
         job.status = DownloadStatus.APPROVED
+        if retag_existing:
+            job.downloaded_path = job.final_path
         self._update_row(job)
-        self._append_log(job.id, "메타데이터 승인됨; 다운로드 시작")
+        if retag_existing:
+            self._append_log(job.id, "메타데이터 승인됨; 완료 파일 태그 갱신 시작")
+        else:
+            self._append_log(job.id, "메타데이터 승인됨; 다운로드 시작")
         self._load_next_review_or_current(job)
         self._download_approved_job(job)
         self._refresh_actions()
@@ -2359,12 +2365,15 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             QMessageBox.warning(self, "이동할 수 없음", "검수 상태를 바꾸기 전에 현재 작업이 끝날 때까지 기다리세요.")
             return
-        if job.status != DownloadStatus.APPROVED:
-            QMessageBox.warning(self, "승인되지 않음", "승인된 트랙만 검수 큐로 다시 이동할 수 있습니다.")
+        if job.status not in {DownloadStatus.APPROVED, DownloadStatus.DONE}:
+            QMessageBox.warning(self, "이동할 수 없음", "승인 또는 완료된 트랙만 검수 큐로 다시 이동할 수 있습니다.")
             return
         job.status = DownloadStatus.REVIEW_REQUIRED
         self._update_row(job)
-        self._append_log(job.id, "승인된 메타데이터를 검수 큐로 다시 이동함")
+        if job.final_path:
+            self._append_log(job.id, "완료된 메타데이터를 검수 큐로 다시 이동함")
+        else:
+            self._append_log(job.id, "승인된 메타데이터를 검수 큐로 다시 이동함")
         self._load_job_for_review(job)
         if self.tabs:
             self.tabs.setCurrentIndex(self.review_tab_index)
@@ -2474,11 +2483,14 @@ class MainWindow(QMainWindow):
         self._loading_review = True
         self.review_state_label.setText(f"{_download_status_label(job.status)}: {platform.display_name}")
         if job.status == DownloadStatus.REVIEW_REQUIRED:
-            self.review_hint_label.setText("필요하면 태그를 수정하세요. 승인하면 이 트랙이 다운로드 준비 상태가 됩니다.")
+            if job.final_path:
+                self.review_hint_label.setText("필요하면 태그를 수정하세요. 승인하면 기존 완료 파일의 태그와 파일명을 갱신합니다.")
+            else:
+                self.review_hint_label.setText("필요하면 태그를 수정하세요. 승인하면 이 트랙이 다운로드 준비 상태가 됩니다.")
         elif job.status == DownloadStatus.APPROVED:
             self.review_hint_label.setText("승인됨. 승인 항목 다운로드를 실행하거나, 추가 수정을 위해 검수 큐로 되돌릴 수 있습니다.")
         elif job.status == DownloadStatus.DONE:
-            self.review_hint_label.setText("이미 다운로드 및 태깅이 완료된 트랙입니다.")
+            self.review_hint_label.setText("이미 다운로드 및 태깅이 완료된 트랙입니다. 추가 수정을 위해 검수 큐로 되돌릴 수 있습니다.")
         elif job.status == DownloadStatus.FAILED:
             self.review_hint_label.setText(job.error or "이 트랙은 실패했습니다. 필요하면 태그를 수정한 뒤 재시도하세요.")
         else:
@@ -3092,8 +3104,12 @@ class MainWindow(QMainWindow):
         can_download = approved_count > 0 and not running
         can_retry = retryable_failed_count > 0 and not running
         can_approve = bool(active_review and active_review.status == DownloadStatus.REVIEW_REQUIRED)
-        can_move_selected_to_review = bool(selected_job and selected_job.status == DownloadStatus.APPROVED and not running)
-        can_move_active_to_review = bool(active_review and active_review.status == DownloadStatus.APPROVED and not running)
+        can_move_selected_to_review = bool(
+            selected_job and selected_job.status in {DownloadStatus.APPROVED, DownloadStatus.DONE} and not running
+        )
+        can_move_active_to_review = bool(
+            active_review and active_review.status in {DownloadStatus.APPROVED, DownloadStatus.DONE} and not running
+        )
         can_analyze_selected = bool(
             selected_job
             and selected_job.status in _ANALYZABLE_STATUSES
@@ -3424,9 +3440,10 @@ def _unlink_if_job_temp_file(path: Path, temp_dir: Path) -> None:
 
 
 def _move_to_final(downloaded: Path, output_dir: Path, metadata: TrackMetadata, *, source_id: str = "") -> Path:
-    target = _unique_path(output_dir / safe_track_filename(metadata, source_id=source_id))
+    target = output_dir / safe_track_filename(metadata, source_id=source_id)
     if downloaded.resolve() == target.resolve():
         return downloaded
+    target = _unique_path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     downloaded.replace(target)
     return target

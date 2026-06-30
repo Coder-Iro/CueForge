@@ -1472,6 +1472,78 @@ def test_loaded_approved_track_can_move_back_to_review_queue(tmp_path) -> None:
         app.processEvents()
 
 
+def test_done_selected_track_can_move_back_to_review_queue(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        final_path = tmp_path / "Approved Artist - Approved Song [abc].mp3"
+        final_path.write_bytes(b"fake mp3")
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.DONE
+        job.progress = 100.0
+        job.final_path = final_path
+        job.selected_metadata = TrackMetadata(title="Approved Song", artist="Approved Artist")
+        window._update_row(job)
+        window.table.selectRow(0)
+        window._refresh_actions()
+
+        assert window.review_selected_button.isEnabled() is True
+
+        window._move_selected_to_review_queue()
+
+        assert job.status == DownloadStatus.REVIEW_REQUIRED
+        assert job.final_path == final_path
+        assert window.table.item(0, 0).text() == "검수 필요"
+        assert window.review_queue_table.rowCount() == 1
+        assert window.review_queue_table.item(0, 0).text() == "Approved Song"
+        assert window.active_review_job_id == job.id
+        assert window.tabs.currentIndex() == window.review_tab_index
+        assert window.approve_button.isEnabled() is True
+        assert "기존 완료 파일" in window.review_hint_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_approving_reopened_done_track_retags_existing_file_without_redownload(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    started = []
+    try:
+        final_path = tmp_path / "Old Artist - Old Song [abc].mp3"
+        final_path.write_bytes(b"fake mp3")
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.DONE
+        job.progress = 100.0
+        job.final_path = final_path
+        job.source_id = "abc"
+        job.selected_metadata = TrackMetadata(title="Old Song", artist="Old Artist")
+        window._load_job_for_review(job)
+        window._move_active_to_review_queue()
+        window.review_fields["title"].setText("New Song")
+        window.review_fields["artist"].setText("New Artist")
+
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, continue_queue=True, worker_mode=None):
+            started.append((job, approved_metadata, analyze_only, continue_queue, worker_mode, job.downloaded_path))
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+
+        window._approve_selected()
+
+        assert job.status == DownloadStatus.APPROVED
+        assert job.selected_metadata.title == "New Song"
+        assert job.selected_metadata.artist == "New Artist"
+        assert started == [(job, job.selected_metadata, False, False, None, final_path)]
+        assert "완료 파일 태그 갱신 시작" in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_queue_processing_auto_downloads_approved_tracks(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))

@@ -120,6 +120,19 @@ class OnboardingAccountAction:
     enabled: bool
 
 
+@dataclass(frozen=True, slots=True)
+class OnboardingDependencyRow:
+    name: str
+    status: str
+    tooltip: str = ""
+
+
+def _coerce_onboarding_dependency_row(row: OnboardingDependencyRow | tuple[str, str]) -> tuple[str, str, str]:
+    if isinstance(row, OnboardingDependencyRow):
+        return row.name, row.status, row.tooltip
+    return row[0], row[1], ""
+
+
 class JobWorker(QThread):
     progress_changed = Signal(str, float, str)
     metadata_ready = Signal(str, object, object, object)
@@ -489,7 +502,7 @@ class OnboardingDialog(QDialog):
         self,
         *,
         parent: QWidget,
-        dependency_rows: list[tuple[str, str]],
+        dependency_rows: list[OnboardingDependencyRow | tuple[str, str]],
         optional_rows: list[tuple[str, str]],
         prepare_steps: list[OnboardingPrepareStep],
         auto_prepare: bool,
@@ -523,9 +536,12 @@ class OnboardingDialog(QDialog):
 
         dependency_group = QGroupBox("번들 의존성")
         dependency_layout = QFormLayout(dependency_group)
-        for name, status in dependency_rows:
+        for row in dependency_rows:
+            name, status, tooltip = _coerce_onboarding_dependency_row(row)
             label = QLabel(status)
             label.setWordWrap(True)
+            if tooltip:
+                label.setToolTip(tooltip)
             dependency_layout.addRow(name, label)
         layout.addWidget(dependency_group)
 
@@ -1926,10 +1942,10 @@ class MainWindow(QMainWindow):
             self.onboarding_dialog = None
         dialog.deleteLater()
 
-    def _onboarding_dependency_rows(self) -> list[tuple[str, str]]:
+    def _onboarding_dependency_rows(self) -> list[OnboardingDependencyRow]:
         return [
-            ("ffmpeg", _dependency_setup_status("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text()))),
-            ("Deno", _dependency_setup_status("deno")),
+            _dependency_setup_row("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text())),
+            _dependency_setup_row("Deno", executable_name="deno"),
         ]
 
     def _onboarding_optional_rows(self) -> list[tuple[str, str]]:
@@ -3717,15 +3733,28 @@ def _create_downloader(config: DownloadConfig, progress_callback: Any) -> YTDLPD
     return YTDLPDownloader(config, progress_callback=progress_callback)
 
 
-def _dependency_setup_status(name: str, *, explicit_path: Path | None = None) -> str:
+def _dependency_setup_row(
+    display_name: str,
+    *,
+    executable_name: str | None = None,
+    explicit_path: Path | None = None,
+) -> OnboardingDependencyRow:
+    name = executable_name or display_name
     status = find_executable(name, explicit_path=explicit_path)
     if status.available and status.source == "bundled":
-        return f"정상 감지됨: {status.path}"
-    if not status.available and getattr(sys, "frozen", False):
-        return "설치가 불완전함: 번들된 실행 파일을 찾을 수 없습니다."
-    if status.available:
-        return f"개발/portable fallback 감지됨 ({status.source}): {status.path}"
-    return "누락됨: 개발/portable 실행이라면 PATH 또는 고급 경로 설정을 확인하세요."
+        text = "정상 감지됨 (번들)"
+    elif not status.available and getattr(sys, "frozen", False):
+        text = "설치가 불완전함: 번들된 실행 파일을 찾을 수 없습니다."
+    elif status.available:
+        text = f"개발/portable fallback 감지됨 ({status.source})"
+    else:
+        text = "누락됨: 개발/portable 실행이라면 PATH 또는 고급 경로 설정을 확인하세요."
+    tooltip = f"{status.source}: {status.path}" if status.path else ""
+    return OnboardingDependencyRow(display_name, text, tooltip)
+
+
+def _dependency_setup_status(name: str, *, explicit_path: Path | None = None) -> str:
+    return _dependency_setup_row(name, explicit_path=explicit_path).status
 
 
 def _temp_output_dir(job: DownloadJob) -> Path:

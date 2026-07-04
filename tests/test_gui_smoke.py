@@ -7,10 +7,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtCore import QItemSelectionModel, QMimeData, QPoint, QRect, QSettings, Qt, QUrl
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import QApplication, QHeaderView, QWidget
+from PySide6.QtWidgets import QApplication, QHeaderView, QLabel, QWidget
 
 from cueforge.download import PlaylistExpansionResult
-from cueforge.gui.main_window import OnboardingDialog, MainWindow, UrlInput, _cover_source_from_url, _dependency_setup_status, _extract_urls, _supported_urls
+from cueforge.gui.main_window import (
+    OnboardingDependencyRow,
+    OnboardingDialog,
+    MainWindow,
+    UrlInput,
+    _cover_source_from_url,
+    _dependency_setup_status,
+    _extract_urls,
+    _supported_urls,
+)
 from cueforge.models import ErrorCategory, DownloadStatus, MetadataCandidate, TrackMetadata
 from cueforge.runtime import DependencyStatus
 
@@ -1599,6 +1608,29 @@ def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None
         app.processEvents()
 
 
+def test_onboarding_dependency_label_keeps_long_path_in_tooltip(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    parent = QWidget()
+    long_path = r"C:\Users\iroun\AppData\Local\Programs\CueForge\bin\ffmpeg\ffmpeg-8.1.1-full_build-shared\bin\ffmpeg.exe"
+    dialog = OnboardingDialog(
+        parent=parent,
+        dependency_rows=[OnboardingDependencyRow("ffmpeg", "정상 감지됨 (번들)", long_path)],
+        optional_rows=[],
+        prepare_steps=[],
+        auto_prepare=False,
+        on_done=lambda: None,
+    )
+    try:
+        labels = [label for label in dialog.findChildren(QLabel) if label.text() == "정상 감지됨 (번들)"]
+        assert labels
+        assert long_path not in labels[0].text()
+        assert labels[0].toolTip() == long_path
+    finally:
+        dialog.close()
+        parent.close()
+        app.processEvents()
+
+
 def test_completed_onboarding_stays_closed_without_required_prepare_steps(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     settings = _test_settings(tmp_path)
@@ -1717,6 +1749,19 @@ def test_onboarding_dependency_status_marks_missing_bundled_tool_as_incomplete(m
     assert "설치가 불완전함" in _dependency_setup_status("ffmpeg")
 
 
+def test_onboarding_dependency_status_hides_detected_path(monkeypatch, tmp_path) -> None:
+    tool = tmp_path / "bin" / "ffmpeg" / "ffmpeg-8.1.1-full_build-shared" / "bin" / "ffmpeg.exe"
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.find_executable",
+        lambda name, explicit_path=None: DependencyStatus(name, tool, "bundled"),
+    )
+
+    status = _dependency_setup_status("ffmpeg")
+
+    assert status == "정상 감지됨 (번들)"
+    assert str(tool) not in status
+
+
 def test_onboarding_dependency_status_treats_path_tool_as_portable_fallback(monkeypatch, tmp_path) -> None:
     tool = tmp_path / "ffmpeg.exe"
     tool.write_text("", encoding="utf-8")
@@ -1727,6 +1772,7 @@ def test_onboarding_dependency_status_treats_path_tool_as_portable_fallback(monk
     monkeypatch.delattr("sys.frozen", raising=False)
 
     assert "개발/portable fallback" in _dependency_setup_status("ffmpeg")
+    assert str(tool) not in _dependency_setup_status("ffmpeg")
 
 
 def test_review_candidate_table_previews_then_applies_selected_candidate(tmp_path) -> None:

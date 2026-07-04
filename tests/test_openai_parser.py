@@ -151,6 +151,7 @@ def test_openai_metadata_suggester_builds_review_candidate_with_bpm(tmp_path) ->
     assert "공식 싱글 또는 앨범 아트워크" in session.calls[0]["json"]["instructions"]
     assert "출처 언어 표기" in session.calls[0]["json"]["instructions"]
     assert "대표 표기 하나만" in session.calls[0]["json"]["instructions"]
+    assert "album과 album_artist를 적극적으로 확인" in session.calls[0]["json"]["instructions"]
     prompt_context = json.loads(session.calls[0]["json"]["input"][0]["content"])
     assert prompt_context["task"]["goal"] == "실제로 들리는 업로드 녹음에 대한 정규화된 음악 태그 메타데이터를 반환하세요."
     assert "YouTube/웹페이지 표시 제목" in prompt_context["task"]["not_goal"]
@@ -161,6 +162,11 @@ def test_openai_metadata_suggester_builds_review_candidate_with_bpm(tmp_path) ->
     assert any("공식 싱글 또는 앨범 아트워크" in rule for rule in prompt_context["field_policy"]["cover_url"])
     assert any("번역, 로마자화, 음역하지 마세요" in rule for rule in prompt_context["field_policy"]["artist"])
     assert any("텐코 시부키 TENKO SHIBUKI" in rule for rule in prompt_context["field_policy"]["artist"])
+    assert any("공식 싱글 발매" in rule for rule in prompt_context["field_policy"]["album_album_artist"])
+    assert any("앨범 수록곡" in rule for rule in prompt_context["field_policy"]["album_album_artist"])
+    assert any('"Noisy video" "Uploader" album' in query for query in prompt_context["suggested_release_search_queries"])
+    assert any('"Noisy video" "Uploader" album artist' in query for query in prompt_context["suggested_release_search_queries"])
+    assert any('"Noisy video" "Uploader" Apple Music' in query for query in prompt_context["suggested_release_search_queries"])
     assert any('"Noisy video" BPM' in query for query in prompt_context["suggested_bpm_search_queries"])
     assert any("파서 가설" in rule for rule in prompt_context["candidate_policy"])
     assert "max_output_tokens" not in session.calls[0]["json"]
@@ -276,6 +282,8 @@ def test_openai_metadata_suggester_includes_bpm_search_queries_in_primary_reques
     assert any('"Cover Song" "Cover Singer" cover BPM' in query for query in prompt_context["suggested_bpm_search_queries"])
     assert prompt_context["source"]["probable_cover_upload"] is True
     assert not any("原曲BPM" in query for query in prompt_context["suggested_bpm_search_queries"])
+    assert any('"Cover Song" "Cover Singer" cover release' in query for query in prompt_context["suggested_release_search_queries"])
+    assert not any("Apple Music" in query for query in prompt_context["suggested_release_search_queries"])
     assert session.calls[0]["json"]["text"]["format"]["name"] == "cueforge_music_metadata"
 
 
@@ -323,12 +331,16 @@ def test_openai_bpm_lookup_prompt_includes_japanese_tempo_queries(tmp_path) -> N
     assert "KeyTube" in request["instructions"]
     prompt_context = json.loads(request["input"][0]["content"])
     queries = prompt_context["suggested_bpm_search_queries"]
+    release_queries = prompt_context["suggested_release_search_queries"]
     assert '"純恋愛のインゴット" "tuki." BPM' in queries
     assert '"純恋愛のインゴット" BPM テンポ' in queries
     assert '"純恋愛のインゴット" 原曲BPM' in queries
     assert '"純恋愛のインゴット" ChordWiki BPM' in queries
     assert '"純恋愛のインゴット" KeyTube BPM' in queries
     assert '"純恋愛のインゴット" Tunebat' in queries
+    assert '"純恋愛のインゴット" "tuki." album' in release_queries
+    assert '"純恋愛のインゴット" "tuki." Apple Music' in release_queries
+    assert '"純恋愛のインゴット" "tuki." 収録アルバム' in release_queries
 
 
 def test_openai_metadata_suggester_stops_reading_stream_at_completed_event(tmp_path) -> None:

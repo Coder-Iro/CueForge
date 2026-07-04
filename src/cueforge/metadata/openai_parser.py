@@ -157,6 +157,7 @@ def _system_instructions() -> str:
         "커버, 라이브, 리믹스, 공연 업로드의 BPM은 원곡이 아니라 업로드된 버전 자체를 설명해야 하며, 원곡 BPM만 확인되면 null을 반환하세요. "
         "원곡 일본어 음원에서는 BPM（テンポ）, テンポ, 原曲BPM 같은 일본어 템포 용어도 검색하세요. "
         "ChordWiki, KeyTube, Chord Rinne, Tunebat, SongBPM, 코드/악보 페이지는 템포 근거로 사용할 수 있습니다. "
+        "원곡/공식 발매 녹음으로 보이면 suggested_release_search_queries를 사용해 album과 album_artist를 적극적으로 확인하세요. "
         "원곡/공식 발매물의 cover_url은 YouTube/플랫폼 썸네일보다 공식 싱글 또는 앨범 아트워크를 우선하세요. "
         "AWS S3 X-Amz-* 링크처럼 만료되거나 서명된 presigned/tokenized/temporary 아트워크 URL은 반환하지 마세요. "
         "원본 제목, 채널, 업로더에 출처 언어 표기가 신뢰 가능하게 나타나면 그 아티스트 표기를 보존하세요. 로마자 크레딧이 함께 있어도 임의로 로마자화하거나 번역하지 마세요. "
@@ -205,6 +206,7 @@ def _prompt_context(info: dict[str, Any], reference: TrackMetadata, candidates: 
             "release_date": str(info.get("release_date") or ""),
             "description": _truncate(str(info.get("description") or ""), 6000),
         },
+        "suggested_release_search_queries": _release_search_queries(info, reference, candidates),
         "suggested_bpm_search_queries": _bpm_search_queries(info, reference, candidates),
         "field_policy": {
             "title": [
@@ -221,8 +223,12 @@ def _prompt_context(info: dict[str, Any], reference: TrackMetadata, candidates: 
                 "한 필드에 여러 표기를 병기하지 마세요. 예: '텐코 시부키 TENKO SHIBUKI'가 아니라 '텐코 시부키', 'Charming Jo (조매력)'가 아니라 source에서 신뢰되는 대표 표기 하나만 반환하세요.",
             ],
             "album_album_artist": [
-                "이 정확한 녹음에 대한 신뢰 가능한 근거가 있을 때만 앨범 또는 컬렉션을 사용하세요.",
-                "단독 커버는 발매/앨범이 식별되지 않으면 album을 null로 두세요.",
+                "원곡/공식 발매 녹음으로 보이면 suggested_release_search_queries로 공식 발매명과 앨범 아티스트를 적극적으로 찾으세요.",
+                "공식 싱글 발매라면 album에는 그 싱글/릴리즈명을 넣고, album_artist에는 공식 발매의 주 아티스트를 넣으세요.",
+                "앨범 수록곡이면 album에는 수록 앨범명을 넣고, album_artist에는 그 앨범의 공식 앨범 아티스트를 넣으세요.",
+                "Apple Music, Spotify, YouTube Music, Bandcamp, SoundCloud, 공식 레이블/아티스트 페이지처럼 발매 단위 메타데이터를 보여주는 출처를 우선하세요.",
+                "이 정확한 녹음에 대한 신뢰 가능한 발매 근거가 있을 때만 앨범 또는 컬렉션을 사용하세요.",
+                "단독 커버, 라이브, 공연 업로드는 공식 발매/앨범이 식별되지 않으면 album과 album_artist를 null로 두세요.",
             ],
             "release_date": [
                 "알려진 경우 이 녹음/버전의 발매일을 사용하세요.",
@@ -268,25 +274,8 @@ def _prompt_context(info: dict[str, Any], reference: TrackMetadata, candidates: 
 
 
 def _bpm_search_queries(info: dict[str, Any], reference: TrackMetadata, candidates: list[MetadataCandidate]) -> list[str]:
-    titles = _dedupe_preserving_order(
-        [
-            reference.title,
-            *[candidate.metadata.title for candidate in candidates[:5]],
-            str(info.get("track") or ""),
-            _searchable_source_title(str(info.get("title") or "")),
-            _searchable_source_title(str(info.get("fulltitle") or "")),
-        ]
-    )
-    artists = _dedupe_preserving_order(
-        [
-            reference.artist,
-            *[candidate.metadata.artist for candidate in candidates[:5]],
-            str(info.get("artist") or ""),
-            str(info.get("creator") or ""),
-            str(info.get("uploader") or ""),
-            str(info.get("channel") or ""),
-        ]
-    )
+    titles = _search_titles(info, reference, candidates)
+    artists = _search_artists(info, reference, candidates)
     is_cover_upload = _probable_cover_upload(info)
     queries: list[str] = []
     for title in titles[:3]:
@@ -309,6 +298,67 @@ def _bpm_search_queries(info: dict[str, Any], reference: TrackMetadata, candidat
         if not is_cover_upload:
             queries.append(f'"{title}" 原曲BPM')
     return _dedupe_preserving_order(queries)[:12]
+
+
+def _release_search_queries(info: dict[str, Any], reference: TrackMetadata, candidates: list[MetadataCandidate]) -> list[str]:
+    titles = _search_titles(info, reference, candidates)
+    artists = _search_artists(info, reference, candidates)
+    is_cover_upload = _probable_cover_upload(info)
+    queries: list[str] = []
+    for title in titles[:3]:
+        if not title:
+            continue
+        if artists:
+            artist = artists[0]
+            if is_cover_upload:
+                queries.extend(
+                    [
+                        f'"{title}" "{artist}" cover release',
+                        f'"{title}" "{artist}" 歌ってみた 配信',
+                    ]
+                )
+            else:
+                queries.extend(
+                    [
+                        f'"{title}" "{artist}" album',
+                        f'"{title}" "{artist}" album artist',
+                        f'"{title}" "{artist}" single',
+                        f'"{title}" "{artist}" Apple Music',
+                        f'"{title}" "{artist}" Spotify',
+                        f'"{title}" "{artist}" YouTube Music',
+                        f'"{title}" "{artist}" 収録アルバム',
+                        f'"{title}" "{artist}" 配信',
+                    ]
+                )
+        elif not is_cover_upload:
+            queries.extend([f'"{title}" album', f'"{title}" single', f'"{title}" Apple Music'])
+    return _dedupe_preserving_order(queries)[:12]
+
+
+def _search_titles(info: dict[str, Any], reference: TrackMetadata, candidates: list[MetadataCandidate]) -> list[str]:
+    titles = _dedupe_preserving_order(
+        [
+            reference.title,
+            *[candidate.metadata.title for candidate in candidates[:5]],
+            str(info.get("track") or ""),
+            _searchable_source_title(str(info.get("title") or "")),
+            _searchable_source_title(str(info.get("fulltitle") or "")),
+        ]
+    )
+    return titles
+
+
+def _search_artists(info: dict[str, Any], reference: TrackMetadata, candidates: list[MetadataCandidate]) -> list[str]:
+    return _dedupe_preserving_order(
+        [
+            reference.artist,
+            *[candidate.metadata.artist for candidate in candidates[:5]],
+            str(info.get("artist") or ""),
+            str(info.get("creator") or ""),
+            str(info.get("uploader") or ""),
+            str(info.get("channel") or ""),
+        ]
+    )
 
 
 def _probable_cover_upload(info: dict[str, Any]) -> bool:

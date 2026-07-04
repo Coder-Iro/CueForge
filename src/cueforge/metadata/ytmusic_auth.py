@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import sys
 import time
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -62,12 +63,16 @@ def ytmusic_oauth_client_candidates(root: Path) -> tuple[Path, ...]:
     env_path = os.environ.get(OAUTH_CLIENT_ENV_VAR)
     if env_path:
         candidates.append(Path(env_path))
-    candidates.extend(
-        (
-            root / "config" / "google_oauth_client.json",
-            root / "google_oauth_client.json",
+    resource_roots = [root, root / "_internal"]
+    if meipass := getattr(sys, "_MEIPASS", ""):
+        resource_roots.append(Path(meipass))
+    for resource_root in resource_roots:
+        candidates.extend(
+            (
+                resource_root / "config" / "google_oauth_client.json",
+                resource_root / "google_oauth_client.json",
+            )
         )
-    )
     return tuple(dict.fromkeys(path.resolve() for path in candidates))
 
 

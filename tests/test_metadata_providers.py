@@ -11,6 +11,7 @@ from cueforge.metadata.ytmusic_auth import (
     build_ytmusic_oauth_authorization_url,
     exchange_ytmusic_oauth_code,
     fetch_ytmusic_oauth_account,
+    find_ytmusic_oauth_client_file,
     google_oauth_account_label,
     load_ytmusic_oauth_client,
     read_ytmusic_oauth_account,
@@ -169,6 +170,18 @@ def test_youtube_music_oauth_client_loader_accepts_google_client_json(tmp_path: 
     assert client.client_secret == "secret"
     assert client.auth_uri == "https://accounts.google.com/o/oauth2/v2/auth"
     assert client.token_uri == "https://oauth2.googleapis.com/token"
+
+
+def test_youtube_music_oauth_client_finder_checks_pyinstaller_internal_config(tmp_path: Path) -> None:
+    root = tmp_path / "CueForge"
+    client_file = root / "_internal" / "config" / "google_oauth_client.json"
+    client_file.parent.mkdir(parents=True)
+    client_file.write_text(
+        '{"installed": {"client_id": "client.apps.googleusercontent.com", "client_secret": "secret"}}',
+        encoding="utf-8",
+    )
+
+    assert find_ytmusic_oauth_client_file(root) == client_file.resolve()
 
 
 def test_youtube_music_oauth_authorization_url_uses_desktop_callback() -> None:

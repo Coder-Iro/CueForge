@@ -130,6 +130,23 @@ def test_extracts_compact_artist_title_from_user_upload_title() -> None:
     assert candidates[0].metadata.release_date == "2014-04-27"
 
 
+def test_extracts_badged_game_title_and_prefers_when_artist_matches_uploader() -> None:
+    candidates = build_hint_candidates(
+        {
+            "title": "【Rotaeno】Raimukun - OLDSCHOOL TENTACLES",
+            "uploader": "Raimukun",
+            "channel": "Raimukun",
+            "upload_date": "20260601",
+            "webpage_url": "https://www.youtube.com/watch?v=wu-xvFB6aRg",
+        }
+    )
+
+    assert candidates[0].provider == "title_artist_title"
+    assert candidates[0].metadata.artist == "Raimukun"
+    assert candidates[0].metadata.title == "OLDSCHOOL TENTACLES"
+    assert candidates[0].raw["prefer_initial_metadata"] is True
+
+
 def test_extracts_cover_song_from_title_tail_and_uses_channel_performer() -> None:
     candidates = build_hint_candidates(
         {

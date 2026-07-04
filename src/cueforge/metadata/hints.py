@@ -200,12 +200,14 @@ def extract_title_hints(info: dict[str, Any]) -> list[MetadataHint]:
     metadata = _parse_title_quoted_song(title) or _parse_artist_dash_title(title, genre="")
     if not metadata or not metadata.is_minimum_viable():
         return []
+    context = "quoted_song" if "「" in title or "『" in title or "“" in title else "artist_title"
     return [
         MetadataHint(
             metadata=metadata,
-            context="quoted_song" if "「" in title or "『" in title or "“" in title else "artist_title",
+            context=context,
             source="title",
             raw_text=title,
+            prefer_initial=context == "artist_title" and _artist_matches_source(metadata.artist, info),
         )
     ]
 
@@ -410,6 +412,28 @@ def _clean_cover_performer(value: str) -> str:
     value = squash_spaces(value)
     value = re.sub(r"\s+-\s+topic$", "", value, flags=re.IGNORECASE)
     return value.strip(" -–—/|｜ㅣ")
+
+
+def _artist_matches_source(artist: str, info: dict[str, Any]) -> bool:
+    artist_norm = _matchable_artist(artist)
+    if not artist_norm:
+        return False
+    source_values: list[str] = []
+    for key in ("artist", "uploader", "channel", "creator"):
+        value = str(info.get(key) or "")
+        if key == "creator":
+            source_values.extend(re.split(r"\s*[,，、]\s*", value))
+        else:
+            source_values.append(value)
+    return any(artist_norm == _matchable_artist(value) for value in source_values)
+
+
+def _matchable_artist(value: str) -> str:
+    value = _clean_cover_performer(value)
+    match = re.match(r"^[【\[\(（][^】\]\)）]{1,40}[】\]\)）]\s*(?P<rest>.+)$", value)
+    if match:
+        value = squash_spaces(match.group("rest"))
+    return value.casefold()
 
 
 def _cover_song_title_from_video_title(title: str, artist: str) -> str:

@@ -395,6 +395,56 @@ def test_openai_metadata_suggester_stops_reading_stream_at_completed_event(tmp_p
     assert candidates[0].metadata.title == "Song"
 
 
+def test_openai_metadata_suggester_logs_empty_stream_reason(tmp_path) -> None:
+    token_path = tmp_path / "openai_oauth.json"
+    write_openai_codex_oauth_token(
+        {
+            "access_token": _jwt(
+                {
+                    "exp": int(time.time()) + 3600,
+                    "https://api.openai.com/auth": {"chatgpt_account_id": "acct_test"},
+                }
+            ),
+            "refresh_token": "refresh-token",
+        },
+        token_path,
+    )
+    logs: list[str] = []
+    session = FakeStreamingSession(
+        [
+            'data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}',
+        ]
+    )
+    suggester = OpenAIMetadataSuggester(OpenAIMetadataConfig(auth_path=token_path), session=session)
+
+    assert suggester.suggest(info={}, reference=TrackMetadata(), candidates=[], log=logs.append) == []
+    assert any("응답 텍스트 없음" in message and "max_output_tokens" in message for message in logs)
+
+
+def test_openai_metadata_suggester_logs_invalid_json_response(tmp_path) -> None:
+    token_path = tmp_path / "openai_oauth.json"
+    write_openai_codex_oauth_token(
+        {
+            "access_token": _jwt(
+                {
+                    "exp": int(time.time()) + 3600,
+                    "https://api.openai.com/auth": {"chatgpt_account_id": "acct_test"},
+                }
+            ),
+            "refresh_token": "refresh-token",
+        },
+        token_path,
+    )
+    logs: list[str] = []
+    suggester = OpenAIMetadataSuggester(
+        OpenAIMetadataConfig(auth_path=token_path, model="gpt-test"),
+        session=FakeSession({"output_text": "not json"}),
+    )
+
+    assert suggester.suggest(info={}, reference=TrackMetadata(), candidates=[], log=logs.append) == []
+    assert any("JSON 파싱 실패" in message for message in logs)
+
+
 def test_openai_metadata_suggester_skips_without_oauth_token(tmp_path) -> None:
     logs: list[str] = []
     suggester = OpenAIMetadataSuggester(OpenAIMetadataConfig(auth_path=tmp_path / "missing.json"))

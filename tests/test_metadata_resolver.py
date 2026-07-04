@@ -329,6 +329,28 @@ def test_youtube_resolver_keeps_compact_title_pattern_as_review_candidate() -> N
     assert resolution.candidates[0].metadata.artist == "린"
 
 
+def test_youtube_resolver_applies_badged_title_candidate_when_artist_matches_uploader() -> None:
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: EmptyYTMusicProvider())
+
+    resolution = resolver.resolve(
+        url="https://www.youtube.com/watch?v=wu-xvFB6aRg",
+        info={
+            "extractor_key": "Youtube",
+            "title": "【Rotaeno】Raimukun - OLDSCHOOL TENTACLES",
+            "uploader": "Raimukun",
+            "channel": "Raimukun",
+            "upload_date": "20260601",
+            "webpage_url": "https://www.youtube.com/watch?v=wu-xvFB6aRg",
+        },
+    )
+
+    assert resolution.metadata.title == "OLDSCHOOL TENTACLES"
+    assert resolution.metadata.artist == "Raimukun"
+    assert resolution.metadata.release_date == "2026-06-01"
+    assert resolution.state == ReviewState.REVIEW_REQUIRED
+    assert resolution.candidates[0].provider == "title_artist_title"
+
+
 def test_youtube_resolver_uses_cover_hint_as_initial_review_metadata() -> None:
     resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: EmptyYTMusicProvider())
 

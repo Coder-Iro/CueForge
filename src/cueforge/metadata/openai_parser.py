@@ -90,7 +90,7 @@ class OpenAIMetadataSuggester:
             parsed = _parse_response_json(response_payload)
             candidate = _candidate_from_payload(parsed, _response_source_urls(response_payload))
             if not candidate:
-                _log(log, "ChatGPT 메타데이터 파서 결과 비어 있음")
+                _log(log, f"ChatGPT 메타데이터 파서 결과 비어 있음: {_empty_response_detail(response_payload, parsed)}")
                 return []
             quota_status = _response_quota_status(response, response_payload)
             if quota_status:
@@ -419,6 +419,62 @@ def _parse_response_json(data: dict[str, Any]) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _empty_response_detail(data: dict[str, Any], parsed: dict[str, Any]) -> str:
+    text = _response_text(data)
+    status = _response_status_detail(data)
+    suffix = f" ({status})" if status else ""
+    if not text:
+        return f"응답 텍스트 없음{suffix}"
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return f"JSON 파싱 실패: {exc.msg}{suffix}"
+    if not isinstance(loaded, dict):
+        return f"JSON 객체 아님: {type(loaded).__name__}{suffix}"
+    if not parsed:
+        return f"JSON 객체 비어 있음{suffix}"
+    keys = ", ".join(sorted(str(key) for key in parsed.keys())[:8])
+    title = _string(parsed.get("title"))
+    artist = _string(parsed.get("artist"))
+    matched = ", ".join(_string_list(parsed.get("matched_fields"))[:8])
+    return f"후보 필드 부족: keys={keys or '-'}, title={title or '-'}, artist={artist or '-'}, matched_fields={matched or '-'}{suffix}"
+
+
+def _response_status_detail(data: dict[str, Any]) -> str:
+    response = data.get("response") if isinstance(data.get("response"), dict) else data
+    parts: list[str] = []
+    event_type = _string(data.get("type"))
+    status = _string(response.get("status")) if isinstance(response, dict) else ""
+    if event_type:
+        parts.append(f"type={event_type}")
+    if status:
+        parts.append(f"status={status}")
+    if isinstance(response, dict):
+        incomplete = response.get("incomplete_details")
+        if isinstance(incomplete, dict):
+            detail = _compact_json(incomplete)
+            if detail:
+                parts.append(f"incomplete={detail}")
+        error = response.get("error") or data.get("error")
+    else:
+        error = data.get("error")
+    if isinstance(error, dict):
+        detail = _compact_json(error)
+        if detail:
+            parts.append(f"error={detail}")
+    elif error:
+        parts.append(f"error={_string(error)}")
+    return ", ".join(parts)
+
+
+def _compact_json(value: Any) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except TypeError:
+        text = str(value)
+    return text[:240]
 
 
 def _response_payload(response: Any) -> dict[str, Any]:

@@ -31,6 +31,13 @@ def test_parse_artist_title_keeps_generic_vocaloid_prefix_out_of_artist() -> Non
     assert title == "개미관찰"
 
 
+def test_parse_artist_title_strips_leading_context_badge_from_artist() -> None:
+    artist, title = parse_artist_title("【Rotaeno】Raimukun - OLDSCHOOL TENTACLES")
+
+    assert artist == "Raimukun"
+    assert title == "OLDSCHOOL TENTACLES"
+
+
 def test_safe_fallback_prefers_track_fields() -> None:
     metadata = build_safe_fallback(
         {

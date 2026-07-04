@@ -72,11 +72,20 @@ def is_generic_artist_label(value: str) -> bool:
 
 
 def _validated_parsed_artist_title(artist: str, title: str) -> tuple[str, str]:
-    parsed_artist = clean_artist(artist)
+    parsed_artist = _strip_leading_context_badge(clean_artist(artist))
     parsed_title = clean_title(title)
     if is_generic_artist_label(parsed_artist):
         return "", parsed_title
     return parsed_artist, parsed_title
+
+
+def _strip_leading_context_badge(value: str) -> str:
+    value = squash_spaces(value)
+    match = re.match(r"^[【\[\(（][^】\]\)）]{1,40}[】\]\)）]\s*(?P<rest>.+)$", value)
+    if not match:
+        return value
+    rest = squash_spaces(match.group("rest"))
+    return rest or value
 
 
 def _clean_date(value: str) -> str:

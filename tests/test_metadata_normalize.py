@@ -1,4 +1,5 @@
 from cueforge.metadata import build_safe_fallback, merge_metadata, parse_artist_title
+from cueforge.metadata.normalize import sanitize_cover_url
 from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
 
 
@@ -101,11 +102,25 @@ def test_safe_fallback_does_not_treat_official_as_artist_name_noise() -> None:
     assert metadata.artist == "Official髭男dism"
 
 
+def test_sanitize_cover_url_trims_copy_paste_punctuation_without_rejecting_signed_urls() -> None:
+    signed_url = "https://example.com/cover.jpg?X-Amz-Signature=deadbeef"
+
+    assert sanitize_cover_url(signed_url) == signed_url
+    assert sanitize_cover_url("https://example.com/cover.jpg:") == "https://example.com/cover.jpg"
+
+
+def test_clean_metadata_keeps_cached_cover_path_as_tagging_source() -> None:
+    metadata = TrackMetadata(cover_path=" C:/cache/cover.jpg ", cover_source="cached")
+
+    assert metadata.normalized().cover_path == "C:/cache/cover.jpg"
+    assert metadata.normalized().cover_source == "cached"
+
+
 def test_merge_metadata_user_values_win() -> None:
     fallback = TrackMetadata(title="Video Title", artist="Uploader")
     youtube = TrackMetadata(title="YT Title", artist="YT Artist", album="YT Album")
-    musicbrainz = MetadataCandidate(
-        provider="musicbrainz",
+    external = MetadataCandidate(
+        provider="external",
         score=0.9,
         matched_fields=("title", "artist"),
         metadata=TrackMetadata(title="MB Title", artist="MB Artist", genre="House"),
@@ -115,7 +130,7 @@ def test_merge_metadata_user_values_win() -> None:
     resolved, state = merge_metadata(
         user=user,
         youtube=youtube,
-        candidates=[musicbrainz],
+        candidates=[external],
         fallback=fallback,
     )
 
@@ -130,7 +145,7 @@ def test_low_confidence_candidate_requires_review() -> None:
     resolved, state = merge_metadata(
         candidates=[
             MetadataCandidate(
-                provider="musicbrainz",
+                provider="external",
                 score=0.7,
                 matched_fields=("title",),
                 metadata=TrackMetadata(title="A", artist="B"),

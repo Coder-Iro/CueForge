@@ -18,10 +18,10 @@ def test_job_store_persists_jobs_candidate_summaries_and_sanitized_events(tmp_pa
     job.source_channel = "Original Channel"
     job.candidates = [
         MetadataCandidate(
-            provider="musicbrainz",
+            provider="ytmusic",
             score=0.91,
             matched_fields=("title", "artist"),
-            metadata=TrackMetadata(title="Song", artist="Artist", album="Album"),
+            metadata=TrackMetadata(title="Song", artist="Artist", album="Album", bpm=128),
             raw={"ignored": "__Secure-3PAPISID=secret"},
         )
     ]
@@ -37,8 +37,9 @@ def test_job_store_persists_jobs_candidate_summaries_and_sanitized_events(tmp_pa
     assert loaded[0].source_id == "abc123"
     assert loaded[0].source_title == "Original Video Title"
     assert loaded[0].source_channel == "Original Channel"
-    assert loaded[0].candidates[0].provider == "musicbrainz"
+    assert loaded[0].candidates[0].provider == "ytmusic"
     assert loaded[0].candidates[0].metadata.album == "Album"
+    assert loaded[0].candidates[0].metadata.bpm == 128
     assert "secret" not in events[0].message
     assert "<redacted>" in events[0].message
 

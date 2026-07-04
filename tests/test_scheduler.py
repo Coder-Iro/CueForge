@@ -100,3 +100,26 @@ def test_scheduler_prioritizes_manual_review_downloads(tmp_path: Path) -> None:
 
     assert started[-1] == (manual.id, "download")
     app.processEvents()
+
+
+def test_scheduler_removes_queued_download(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    started: list[tuple[str, str]] = []
+
+    def factory(job: DownloadJob, stage: str, tag_semaphore: threading.Semaphore) -> FakeWorker:
+        return FakeWorker(job, stage, started)
+
+    scheduler = JobScheduler(worker_factory=factory, limits=SchedulerLimits(metadata=1, download=1, tagging=1))
+    jobs = [DownloadJob(url=f"https://youtu.be/{index}", output_dir=tmp_path) for index in range(3)]
+
+    scheduler.enqueue_downloads(jobs)
+
+    assert scheduler.active_count("download") == 1
+    assert scheduler.queued_count("download") == 2
+    assert scheduler.remove_queued_job(jobs[1].id, stage="download") is True
+    assert scheduler.queued_count("download") == 1
+
+    scheduler._worker_finished(jobs[0].id)
+
+    assert started[-1] == (jobs[2].id, "download")
+    app.processEvents()

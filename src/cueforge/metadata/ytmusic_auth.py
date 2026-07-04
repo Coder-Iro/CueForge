@@ -8,7 +8,6 @@ import secrets
 import time
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -17,8 +16,6 @@ import webbrowser
 from platformdirs import user_data_path
 import requests
 
-YTMUSIC_ORIGIN = "https://music.youtube.com"
-YTMUSIC_COOKIE_URL = f"{YTMUSIC_ORIGIN}/"
 OAUTH_CLIENT_ENV_VAR = "CUEFORGE_GOOGLE_OAUTH_CLIENT"
 OAUTH_ACCOUNT_FILE_NAME = "ytmusic_oauth_account.json"
 OAUTH_TOKEN_FILE_NAME = "ytmusic_oauth_token.json"
@@ -29,11 +26,6 @@ GOOGLE_OAUTH_USERINFO_URI = "https://openidconnect.googleapis.com/v1/userinfo"
 OAUTH_LOCAL_CALLBACK_PATH = "/oauth/callback"
 OAUTH_LOCAL_TIMEOUT_SECONDS = 180
 YTMUSIC_TOKEN_KEYS = ("access_token", "refresh_token", "expires_at", "expires_in", "scope", "token_type")
-
-
-@dataclass(slots=True, frozen=True)
-class YTMusicCookieAuthConfig:
-    cookie_file: Path
 
 
 @dataclass(slots=True, frozen=True)
@@ -53,22 +45,8 @@ class YTMusicOAuthAccount:
     sub: str = ""
 
 
-class YTMusicCookieAuthError(RuntimeError):
-    """Raised when a cookie file cannot produce a ytmusicapi auth payload."""
-
-
 class YTMusicOAuthError(RuntimeError):
     """Raised when OAuth setup cannot continue."""
-
-
-def build_ytmusic_cookie_auth(config: YTMusicCookieAuthConfig) -> dict[str, str]:
-    """Build a ytmusicapi browser-auth dictionary from a Netscape cookies.txt file."""
-
-    try:
-        cookie_header = _cookie_header_from_cookie_file(config.cookie_file)
-    except Exception as exc:
-        raise YTMusicCookieAuthError(f"쿠키 파일을 읽을 수 없음: {exc}") from exc
-    return _auth_from_cookie_header(cookie_header)
 
 
 def default_ytmusic_oauth_token_path() -> Path:
@@ -344,43 +322,3 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         return
-
-
-def _auth_from_cookie_header(cookie_header: str) -> dict[str, str]:
-    if not cookie_header:
-        raise YTMusicCookieAuthError("music.youtube.com 쿠키가 없음")
-    if not _has_secure_3papisid(cookie_header):
-        raise YTMusicCookieAuthError("__Secure-3PAPISID 쿠키가 없음")
-    # ytmusicapi recalculates SAPISIDHASH on each request when this marker is present.
-    return {
-        "Accept": "*/*",
-        "Authorization": "SAPISIDHASH 0_0",
-        "Content-Type": "application/json",
-        "Cookie": cookie_header,
-        "X-Goog-AuthUser": "0",
-        "origin": YTMUSIC_ORIGIN,
-        "x-origin": YTMUSIC_ORIGIN,
-    }
-
-
-def _cookie_header_from_cookie_file(path: Path) -> str:
-    from yt_dlp.cookies import YoutubeDLCookieJar
-
-    jar = YoutubeDLCookieJar(path)
-    jar.load(ignore_discard=True, ignore_expires=True)
-    return _cookie_header_for_ytmusic(jar)
-
-
-def _cookie_header_for_ytmusic(cookie_jar: Any) -> str:
-    if hasattr(cookie_jar, "get_cookie_header"):
-        return str(cookie_jar.get_cookie_header(YTMUSIC_COOKIE_URL) or "")
-    raise TypeError("cookie jar does not support get_cookie_header")
-
-
-def _has_secure_3papisid(cookie_header: str) -> bool:
-    cookie = SimpleCookie()
-    try:
-        cookie.load(cookie_header.replace('"', ""))
-    except Exception:
-        return "__Secure-3PAPISID=" in cookie_header
-    return "__Secure-3PAPISID" in cookie

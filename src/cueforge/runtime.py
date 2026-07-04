@@ -25,7 +25,6 @@ class DependencyStatus:
 DEPENDENCY_COMMANDS = {
     "ffmpeg": ("-version",),
     "ffprobe": ("-version",),
-    "fpcalc": ("-version",),
     "deno": ("--version",),
 }
 

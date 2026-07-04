@@ -11,7 +11,7 @@ def classify_error(error: object) -> ErrorCategory:
         return ErrorCategory.UNKNOWN
     if "unsupported" in message or "not a valid url" in message or "지원하지" in message:
         return ErrorCategory.UNSUPPORTED_URL
-    if "ffmpeg" in message or "fpcalc" in message or "executable" in message and "not found" in message:
+    if "ffmpeg" in message or "executable" in message and "not found" in message:
         return ErrorCategory.MISSING_DEPENDENCY
     if "sign in" in message or "login" in message or "private video" in message or "auth" in message:
         return ErrorCategory.AUTH_REQUIRED
@@ -40,13 +40,13 @@ def action_hint(category: ErrorCategory | str) -> str:
     value = ErrorCategory(category) if isinstance(category, str) and category in ErrorCategory._value2member_map_ else category
     return {
         ErrorCategory.UNSUPPORTED_URL: "지원하는 YouTube, YouTube Music, SoundCloud URL인지 확인하세요.",
-        ErrorCategory.MISSING_DEPENDENCY: "설정에서 ffmpeg/fpcalc 경로를 확인하거나 초기 설정을 다시 열어 주세요.",
-        ErrorCategory.AUTH_REQUIRED: "계정 접근이 필요하면 설정에서 Google 계정을 연결하거나 쿠키 파일/YTMusic 인증 JSON을 지정한 뒤 재시도하세요.",
-        ErrorCategory.COOKIE_COPY_FAILED: "브라우저 쿠키 직접 읽기는 지원하지 않습니다. Netscape 형식 쿠키 파일을 지정한 뒤 재시도하세요.",
+        ErrorCategory.MISSING_DEPENDENCY: "설정에서 ffmpeg 경로를 확인하거나 초기 설정을 다시 열어 주세요.",
+        ErrorCategory.AUTH_REQUIRED: "계정 접근이 필요하면 설정에서 Google 계정을 연결한 뒤 재시도하세요.",
+        ErrorCategory.COOKIE_COPY_FAILED: "브라우저 쿠키 직접 읽기와 쿠키 파일 인증은 더 이상 지원하지 않습니다. 설정에서 Google 계정을 연결하세요.",
         ErrorCategory.NETWORK_TIMEOUT: "네트워크 상태를 확인하고 잠시 뒤 재시도하세요.",
         ErrorCategory.RATE_LIMITED: "외부 서비스 제한에 걸렸습니다. 잠시 기다린 뒤 재시도하세요.",
         ErrorCategory.VIDEO_UNAVAILABLE: "YouTube에서 더 이상 제공하지 않는 영상입니다. 큐에서 삭제하거나 다른 URL을 사용하세요.",
-        ErrorCategory.DOWNLOAD_FAILED: "URL 접근 가능 여부와 yt-dlp/쿠키 파일 설정을 확인하세요.",
+        ErrorCategory.DOWNLOAD_FAILED: "URL 접근 가능 여부와 yt-dlp 상태를 확인하세요.",
         ErrorCategory.TAG_FAILED: "커버 URL과 파일 권한을 확인한 뒤 재시도하세요.",
         ErrorCategory.FILE_CONFLICT: "출력 폴더 권한, 파일명 충돌, 열려 있는 파일을 확인하세요.",
         ErrorCategory.UNKNOWN: "진단 정보를 복사해 원인 메시지와 함께 확인하세요.",

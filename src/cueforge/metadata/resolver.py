@@ -6,12 +6,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from cueforge.metadata.cover_art import CoverArtProvider
 from cueforge.metadata.hints import build_hint_candidates
-from cueforge.metadata.normalize import build_safe_fallback, merge_metadata, prefer_creator_artist_over_official_metadata
-from cueforge.metadata.soundcloud import as_reference_candidate, build_soundcloud_native_candidate
+from cueforge.metadata.normalize import (
+    build_safe_fallback,
+    merge_metadata,
+    prefer_creator_artist_over_official_metadata,
+)
+from cueforge.metadata.soundcloud import build_soundcloud_native_candidate
 from cueforge.metadata.ytmusic import YouTubeMusicProvider
-from cueforge.metadata.musicbrainz import MusicBrainzProvider
 from cueforge.models import MetadataCandidate, ReviewState, TrackMetadata
 from cueforge.sources import SourcePlatform, detect_source_platform, trust_policy_for
 
@@ -25,9 +27,6 @@ class MetadataResolution:
 
 
 YTMusicProviderFactory = Callable[..., Any]
-MusicBrainzProviderFactory = Callable[[], Any]
-CoverArtProviderFactory = Callable[[], Any]
-SemanticRankerFactory = Callable[[], Any]
 GenerativeSuggesterFactory = Callable[[], Any]
 
 
@@ -36,15 +35,9 @@ class MetadataResolver:
         self,
         *,
         ytmusic_provider_factory: YTMusicProviderFactory | None = None,
-        musicbrainz_provider_factory: MusicBrainzProviderFactory | None = None,
-        cover_art_provider_factory: CoverArtProviderFactory | None = None,
-        semantic_ranker_factory: SemanticRankerFactory | None = None,
         generative_suggester_factory: GenerativeSuggesterFactory | None = None,
     ) -> None:
         self._ytmusic_provider_factory = ytmusic_provider_factory or YouTubeMusicProvider
-        self._musicbrainz_provider_factory = musicbrainz_provider_factory or MusicBrainzProvider
-        self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
-        self._semantic_ranker_factory = semantic_ranker_factory
         self._generative_suggester_factory = generative_suggester_factory
 
     def resolve(
@@ -52,8 +45,6 @@ class MetadataResolver:
         *,
         url: str,
         info: dict[str, Any],
-        ytmusic_auth_path: Path | None = None,
-        ytmusic_cookie_file: Path | None = None,
         ytmusic_oauth_client_file: Path | None = None,
         ytmusic_oauth_token_file: Path | None = None,
         log: Callable[[str], None] | None = None,
@@ -69,8 +60,6 @@ class MetadataResolver:
         if policy.use_youtube_music:
             _log(log, "YouTube Music 메타데이터 조회 준비")
             youtube = self._new_ytmusic_provider(
-                auth_path=ytmusic_auth_path,
-                cookie_file=ytmusic_cookie_file,
                 oauth_client_file=ytmusic_oauth_client_file,
                 oauth_token_file=ytmusic_oauth_token_file,
                 log=log,
@@ -81,14 +70,8 @@ class MetadataResolver:
             else:
                 _log(log, "YouTube Music 메타데이터 비어 있음")
         reference = youtube.with_defaults_from(fallback).normalized()
-        hint_candidates = build_hint_candidates(info)
-        candidates = self._enriched_hint_candidates(hint_candidates, info, log=log)
-        reference_candidates = self._musicbrainz_candidates(reference, info, log=log)
-        if hint_candidates:
-            reference_candidates = [as_reference_candidate(candidate) for candidate in reference_candidates]
-        candidates.extend(reference_candidates)
+        candidates = build_hint_candidates(info)
         candidates.extend(self._generative_suggestions(reference, info, candidates, log=log))
-        candidates = self._semantic_ranked_candidates(reference, info, candidates, log=log)
         metadata, state = merge_metadata(youtube=reference, candidates=candidates, fallback=fallback)
         metadata = self.enrich_cover_art(metadata, platform=platform, fallback_cover_url=reference.cover_url or fallback.cover_url, log=log)
         return MetadataResolution(metadata=metadata, state=state, candidates=candidates, platform=platform)
@@ -96,22 +79,18 @@ class MetadataResolver:
     def _new_ytmusic_provider(
         self,
         *,
-        auth_path: Path | None,
-        cookie_file: Path | None,
         oauth_client_file: Path | None,
         oauth_token_file: Path | None,
         log: Callable[[str], None] | None,
     ) -> Any:
         try:
             return self._ytmusic_provider_factory(
-                auth_path=auth_path,
-                cookie_file=cookie_file,
                 oauth_client_file=oauth_client_file,
                 oauth_token_file=oauth_token_file,
                 log=log,
             )
         except TypeError:
-            return self._ytmusic_provider_factory(auth_path)
+            return self._ytmusic_provider_factory()
 
     def _resolve_soundcloud(
         self,
@@ -125,14 +104,10 @@ class MetadataResolver:
         metadata = native_candidate.metadata.with_defaults_from(fallback)
         metadata = self.enrich_cover_art(metadata, platform=SourcePlatform.SOUNDCLOUD, fallback_cover_url=fallback.cover_url, log=log)
         state = ReviewState.AUTO_APPROVED if metadata.is_minimum_viable() else ReviewState.REVIEW_REQUIRED
-        reference_candidates = [
-            as_reference_candidate(candidate)
-            for candidate in self._musicbrainz_candidates(metadata, info, log=log)
-        ]
         return MetadataResolution(
             metadata=metadata,
             state=state,
-            candidates=[native_candidate, *reference_candidates],
+            candidates=[native_candidate],
             platform=SourcePlatform.SOUNDCLOUD,
         )
 
@@ -148,15 +123,9 @@ class MetadataResolver:
             _log(log, "cover art: SoundCloud native artwork")
             return replace(metadata, cover_source=metadata.cover_source or "SoundCloud native")
 
-        if metadata.musicbrainz_release_id:
-            try:
-                cover_url = self._cover_art_provider_factory().lookup(metadata.musicbrainz_release_id)
-            except Exception as exc:
-                _log(log, f"cover art lookup skipped: {exc}")
-            else:
-                if cover_url:
-                    _log(log, "cover art: Cover Art Archive 500px")
-                    return replace(metadata, cover_url=cover_url, cover_source="Cover Art Archive")
+        if metadata.cover_url and metadata.cover_source != "platform thumbnail":
+            _log(log, "cover art: metadata artwork")
+            return replace(metadata, cover_source=metadata.cover_source or "metadata artwork")
 
         fallback = fallback_cover_url or metadata.cover_url
         if fallback:
@@ -165,65 +134,6 @@ class MetadataResolver:
 
         _log(log, "cover art unavailable")
         return metadata
-
-    def _musicbrainz_candidates(
-        self,
-        reference: TrackMetadata,
-        info: dict[str, Any],
-        *,
-        log: Callable[[str], None] | None,
-    ) -> list[MetadataCandidate]:
-        try:
-            return self._musicbrainz_provider_factory().lookup(reference, duration_ms=_duration_ms(info))
-        except Exception as exc:
-            if log:
-                log(f"MusicBrainz lookup skipped: {exc}")
-            return []
-
-    def _enriched_hint_candidates(
-        self,
-        hints: list[MetadataCandidate],
-        info: dict[str, Any],
-        *,
-        log: Callable[[str], None] | None,
-    ) -> list[MetadataCandidate]:
-        if not hints:
-            return []
-        candidates: list[MetadataCandidate] = []
-        for hint in hints:
-            enriched = self._musicbrainz_candidates(hint.metadata, info, log=log)
-            if enriched:
-                for candidate in enriched:
-                    metadata = candidate.metadata.with_defaults_from(hint.metadata).normalized()
-                    candidates.append(
-                        MetadataCandidate(
-                            provider=f"{candidate.provider}_from_{hint.provider}",
-                            metadata=metadata,
-                            score=candidate.score,
-                            matched_fields=tuple(dict.fromkeys((*hint.matched_fields, *candidate.matched_fields))),
-                            raw={
-                                **candidate.raw,
-                                "hint": hint.raw,
-                                "hint_metadata": hint.metadata,
-                            },
-                        )
-                    )
-            else:
-                candidates.append(hint)
-        return candidates
-
-    def _semantic_ranked_candidates(
-        self,
-        reference: TrackMetadata,
-        info: dict[str, Any],
-        candidates: list[MetadataCandidate],
-        *,
-        log: Callable[[str], None] | None,
-    ) -> list[MetadataCandidate]:
-        if not candidates or not self._semantic_ranker_factory:
-            return candidates
-        ranker = self._semantic_ranker_factory()
-        return ranker.rerank(info=info, reference=reference, candidates=candidates, log=log)
 
     def _generative_suggestions(
         self,
@@ -237,14 +147,6 @@ class MetadataResolver:
             return []
         suggester = self._generative_suggester_factory()
         return suggester.suggest(info=info, reference=reference, candidates=candidates, log=log)
-
-
-def _duration_ms(info: dict[str, Any]) -> int | None:
-    duration = info.get("duration")
-    try:
-        return int(float(duration) * 1000)
-    except (TypeError, ValueError):
-        return None
 
 
 def _log(log: Callable[[str], None] | None, message: str) -> None:

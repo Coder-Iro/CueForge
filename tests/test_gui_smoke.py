@@ -1,14 +1,16 @@
 import os
+import re
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QItemSelectionModel, QPoint, QRect, QSettings, Qt
+from PySide6.QtCore import QItemSelectionModel, QMimeData, QPoint, QRect, QSettings, Qt, QUrl
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication, QHeaderView, QWidget
 
 from cueforge.download import PlaylistExpansionResult
-from cueforge.gui.main_window import OnboardingDialog, MainWindow, _cover_source_from_url, _dependency_setup_status, _extract_urls, _supported_urls
+from cueforge.gui.main_window import OnboardingDialog, MainWindow, UrlInput, _cover_source_from_url, _dependency_setup_status, _extract_urls, _supported_urls
 from cueforge.models import ErrorCategory, DownloadStatus, MetadataCandidate, TrackMetadata
 from cueforge.runtime import DependencyStatus
 
@@ -53,6 +55,8 @@ def test_main_window_can_queue_url(tmp_path) -> None:
         assert job.status == DownloadStatus.PENDING
         assert window.table.item(0, 2).text() == "YouTube Music"
         assert window.table.item(0, 3).text() == "https://music.youtube.com/watch?v=abc"
+        assert window.table.horizontalHeaderItem(6).text() == "BPM"
+        assert window.table.item(0, 6).text() == ""
     finally:
         window.close()
         app.processEvents()
@@ -68,13 +72,41 @@ def test_queue_url_column_can_be_resized_narrower(tmp_path) -> None:
 
         header = window.table.horizontalHeader()
         assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Interactive
-        assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Stretch
+        assert header.sectionResizeMode(4) == QHeaderView.ResizeMode.Stretch
+        assert header.sectionResizeMode(5) == QHeaderView.ResizeMode.Stretch
+        assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Interactive
         assert header.sectionSize(3) >= 320
 
         header.resizeSection(3, 80)
         app.processEvents()
 
         assert header.sectionSize(3) == 80
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_queue_table_shows_bpm_instead_of_output_path(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.selected_metadata = TrackMetadata(title="Song", artist="Artist", bpm=128)
+        window._update_row(job)
+
+        assert [window.table.horizontalHeaderItem(index).text() for index in range(window.table.columnCount())] == [
+            "상태",
+            "진행률",
+            "소스",
+            "URL",
+            "제목",
+            "아티스트",
+            "BPM",
+        ]
+        assert window.table.item(0, 6).text() == "128"
+        assert str(job.output_dir) not in [window.table.item(0, index).text() for index in range(window.table.columnCount())]
     finally:
         window.close()
         app.processEvents()
@@ -102,6 +134,74 @@ def test_main_window_can_queue_multiple_pasted_urls(tmp_path) -> None:
         assert window.table.item(2, 3).text() == "https://soundcloud.com/artist/track"
         assert window.table.item(3, 3).text() == "https://music.youtube.com/watch?v=abc"
         assert window.queue_status_label.text().startswith("4개 트랙")
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_url_input_paste_appends_urls_on_separate_lines() -> None:
+    widget = UrlInput()
+    first = QMimeData()
+    first.setText("https://youtu.be/first")
+    second = QMimeData()
+    second.setText("https://youtu.be/second")
+
+    widget.insertFromMimeData(first)
+    widget.insertFromMimeData(second)
+
+    assert widget.toPlainText() == "https://youtu.be/first\nhttps://youtu.be/second\n"
+
+
+def test_url_input_paste_splits_multiple_urls_onto_lines() -> None:
+    widget = UrlInput()
+    mime = QMimeData()
+    mime.setText("youtu.be/first, music.youtube.com/watch?v=second.")
+
+    widget.insertFromMimeData(mime)
+
+    assert widget.toPlainText() == "https://youtu.be/first\nhttps://music.youtube.com/watch?v=second\n"
+
+
+def test_url_input_accepts_dragged_url_mime_list_on_separate_lines() -> None:
+    widget = UrlInput()
+    mime = QMimeData()
+    mime.setUrls([QUrl("https://youtu.be/first"), QUrl("https://soundcloud.com/artist/track")])
+
+    widget.insertFromMimeData(mime)
+
+    assert widget.toPlainText() == "https://youtu.be/first\nhttps://soundcloud.com/artist/track\n"
+
+
+def test_main_window_auto_starts_processing_after_url_add_in_desktop_mode(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    started: list[bool] = []
+    try:
+        monkeypatch.setattr("cueforge.gui.main_window.QApplication.platformName", lambda: "windows")
+        monkeypatch.setattr(window, "_start_pipeline", lambda: started.append(True))
+
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+
+        assert started == [True]
+        assert "자동 처리 시작" in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_url_input_enter_submits_without_inserting_newline(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+
+        event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier)
+        window.url_input.keyPressEvent(event)
+
+        assert window.table.rowCount() == 1
+        assert window.table.item(0, 3).text() == "https://youtu.be/abc"
+        assert window.url_input.text() == ""
     finally:
         window.close()
         app.processEvents()
@@ -228,7 +328,7 @@ def test_main_window_liked_music_playlist_failure_mentions_account_auth(tmp_path
         assert playlist_job.id in window.jobs
         assert "좋아요 표시한 음악" in playlist_job.error
         assert "Google 계정" in playlist_job.error
-        assert "cookies.txt" in playlist_job.error
+        assert "cookies.txt" not in playlist_job.error
     finally:
         window.close()
         app.processEvents()
@@ -641,6 +741,19 @@ def test_main_window_stops_processing_after_youtube_rate_limit(tmp_path) -> None
         app.processEvents()
 
 
+def test_main_window_log_lines_include_timestamps(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        job, _row = window._insert_job("https://music.youtube.com/watch?v=abc", output_dir=tmp_path)
+
+        first_line = window.log.toPlainText().splitlines()[0]
+        assert re.match(r"^\[\d{2}:\d{2}:\d{2}\] \[" + re.escape(job.id[:8]) + r"\] 큐에 추가됨$", first_line)
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
@@ -651,10 +764,14 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
 
         assert window.add_url_button is not None
         assert window.start_queue_button is not None
+        assert window.start_queue_button.isHidden() is True
         assert window.download_approved_button is not None
+        assert window.download_approved_button.isHidden() is True
         assert window.review_selected_button is not None
         assert window.analyze_selected_button is not None
+        assert window.analyze_selected_button.isHidden() is True
         assert window.download_selected_button is not None
+        assert window.download_selected_button.isHidden() is True
         assert window.retry_selected_button is not None
         assert window.retry_failed_button is not None
         assert window.remove_done_button is not None
@@ -665,17 +782,14 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
             QRect(button.mapTo(window, QPoint(0, 0)), button.size())
             for button in (
                 window.add_url_button,
-                window.start_queue_button,
-                window.download_approved_button,
                 window.cancel_current_button,
-                window.analyze_selected_button,
-                window.download_selected_button,
                 window.retry_selected_button,
                 window.review_selected_button,
                 window.retry_failed_button,
                 window.remove_done_button,
                 window.remove_selected_button,
             )
+            if button.isVisible()
         ]
 
         for index, rect in enumerate(button_rects):
@@ -686,13 +800,13 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
         app.processEvents()
 
 
-def test_review_tab_gives_queue_and_provider_tables_room(tmp_path) -> None:
+def test_review_dialog_gives_provider_and_editor_room(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        window.resize(900, 760)
-        window.tabs.setCurrentIndex(window.review_tab_index)
-        window.show()
+        assert window.review_dialog is not None
+        window.review_dialog.resize(900, 760)
+        window.review_dialog.show()
         app.processEvents()
 
         assert window.review_scroll_area is not None
@@ -700,14 +814,68 @@ def test_review_tab_gives_queue_and_provider_tables_room(tmp_path) -> None:
         assert window.review_splitter is not None
         assert window.review_splitter.count() == 3
         assert window.review_splitter.handleWidth() >= 10
+        assert window.review_splitter.widget(0).isHidden() is True
 
-        window.review_splitter.setSizes([100, 120, 520])
+        window.review_splitter.setSizes([0, 240, 520])
         app.processEvents()
 
-        sizes = window.review_splitter.sizes()
-        assert sizes[0] <= 130
-        assert sizes[1] <= 160
-        assert sizes[2] >= 400
+        assert window.review_splitter.widget(1).height() >= 220
+        assert window.review_splitter.widget(2).height() >= 340
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_review_candidate_table_and_action_button_do_not_overlap(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        assert window.review_dialog is not None
+        window.review_dialog.resize(1669, 775)
+        job, _row = window._insert_job("https://youtu.be/abc", output_dir=tmp_path)
+        job.status = DownloadStatus.APPROVED
+        job.selected_metadata = TrackMetadata(title="Fallback", artist="Uploader")
+        job.candidates = [
+            MetadataCandidate(
+                provider="title_cover",
+                score=0.78,
+                matched_fields=("title", "cover", "artist"),
+                metadata=TrackMetadata(
+                    title="꽃에 망령",
+                    artist="계화",
+                    release_date="2026-06-15",
+                    cover_source="platform thumbnail",
+                ),
+            )
+        ]
+
+        window._open_review_dialog(job)
+        app.processEvents()
+
+        assert window.apply_candidate_button is not None
+        assert window.candidate_table.verticalHeader().isVisible() is False
+        assert window.candidate_table.wordWrap() is False
+        assert window.candidate_table.rowHeight(0) >= 32
+
+        dialog = window.review_dialog
+        table_rect = QRect(window.candidate_table.mapTo(dialog, QPoint(0, 0)), window.candidate_table.size())
+        button_rect = QRect(window.apply_candidate_button.mapTo(dialog, QPoint(0, 0)), window.apply_candidate_button.size())
+        provider_rect = QRect(window.review_splitter.widget(1).mapTo(dialog, QPoint(0, 0)), window.review_splitter.widget(1).size())
+        tag_editor_rect = QRect(window.review_splitter.widget(2).mapTo(dialog, QPoint(0, 0)), window.review_splitter.widget(2).size())
+        cover_rect = QRect(window.cover_preview_label.mapTo(dialog, QPoint(0, 0)), window.cover_preview_label.size())
+        assert not table_rect.intersects(button_rect)
+        assert not provider_rect.intersects(tag_editor_rect)
+        assert not button_rect.intersects(cover_rect)
+        assert window.review_scroll_area is not None
+        assert window.review_scroll_area.widget().height() > window.review_scroll_area.viewport().height()
+
+        required_table_height = (
+            window.candidate_table.horizontalHeader().height()
+            + window.candidate_table.rowHeight(0)
+            + window.candidate_table.horizontalScrollBar().sizeHint().height()
+            + 12
+        )
+        assert window.candidate_table.height() >= required_table_height
     finally:
         window.close()
         app.processEvents()
@@ -717,9 +885,9 @@ def test_tag_editor_places_cover_preview_beside_fields(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        window.resize(1000, 900)
-        window.tabs.setCurrentIndex(window.review_tab_index)
-        window.show()
+        assert window.review_dialog is not None
+        window.review_dialog.resize(1000, 900)
+        window.review_dialog.show()
         app.processEvents()
 
         assert window.review_splitter is not None
@@ -729,51 +897,83 @@ def test_tag_editor_places_cover_preview_beside_fields(tmp_path) -> None:
         title_field = window.review_fields["title"]
         artist_field = window.review_fields["artist"]
         album_field = window.review_fields["album"]
-        cover_url_field = window.review_fields["cover_url"]
-        title_rect = QRect(title_field.mapTo(window, QPoint(0, 0)), title_field.size())
-        artist_rect = QRect(artist_field.mapTo(window, QPoint(0, 0)), artist_field.size())
-        album_rect = QRect(album_field.mapTo(window, QPoint(0, 0)), album_field.size())
-        cover_url_rect = QRect(cover_url_field.mapTo(window, QPoint(0, 0)), cover_url_field.size())
-        cover_rect = QRect(window.cover_preview_label.mapTo(window, QPoint(0, 0)), window.cover_preview_label.size())
+        cover_button = window.change_cover_url_button
+        dialog = window.review_dialog
+        title_rect = QRect(title_field.mapTo(dialog, QPoint(0, 0)), title_field.size())
+        artist_rect = QRect(artist_field.mapTo(dialog, QPoint(0, 0)), artist_field.size())
+        album_rect = QRect(album_field.mapTo(dialog, QPoint(0, 0)), album_field.size())
+        cover_rect = QRect(window.cover_preview_label.mapTo(dialog, QPoint(0, 0)), window.cover_preview_label.size())
+        cover_button_rect = QRect(cover_button.mapTo(dialog, QPoint(0, 0)), cover_button.size())
 
         assert window.tag_fields_panel is not None
         assert artist_rect.left() > title_rect.right()
         assert abs(artist_rect.top() - title_rect.top()) <= 4
         assert album_rect.top() > title_rect.bottom()
-        assert cover_url_rect.left() <= title_rect.left() + 4
-        assert cover_url_rect.right() >= artist_rect.right() - 4
-        assert cover_url_rect.top() > album_rect.bottom()
+        assert window.review_fields["cover_url"].isHidden() is True
         assert cover_rect.left() > title_rect.right()
         assert cover_rect.top() <= title_rect.top() + 40
+        assert cover_button is not None
+        assert cover_button_rect.top() > cover_rect.bottom()
     finally:
         window.close()
         app.processEvents()
 
 
-def test_review_tab_hides_secondary_details_until_needed(tmp_path) -> None:
+def test_cover_change_button_updates_hidden_cover_url(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        refreshed: list[TrackMetadata] = []
+        monkeypatch.setattr(
+            "cueforge.gui.main_window.QInputDialog.getText",
+            lambda *args, **kwargs: ("https://example.com/new-cover.jpg", True),
+        )
+        monkeypatch.setattr(window, "_refresh_cover_preview", lambda job, metadata: refreshed.append(metadata))
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.selected_metadata = TrackMetadata(
+            title="Song",
+            artist="Artist",
+            cover_url="https://example.com/old-cover.jpg",
+            cover_path=str(tmp_path / "old-cover.jpg"),
+        )
+        window._load_job_for_review(job)
+
+        window._change_cover_url()
+
+        assert window.review_fields["cover_url"].text() == "https://example.com/new-cover.jpg"
+        assert job.selected_metadata.cover_url == "https://example.com/new-cover.jpg"
+        assert job.selected_metadata.cover_path == ""
+        assert refreshed[-1].cover_url == "https://example.com/new-cover.jpg"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_review_dialog_hides_secondary_details_until_needed(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
         window.url_input.setText("https://youtu.be/abc")
         window._add_url()
         job = next(iter(window.jobs.values()))
-        job.status = DownloadStatus.REVIEW_REQUIRED
+        job.status = DownloadStatus.APPROVED
         job.selected_metadata = TrackMetadata(title="Fallback", artist="Uploader")
         job.source_title = "Original Video Title"
         job.source_channel = "Original Channel"
         job.candidates = [
             MetadataCandidate(
-                provider="musicbrainz",
+                provider="ytmusic",
                 score=0.70,
                 matched_fields=("title",),
                 metadata=TrackMetadata(title="Candidate A", artist="Artist A"),
             )
         ]
 
-        window.resize(900, 760)
-        window.tabs.setCurrentIndex(window.review_tab_index)
-        window.show()
-        window._load_job_for_review(job)
+        assert window.review_dialog is not None
+        window.review_dialog.resize(900, 760)
+        window._open_review_dialog(job)
         app.processEvents()
 
         assert window.source_details_group is not None
@@ -811,21 +1011,274 @@ def test_main_window_marks_soundcloud_source(tmp_path) -> None:
         app.processEvents()
 
 
-def test_main_window_has_audio_recognition_settings(tmp_path) -> None:
+def test_main_window_has_oauth_metadata_settings(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "missing-openai-oauth-token.json",
+    )
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.openai_model_input.setText("gpt-test")
+
+        assert window.openai_model_input.isEditable() is False
+        assert window.openai_model_input.isEnabled() is False
+        assert window.openai_model_input.text() == ""
+        assert "ChatGPT 미연결" in window.dependency_status_label.text()
+        assert "웹검색" not in window.dependency_status_label.text()
+        assert "웹검색" not in window.openai_oauth_status_label.text()
+        assert "YTMusic 인증" in window.dependency_status_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_openai_model_combo_only_selects_catalog_models(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "missing-openai-oauth-token.json",
+    )
+    settings = _test_settings(tmp_path)
+    settings.setValue("openai/model", "gpt-5.4-mini")
+    window = MainWindow(settings=settings)
+    try:
+        assert window.openai_model_input.isEditable() is False
+        assert window.openai_model_input.text() == ""
+
+        window.openai_model_input.set_models(["gpt-5.5", "gpt-5.4-mini"])
+        assert window.openai_model_input.text() == "gpt-5.4-mini"
+
+        window.openai_model_input.setText("not-in-catalog")
+        assert window.openai_model_input.text() == "gpt-5.4-mini"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_openai_model_combo_uses_default_catalog_model_when_saved_model_is_missing(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "missing-openai-oauth-token.json",
+    )
+    settings = _test_settings(tmp_path)
+    settings.setValue("openai/model", "retired-model")
+    window = MainWindow(settings=settings)
+    try:
+        window.openai_model_input.set_models(["gpt-5.5", "gpt-5.4-mini", "gpt-5.3"])
+
+        assert window.openai_model_input.text() == "gpt-5.4-mini"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_uses_chatgpt_metadata_when_oauth_is_connected(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "openai-oauth-token.json",
+    )
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._openai_oauth_connected = lambda: True
+        window.openai_model_input.set_models(["gpt-5.5"])
+
+        config = window._openai_metadata_config()
+
+        assert config is not None
+        assert config.resolved_model == "gpt-5.5"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_openai_status_bar_shows_model_and_compact_usage(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "openai-oauth-token.json",
+    )
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._openai_oauth_connected = lambda: True
+        window.openai_model_input.set_models(["gpt-5.5"])
+        window._openai_quota_status_text = (
+            "Codex 사용량 (dj@example.com pro)\n"
+            "- 5시간 75% 남음, 1시간 후 재설정\n"
+            "- 주간 60% 남음, 2일 후 재설정\n"
+            "- 크레딧 553"
+        )
+
+        window._refresh_openai_status_bar()
+
+        text = window.openai_status_bar_label.text()
+        assert "gpt-5.5" in text
+        assert "5시간 75% 남음" in text
+        assert "주간 60% 남음" in text
+        assert "크레딧 553" in text
+        assert "\n" not in text
+        assert "Codex 사용량" not in text
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_openai_status_bar_uses_quota_from_chatgpt_candidate(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "openai-oauth-token.json",
+    )
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._openai_oauth_connected = lambda: True
+        window.openai_model_input.set_models(["gpt-5.5"])
+        job, _row = window._insert_job("https://youtu.be/abc", output_dir=tmp_path)
+        candidate = MetadataCandidate(
+            provider="chatgpt",
+            score=0.72,
+            metadata=TrackMetadata(title="Song", artist="Artist"),
+            raw={"quota_status": "요청 42/100 남음, 재설정 5m"},
+        )
+
+        window._on_metadata_ready(job.id, TrackMetadata(title="Song", artist="Artist"), DownloadStatus.REVIEW_REQUIRED.value, [candidate])
+
+        assert "요청 42/100 남음" in window.openai_status_bar_label.text()
+        assert window.openai_quota_status_label.text() == "요청 42/100 남음, 재설정 5m"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_refreshes_openai_models_and_quota_on_startup_when_connected(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "missing-openai-oauth-token.json",
+    )
+    window = MainWindow(settings=_test_settings(tmp_path))
+    calls: list[str] = []
+    try:
+        monkeypatch.setattr("cueforge.gui.main_window.QApplication.platformName", lambda: "windows")
+        window._openai_oauth_connected = lambda: True
+        window._refresh_openai_models = lambda: calls.append("models")
+        window._refresh_openai_quota = lambda *, log_result=True: calls.append(("quota", log_result))
+
+        window._refresh_openai_account_data_on_startup()
+
+        assert calls == ["models", ("quota", False)]
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_can_update_openai_quota_without_log_noise(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "openai-oauth-token.json",
+    )
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._openai_oauth_connected = lambda: True
+        window.openai_model_input.set_models(["gpt-5.4-mini"])
+        window._openai_quota_log_result = False
+
+        window._on_openai_quota_ready("Codex 사용량 (pro)\n- 5시간 70% 남음")
+
+        assert "5시간 70% 남음" in window.openai_status_bar_label.text()
+        assert "5시간 70% 남음" in window.openai_quota_status_label.text()
+        assert "Codex 사용량" not in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_hides_openai_disconnect_actions_when_disconnected(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        assert window.audio_recognition_checkbox.isChecked() is True
-        assert window.verify_auto_approved_checkbox.isChecked() is False
-        window.acoustid_key_input.setText("client-key")
-        window.cookie_file_input.setText("C:\\cookies.txt")
-        window.fpcalc_path_input.setText("C:\\tools\\fpcalc.exe")
+        window._openai_oauth_token_file = lambda: tmp_path / "missing-openai-oauth-token.json"
+        window._openai_oauth_connected = lambda: False
+        window._refresh_openai_oauth_status()
 
-        assert window.acoustid_key_input.text() == "client-key"
-        assert window.cookie_file_input.text() == "C:\\cookies.txt"
-        assert window.fpcalc_path_input.text() == "C:\\tools\\fpcalc.exe"
-        assert "AcoustID 설정됨" in window.dependency_status_label.text()
-        assert "쿠키 파일 설정됨" in window.dependency_status_label.text()
+        assert window.openai_oauth_connect_button is not None
+        assert window.openai_oauth_disconnect_button is not None
+        assert window.openai_models_refresh_button is not None
+        assert window.openai_quota_refresh_button is not None
+        assert window.openai_oauth_connect_button.isHidden() is False
+        assert window.openai_oauth_connect_button.isEnabled() is True
+        assert window.openai_oauth_disconnect_button.isHidden() is True
+        assert window.openai_models_refresh_button.isHidden() is True
+        assert window.openai_quota_refresh_button.isHidden() is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_hides_openai_connect_button_when_connected(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._openai_oauth_connected = lambda: True
+        window._openai_oauth_account_label = lambda: "dj@example.com"
+        window._refresh_openai_oauth_status()
+
+        assert window.openai_oauth_connect_button is not None
+        assert window.openai_oauth_disconnect_button is not None
+        assert window.openai_models_refresh_button is not None
+        assert window.openai_quota_refresh_button is not None
+        assert window.openai_oauth_connect_button.isHidden() is True
+        assert window.openai_oauth_disconnect_button.isHidden() is False
+        assert window.openai_oauth_disconnect_button.isEnabled() is True
+        assert window.openai_models_refresh_button.isHidden() is False
+        assert window.openai_models_refresh_button.isEnabled() is True
+        assert window.openai_quota_refresh_button.isHidden() is False
+        assert window.openai_quota_refresh_button.isEnabled() is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_hides_google_disconnect_button_when_disconnected(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    client_file = tmp_path / "google_oauth_client.json"
+    token_file = tmp_path / "ytmusic_oauth_token.json"
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._ytmusic_oauth_client_file = lambda: client_file
+        window._ytmusic_oauth_token_file = lambda: token_file
+        window._refresh_google_oauth_status()
+
+        assert window.google_oauth_connect_button is not None
+        assert window.google_oauth_disconnect_button is not None
+        assert window.google_oauth_connect_button.isHidden() is False
+        assert window.google_oauth_connect_button.isEnabled() is True
+        assert window.google_oauth_disconnect_button.isHidden() is True
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_hides_google_connect_button_when_connected(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    client_file = tmp_path / "google_oauth_client.json"
+    token_file = tmp_path / "ytmusic_oauth_token.json"
+    token_file.write_text("{}", encoding="utf-8")
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window._ytmusic_oauth_client_file = lambda: client_file
+        window._ytmusic_oauth_token_file = lambda: token_file
+        window._google_oauth_account_label = lambda: "dj@example.com"
+        window._refresh_google_oauth_status()
+
+        assert window.google_oauth_connect_button is not None
+        assert window.google_oauth_disconnect_button is not None
+        assert window.google_oauth_connect_button.isHidden() is True
+        assert window.google_oauth_disconnect_button.isHidden() is False
+        assert window.google_oauth_disconnect_button.isEnabled() is True
     finally:
         window.close()
         app.processEvents()
@@ -879,17 +1332,68 @@ def test_main_window_keeps_custom_saved_output_dir(tmp_path, monkeypatch) -> Non
         app.processEvents()
 
 
-def test_main_window_persists_beta_settings(tmp_path) -> None:
+def test_main_window_prefills_ffmpeg_path_from_detected_dependency(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    settings.setValue("onboarding/completed", True)
+    detected = tmp_path / "ffmpeg.exe"
+
+    def fake_find_executable(name: str, *, explicit_path=None, root=None) -> DependencyStatus:
+        assert name == "ffmpeg" or explicit_path is None
+        if name == "ffmpeg":
+            return DependencyStatus(name=name, path=detected, source="PATH")
+        return DependencyStatus(name=name, path=None, source="missing")
+
+    monkeypatch.setattr("cueforge.gui.main_window.find_executable", fake_find_executable)
+
+    window = MainWindow(settings=settings)
+    try:
+        assert window.ffmpeg_path_input.text() == str(detected)
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_replaces_stale_saved_ffmpeg_path_with_detected_dependency(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    settings.setValue("onboarding/completed", True)
+    settings.setValue("paths/ffmpeg", str(tmp_path / "missing-ffmpeg.exe"))
+    detected = tmp_path / "current-ffmpeg.exe"
+
+    def fake_find_executable(name: str, *, explicit_path=None, root=None) -> DependencyStatus:
+        if name == "ffmpeg":
+            return DependencyStatus(name=name, path=detected, source="PATH")
+        return DependencyStatus(name=name, path=None, source="missing")
+
+    monkeypatch.setattr("cueforge.gui.main_window.find_executable", fake_find_executable)
+
+    window = MainWindow(settings=settings)
+    try:
+        assert window.ffmpeg_path_input.text() == str(detected)
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_main_window_persists_beta_settings(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "missing-openai-oauth-token.json",
+    )
     settings = _test_settings(tmp_path)
     settings.setValue("auth/cookie_browser", "chrome")
     settings.setValue("auth/unlock_browser_cookie_database", True)
+    settings.setValue("auth/cookie_file", "D:\\cookies.txt")
+    settings.setValue("paths/ytmusic_auth", "D:\\ytmusic-auth.json")
+    settings.setValue("openai/api_key", "sk-legacy")
+    settings.setValue("openai/web_search", False)
+    settings.setValue("metadata/openai_enabled", False)
     window = MainWindow(settings=settings)
     try:
         window.output_dir_input.setText("D:\\Music")
-        window.cookie_file_input.setText("D:\\cookies.txt")
-        window.verify_auto_approved_checkbox.setChecked(True)
-        window.acoustid_key_input.setText("client-key")
+        window.openai_model_input.setText("gpt-test")
         window.save_settings()
     finally:
         window.close()
@@ -898,32 +1402,38 @@ def test_main_window_persists_beta_settings(tmp_path) -> None:
     restored = MainWindow(settings=settings)
     try:
         assert restored.output_dir_input.text() == "D:\\Music"
-        assert restored.cookie_file_input.text() == "D:\\cookies.txt"
-        assert restored.verify_auto_approved_checkbox.isChecked() is True
-        assert restored.acoustid_key_input.text() == "client-key"
+        assert settings.value("openai/api_key") is None
+        assert settings.value("openai/web_search") is None
+        assert settings.value("metadata/openai_enabled") is None
         assert settings.value("auth/cookie_browser") is None
         assert settings.value("auth/unlock_browser_cookie_database") is None
+        assert settings.value("auth/cookie_file") is None
+        assert settings.value("paths/ytmusic_auth") is None
     finally:
         restored.close()
         app.processEvents()
 
 
-def test_settings_are_saved_when_leaving_settings_tab(tmp_path) -> None:
+def test_settings_are_saved_when_leaving_settings_tab(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "missing-openai-oauth-token.json",
+    )
     settings = _test_settings(tmp_path)
     window = MainWindow(settings=settings)
     try:
         window.tabs.setCurrentIndex(window.settings_tab_index)
-        window.acoustid_key_input.setText("client-key")
-        window.cookie_file_input.setText("D:\\cookies.txt")
+        window.openai_model_input.setText("gpt-test")
         window.metadata_parallel_spin.setValue(4)
 
         window.tabs.setCurrentIndex(window.queue_tab_index)
         app.processEvents()
 
-        assert settings.value("acoustid/client_key") == "client-key"
-        assert settings.value("auth/cookie_file") == "D:\\cookies.txt"
+        assert settings.value("metadata/openai_enabled") is None
+        assert settings.value("openai/model") is None
         assert settings.value("scheduler/metadata_parallel") == 4
+        assert settings.value("auth/cookie_file") is None
     finally:
         window.close()
         app.processEvents()
@@ -971,15 +1481,15 @@ def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None
     completed: list[bool] = []
 
     def prepare(log, progress):
-        log("MiniLM 다운로드 중")
+        log("Deno 준비 중")
         progress(45.0)
         calls.append("prepared")
 
     dialog = OnboardingDialog(
         parent=parent,
-        dependency_rows=[("MiniLM", "첫 실행 준비 필요")],
+        dependency_rows=[("Deno", "첫 실행 준비 필요")],
         optional_rows=[],
-        prepare_steps=[("MiniLM 후보 평가 모델", prepare)],
+        prepare_steps=[("Deno 런타임", prepare)],
         auto_prepare=False,
         on_done=lambda: completed.append(True),
     )
@@ -987,7 +1497,7 @@ def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None
         dialog.show()
         assert dialog.skip_button.isHidden() is True
         assert dialog.skip_button.isEnabled() is False
-        assert "필수 모델 준비 필요" in dialog.prepare_status_label.text()
+        assert "필수 구성 요소 준비 필요" in dialog.prepare_status_label.text()
         assert dialog.prepare_progress_bar.isVisible() is True
 
         dialog._complete()
@@ -1009,19 +1519,14 @@ def test_onboarding_prepares_required_assets_before_completion(tmp_path) -> None
         app.processEvents()
 
 
-def test_completed_onboarding_reopens_when_required_model_is_missing(monkeypatch, tmp_path) -> None:
+def test_completed_onboarding_stays_closed_without_required_prepare_steps(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     settings = _test_settings(tmp_path)
     settings.setValue("onboarding/completed", True)
     window = MainWindow(settings=settings)
     try:
-        monkeypatch.setattr("cueforge.gui.main_window.QApplication.platformName", lambda: "windows")
-        monkeypatch.setattr("cueforge.gui.main_window.semantic_model_cached", lambda: False)
-        monkeypatch.setattr("cueforge.gui.main_window.gemma_e2b_cached", lambda: True)
-
-        assert window._should_open_startup_onboarding() is True
-        steps = window._onboarding_prepare_steps()
-        assert [label for label, _step in steps] == ["MiniLM 후보 평가 모델"]
+        assert window._should_open_startup_onboarding() is False
+        assert window._onboarding_prepare_steps() == []
     finally:
         window.close()
         app.processEvents()
@@ -1076,15 +1581,15 @@ def test_review_candidate_table_previews_then_applies_selected_candidate(tmp_pat
         job.selected_metadata = TrackMetadata(title="Fallback", artist="Uploader")
         job.candidates = [
             MetadataCandidate(
-                provider="musicbrainz",
+                provider="ytmusic",
                 score=0.70,
                 matched_fields=("title",),
                 metadata=TrackMetadata(title="Candidate A", artist="Artist A"),
             ),
             MetadataCandidate(
-                provider="acoustid",
+                provider="chatgpt",
                 score=0.96,
-                matched_fields=("fingerprint", "title", "artist"),
+                matched_fields=("llm", "title", "artist"),
                 metadata=TrackMetadata(title="Candidate B", artist="Artist B", album="Album B"),
             ),
         ]
@@ -1092,7 +1597,7 @@ def test_review_candidate_table_previews_then_applies_selected_candidate(tmp_pat
         window._load_job_for_review(job)
 
         assert window.candidate_table.rowCount() == 2
-        assert window.candidate_table.item(1, 0).text() == "acoustid"
+        assert window.candidate_table.item(1, 0).text() == "chatgpt"
 
         window.candidate_table.selectRow(1)
         app.processEvents()
@@ -1126,31 +1631,31 @@ def test_review_candidate_table_previews_then_applies_selected_candidate(tmp_pat
         app.processEvents()
 
 
-def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> None:
+def test_review_dialog_shows_source_and_confidence_details(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
         window.url_input.setText("https://youtu.be/abc")
         window._add_url()
         job = next(iter(window.jobs.values()))
-        job.status = DownloadStatus.REVIEW_REQUIRED
+        job.status = DownloadStatus.APPROVED
         job.selected_metadata = TrackMetadata(title="Fallback", artist="Uploader")
         job.source_title = "Original Video Title"
         job.source_channel = "Original Channel"
         job.candidates = [
             MetadataCandidate(
-                provider="musicbrainz",
+                provider="ytmusic",
                 score=0.70,
                 matched_fields=("title",),
                 metadata=TrackMetadata(title="Candidate A", artist="Artist A"),
             )
         ]
 
-        window._load_job_for_review(job)
+        window._open_review_dialog(job)
 
-        assert window.review_queue_table.rowCount() == 1
-        assert window.review_queue_table.item(0, 0).text() == "Fallback"
-        assert window.review_queue_table.item(0, 2).text() == "검수"
+        assert window.review_dialog is not None
+        assert window.review_dialog.isVisible() is True
+        assert window.review_queue_table.rowCount() == 0
         assert window.source_url_input.text() == "https://youtu.be/abc"
         assert window.source_url_input.isReadOnly() is True
         assert window.source_title_input.text() == "Original Video Title"
@@ -1158,7 +1663,7 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
         assert window.source_channel_input.text() == "Original Channel"
         assert window.source_channel_input.isReadOnly() is True
         assert "점수 0.70" in window.confidence_detail_label.text()
-        assert "검수 필요" in window.confidence_detail_label.text()
+        assert "확인 권장" in window.confidence_detail_label.text()
         assert "아티스트 충돌" in window.candidate_table.item(0, 3).text()
         assert window.candidate_table.item(0, 4).text() == "title"
     finally:
@@ -1167,19 +1672,20 @@ def test_review_queue_lists_waiting_items_and_confidence_details(tmp_path) -> No
 
 
 def test_cover_source_infers_known_artwork_hosts() -> None:
-    assert _cover_source_from_url("https://coverartarchive.org/release/rel/front-500.jpg") == "Cover Art Archive"
     assert _cover_source_from_url("https://i1.sndcdn.com/artworks-test.jpg") == "SoundCloud 기본 커버"
     assert _cover_source_from_url("https://i.ytimg.com/vi/abc/maxresdefault.jpg") == "YouTube 대체 썸네일"
+    assert _cover_source_from_url("https://example.com/cover.jpg") == "수동"
 
 
 def test_extract_urls_handles_pasted_text_and_de_duplicates() -> None:
     assert _extract_urls(
-        "first <https://youtu.be/a>,https://youtu.be/b.\n"
-        "https://youtu.be/a https://music.youtube.com/watch?v=c&si=d"
+        "first <youtu.be/a>,https://youtu.be/b.\n"
+        "youtu.be/a music.youtube.com/watch?v=c&si=d soundcloud.com/artist/track"
     ) == [
         "https://youtu.be/a",
         "https://youtu.be/b",
         "https://music.youtube.com/watch?v=c&si=d",
+        "https://soundcloud.com/artist/track",
     ]
 
 
@@ -1352,8 +1858,8 @@ def test_metadata_ready_accepts_review_state_string(tmp_path) -> None:
             [],
         )
 
-        assert job.status == DownloadStatus.REVIEW_REQUIRED
-        assert "메타데이터 검수 필요: 검수 필요" in window.log.toPlainText()
+        assert job.status == DownloadStatus.APPROVED
+        assert "최상위 메타데이터 후보로 다운로드 진행" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
@@ -1376,7 +1882,7 @@ def test_auto_approved_metadata_waits_for_download_approved(tmp_path) -> None:
 
         assert job.status == DownloadStatus.APPROVED
         assert window.download_approved_button.isEnabled() is True
-        assert "다운로드 준비 완료" in window.log.toPlainText()
+        assert "메타데이터 자동 선택됨; 다운로드 진행" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
@@ -1419,7 +1925,44 @@ def test_scheduled_auto_approved_metadata_enqueues_download_after_scheduler_idle
         app.processEvents()
 
 
-def test_approved_selected_track_can_move_back_to_review_queue(tmp_path) -> None:
+def test_scheduled_review_required_metadata_enqueues_download_by_default(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    queued: list[tuple[list[DownloadJob], bool]] = []
+
+    class IdleScheduler:
+        def is_running(self) -> bool:
+            return False
+
+        def enqueue_downloads(self, jobs, *, priority: bool = False) -> None:
+            queued.append((list(jobs), priority))
+
+        def set_limits(self, limits) -> None:
+            return None
+
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        window.scheduler = IdleScheduler()
+        window._scheduled_metadata_job_ids.add(job.id)
+
+        window._on_metadata_ready(
+            job.id,
+            TrackMetadata(title="Review Song", artist="Review Artist"),
+            "review_required",
+            [],
+        )
+
+        assert job.status == DownloadStatus.APPROVED
+        assert queued == [([job], False)]
+    finally:
+        window.scheduler = None
+        window.close()
+        app.processEvents()
+
+
+def test_approved_selected_track_does_not_open_tag_edit_dialog(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -1432,23 +1975,71 @@ def test_approved_selected_track_can_move_back_to_review_queue(tmp_path) -> None
         window.table.selectRow(0)
         window._refresh_actions()
 
-        assert window.review_selected_button.isEnabled() is True
+        assert window.review_selected_button.isEnabled() is False
 
         window._move_selected_to_review_queue()
 
-        assert job.status == DownloadStatus.REVIEW_REQUIRED
-        assert window.table.item(0, 0).text() == "검수 필요"
-        assert window.review_queue_table.rowCount() == 1
-        assert window.review_queue_table.item(0, 0).text() == "Approved Song"
-        assert window.active_review_job_id == job.id
-        assert window.tabs.currentIndex() == window.review_tab_index
-        assert window.approve_button.isEnabled() is True
+        assert job.status == DownloadStatus.APPROVED
+        assert window.table.item(0, 0).text() == "다운로드 대기"
+        assert window.review_queue_table.rowCount() == 0
+        assert window.review_dialog is not None
+        assert window.review_dialog.isHidden() is True
+        assert "완료된 뒤" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
 
 
-def test_loaded_approved_track_can_move_back_to_review_queue(tmp_path) -> None:
+def test_queue_double_click_waits_until_track_is_done(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.APPROVED
+        job.selected_metadata = TrackMetadata(title="Approved Song", artist="Approved Artist")
+        window._update_row(job)
+
+        window._open_queue_job_for_review(0, 0)
+
+        assert job.status == DownloadStatus.APPROVED
+        assert window.review_dialog is not None
+        assert window.review_dialog.isHidden() is True
+        assert "완료된 뒤" in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_queue_double_click_opens_done_tag_edit_dialog(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        final_path = tmp_path / "Approved Artist - Approved Song [abc].mp3"
+        final_path.write_bytes(b"fake mp3")
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.DONE
+        job.progress = 100.0
+        job.final_path = final_path
+        job.selected_metadata = TrackMetadata(title="Approved Song", artist="Approved Artist")
+        window._update_row(job)
+
+        window._open_queue_job_for_review(0, 0)
+
+        assert window.active_review_job_id == job.id
+        assert window.review_dialog is not None
+        assert window.review_dialog.isVisible() is True
+        assert window.review_fields["title"].text() == "Approved Song"
+        assert window.review_fields["artist"].text() == "Approved Artist"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_loaded_approved_track_cannot_open_tag_edit_dialog(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -1459,20 +2050,19 @@ def test_loaded_approved_track_can_move_back_to_review_queue(tmp_path) -> None:
         job.selected_metadata = TrackMetadata(title="Approved Song", artist="Approved Artist")
         window._load_job_for_review(job)
 
-        assert window.reopen_review_button.isEnabled() is True
-
         window._move_active_to_review_queue()
 
-        assert job.status == DownloadStatus.REVIEW_REQUIRED
-        assert window.review_queue_table.rowCount() == 1
-        assert window.review_fields["title"].text() == "Approved Song"
-        assert window.approve_button.isEnabled() is True
+        assert job.status == DownloadStatus.APPROVED
+        assert window.review_dialog is not None
+        assert window.review_dialog.isHidden() is True
+        assert window.review_queue_table.rowCount() == 0
+        assert "완료된 뒤" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
 
 
-def test_done_selected_track_can_move_back_to_review_queue(tmp_path) -> None:
+def test_done_selected_track_opens_tag_edit_dialog(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -1493,15 +2083,15 @@ def test_done_selected_track_can_move_back_to_review_queue(tmp_path) -> None:
 
         window._move_selected_to_review_queue()
 
-        assert job.status == DownloadStatus.REVIEW_REQUIRED
+        assert job.status == DownloadStatus.DONE
         assert job.final_path == final_path
-        assert window.table.item(0, 0).text() == "검수 필요"
-        assert window.review_queue_table.rowCount() == 1
-        assert window.review_queue_table.item(0, 0).text() == "Approved Song"
+        assert window.table.item(0, 0).text() == "완료"
+        assert window.review_queue_table.rowCount() == 0
         assert window.active_review_job_id == job.id
-        assert window.tabs.currentIndex() == window.review_tab_index
+        assert window.review_dialog is not None
+        assert window.review_dialog.isVisible() is True
         assert window.approve_button.isEnabled() is True
-        assert "기존 완료 파일" in window.review_hint_label.text()
+        assert "기존 파일" in window.review_hint_label.text()
     finally:
         window.close()
         app.processEvents()
@@ -1636,6 +2226,7 @@ def test_video_unavailable_failure_is_not_retryable(tmp_path, monkeypatch) -> No
         assert window.retry_failed_button is not None
         assert window.retry_selected_button is not None
         assert window.analyze_selected_button is not None
+        assert window.analyze_selected_button.isHidden() is True
         assert window.retry_failed_button.isEnabled() is False
         assert window.retry_selected_button.isEnabled() is False
         assert window.analyze_selected_button.isEnabled() is False
@@ -1707,7 +2298,7 @@ def test_job_canceled_updates_queue_status(tmp_path) -> None:
         app.processEvents()
 
 
-def test_selected_running_job_loads_review_panel_when_metadata_needs_review(tmp_path) -> None:
+def test_selected_running_job_refreshes_review_panel_when_metadata_auto_approves(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -1731,17 +2322,18 @@ def test_selected_running_job_loads_review_panel_when_metadata_needs_review(tmp_
             ],
         )
 
+        assert job.status == DownloadStatus.APPROVED
         assert window.active_review_job_id == job.id
         assert window.review_fields["title"].text() == "Needs Review"
         assert window.review_fields["artist"].text() == "Detected Artist"
         assert window.candidate_table.rowCount() == 1
-        assert window.approve_button.isEnabled() is True
+        assert window.approve_button.isEnabled() is False
     finally:
         window.close()
         app.processEvents()
 
 
-def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkeypatch) -> None:
+def test_approve_ignores_loaded_track_before_done(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -1757,35 +2349,22 @@ def test_approve_uses_loaded_review_job_without_queue_selection(tmp_path, monkey
 
         window._approve_selected()
 
-        assert job.status == DownloadStatus.APPROVED
+        assert job.status == DownloadStatus.REVIEW_REQUIRED
         assert job.selected_metadata.title == "Review Title"
         assert job.selected_metadata.artist == "Review Artist"
-        assert downloads == [job]
+        assert downloads == []
+        assert "완료된 뒤" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
 
 
-def test_review_tab_loads_waiting_review_when_no_review_form_is_active(tmp_path) -> None:
+def test_review_tab_is_not_part_of_main_navigation(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
-        for url in ("https://youtu.be/first", "https://youtu.be/second"):
-            window.url_input.setText(url)
-            window._add_url()
-        first, second = window.jobs[window.row_job_ids[0]], window.jobs[window.row_job_ids[1]]
-        first.status = DownloadStatus.REVIEW_REQUIRED
-        first.selected_metadata = TrackMetadata(title="First Review", artist="Artist A")
-        second.status = DownloadStatus.PENDING
-        window.active_review_job_id = None
-        window.table.selectRow(1)
-
-        window.tabs.setCurrentIndex(window.review_tab_index)
-        app.processEvents()
-
-        assert window.active_review_job_id == first.id
-        assert window.review_fields["title"].text() == "First Review"
-        assert window.review_fields["artist"].text() == "Artist A"
+        assert window.review_tab_index == -1
+        assert [window.tabs.tabText(index) for index in range(window.tabs.count())] == ["작업", "상태", "이력", "설정"]
     finally:
         window.close()
         app.processEvents()
@@ -1813,18 +2392,17 @@ def test_review_required_does_not_block_pending_queue_items(tmp_path, monkeypatc
         window.worker_mode = "analysis"
         window._worker_finished()
 
-        assert first.status == DownloadStatus.REVIEW_REQUIRED
+        assert first.status == DownloadStatus.APPROVED
         assert second.status == DownloadStatus.DOWNLOADING
         assert started == [(second, None, False, "process")]
         assert window.tabs.currentIndex() == window.queue_tab_index
-        assert window.approve_button.isEnabled() is True
-        assert window.tabs.tabText(window.review_tab_index) == "검수 (1)"
+        assert window.approve_button.isEnabled() is False
     finally:
         window.close()
         app.processEvents()
 
 
-def test_approve_loads_next_waiting_review_item(tmp_path) -> None:
+def test_saving_before_done_does_not_load_next_item(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -1845,16 +2423,19 @@ def test_approve_loads_next_waiting_review_item(tmp_path) -> None:
         window.worker = RunningWorker()
         window._approve_selected()
 
-        assert first.status == DownloadStatus.APPROVED
-        assert window.active_review_job_id == second.id
-        assert window.review_fields["title"].text() == "Second Review"
-        assert window.review_fields["artist"].text() == "Artist B"
+        assert first.status == DownloadStatus.REVIEW_REQUIRED
+        assert window.active_review_job_id == first.id
+        assert window.review_fields["title"].text() == "First Review"
+        assert window.review_fields["artist"].text() == "Artist A"
+        assert window.review_dialog is not None
+        assert window.review_dialog.isHidden() is True
+        assert "완료된 뒤" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
 
 
-def test_review_tab_can_delete_loaded_review_item(tmp_path) -> None:
+def test_tag_edit_dialog_can_delete_loaded_item(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -1877,17 +2458,16 @@ def test_review_tab_can_delete_loaded_review_item(tmp_path) -> None:
 
         assert first.id not in window.jobs
         assert window.table.rowCount() == 1
-        assert window.review_queue_table.rowCount() == 1
-        assert window.active_review_job_id == second.id
-        assert window.review_fields["title"].text() == "Second Review"
-        assert window.review_fields["artist"].text() == "Artist B"
-        assert window.tabs.tabText(window.review_tab_index) == "검수 (1)"
+        assert window.review_queue_table.rowCount() == 0
+        assert window.active_review_job_id is None
+        assert window.review_dialog is not None
+        assert window.review_dialog.isHidden() is True
     finally:
         window.close()
         app.processEvents()
 
 
-def test_approve_while_queue_running_queues_reviewed_job_first(tmp_path, monkeypatch) -> None:
+def test_approve_while_queue_running_ignores_track_before_done(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     try:
@@ -1914,7 +2494,7 @@ def test_approve_while_queue_running_queues_reviewed_job_first(tmp_path, monkeyp
         window.worker = RunningWorker()
         window._approve_selected()
 
-        assert first.status == DownloadStatus.APPROVED
+        assert first.status == DownloadStatus.REVIEW_REQUIRED
         assert started == []
 
         window._worker_finished()
@@ -1924,15 +2504,14 @@ def test_approve_while_queue_running_queues_reviewed_job_first(tmp_path, monkeyp
 
         window._download_next_approved()
 
-        assert started[0][0] is first
-        assert started[0][1].title == "Song"
-        assert started[0][2] is False
+        assert started == []
+        assert "완료된 뒤" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()
 
 
-def test_manual_review_approval_uses_priority_download_queue(tmp_path) -> None:
+def test_manual_review_approval_before_done_does_not_use_priority_download_queue(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(settings=_test_settings(tmp_path))
     queued: list[tuple[list[DownloadJob], bool]] = []
@@ -1958,8 +2537,9 @@ def test_manual_review_approval_uses_priority_download_queue(tmp_path) -> None:
 
         window._approve_selected()
 
-        assert job.status == DownloadStatus.APPROVED
-        assert queued == [([job], True)]
+        assert job.status == DownloadStatus.REVIEW_REQUIRED
+        assert queued == []
+        assert "완료된 뒤" in window.log.toPlainText()
     finally:
         window.scheduler = None
         window.close()
@@ -1983,8 +2563,8 @@ def test_new_review_item_does_not_replace_active_review_form(tmp_path) -> None:
 
         assert window.active_review_job_id == first.id
         assert window.review_fields["title"].text() == "First"
-        assert second.status == DownloadStatus.REVIEW_REQUIRED
-        assert window.tabs.tabText(window.review_tab_index) == "검수 (2)"
+        assert second.status == DownloadStatus.APPROVED
+        assert window.review_tab_index == -1
     finally:
         window.close()
         app.processEvents()

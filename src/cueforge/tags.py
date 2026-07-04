@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import mimetypes
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +11,7 @@ from mutagen.id3 import (
     COMM,
     ID3,
     TALB,
+    TBPM,
     TCON,
     TDRC,
     TIT2,
@@ -21,11 +21,11 @@ from mutagen.id3 import (
     TPUB,
     TRCK,
     TSRC,
-    TXXX,
     WOAS,
     ID3NoHeaderError,
 )
 
+from cueforge.artwork import MAX_COVER_BYTES, fetch_cover_url, is_image_mime, normalize_cover_mime, read_cover_file
 from cueforge.models import TagWriteResult, TrackMetadata
 
 CoverFetcher = Callable[[str], tuple[bytes, str]]
@@ -41,12 +41,10 @@ WINDOWS_RESERVED_NAMES = {
 }
 MAX_FILENAME_STEM_LENGTH = 180
 MAX_SOURCE_ID_LENGTH = 64
-MAX_COVER_BYTES = 8 * 1024 * 1024
-
 
 class RekordboxTagWriter:
     def __init__(self, *, cover_fetcher: CoverFetcher | None = None) -> None:
-        self._cover_fetcher = cover_fetcher or _fetch_cover
+        self._cover_fetcher = cover_fetcher
 
     def write(self, path: Path, metadata: TrackMetadata) -> TagWriteResult:
         path = Path(path)
@@ -65,6 +63,7 @@ class RekordboxTagWriter:
         _set_text(tags, TPE2, "album_artist", metadata.album_artist, written, skipped)
         _set_text(tags, TCON, "genre", metadata.genre, written, skipped)
         _set_text(tags, TDRC, "date", metadata.release_date, written, skipped)
+        _set_text(tags, TBPM, "bpm", str(metadata.bpm) if metadata.bpm else "", written, skipped)
         _set_text(tags, TPUB, "label", metadata.label, written, skipped)
         _set_text(tags, TSRC, "isrc", metadata.isrc, written, skipped)
 
@@ -93,27 +92,24 @@ class RekordboxTagWriter:
         else:
             skipped.append("source_url")
 
-        _set_txxx(tags, "MusicBrainz Recording Id", metadata.musicbrainz_recording_id, "musicbrainz_recording_id", written, skipped)
-        _set_txxx(tags, "MusicBrainz Album Id", metadata.musicbrainz_release_id, "musicbrainz_release_id", written, skipped)
-
-        if metadata.cover_url:
+        if metadata.cover_path:
+            try:
+                data, mime = read_cover_file(metadata.cover_path)
+                _write_cover_frame(tags, data, mime, written, skipped, warnings)
+            except Exception as exc:
+                skipped.append("cover")
+                warnings.append(f"cover file read failed: {exc}")
+        elif metadata.cover_url and self._cover_fetcher:
             try:
                 data, mime = self._cover_fetcher(metadata.cover_url)
-                mime = _normalize_cover_mime(mime, metadata.cover_url)
-                if data and len(data) > MAX_COVER_BYTES:
-                    skipped.append("cover")
-                    warnings.append("cover fetch returned image larger than 8 MiB")
-                elif data and _is_image_mime(mime):
-                    tags.setall("APIC:", [APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data)])
-                    written.append("cover")
-                elif data:
-                    skipped.append("cover")
-                    warnings.append(f"cover fetch returned non-image content type: {mime}")
-                else:
-                    skipped.append("cover")
+                mime = normalize_cover_mime(mime, metadata.cover_url)
+                _write_cover_frame(tags, data, mime, written, skipped, warnings)
             except Exception as exc:
                 skipped.append("cover")
                 warnings.append(f"cover fetch failed: {exc}")
+        elif metadata.cover_url:
+            skipped.append("cover")
+            warnings.append("cover URL was not cached before tagging")
         else:
             skipped.append("cover")
 
@@ -163,46 +159,26 @@ def _set_text(
         skipped.append(field_name)
 
 
-def _set_txxx(
+def _write_cover_frame(
     tags: ID3,
-    description: str,
-    value: str,
-    field_name: str,
+    data: bytes,
+    mime: str,
     written: list[str],
     skipped: list[str],
+    warnings: list[str],
 ) -> None:
-    if value:
-        tags.setall(f"TXXX:{description}", [TXXX(encoding=3, desc=description, text=[value])])
-        written.append(field_name)
+    if data and len(data) > MAX_COVER_BYTES:
+        skipped.append("cover")
+        warnings.append("cover fetch returned image larger than 8 MiB")
+    elif data and is_image_mime(mime):
+        tags.setall("APIC:", [APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data)])
+        written.append("cover")
+    elif data:
+        skipped.append("cover")
+        warnings.append(f"cover fetch returned non-image content type: {mime}")
     else:
-        skipped.append(field_name)
+        skipped.append("cover")
 
 
 def _fetch_cover(url: str) -> tuple[bytes, str]:
-    import requests
-
-    response = requests.get(url, timeout=15)
-    response.raise_for_status()
-    length = response.headers.get("Content-Length")
-    if length:
-        try:
-            if int(length) > MAX_COVER_BYTES:
-                raise ValueError("cover image is too large")
-        except ValueError as exc:
-            if str(exc) == "cover image is too large":
-                raise
-    if len(response.content) > MAX_COVER_BYTES:
-        raise ValueError("cover image is too large")
-    mime = _normalize_cover_mime(response.headers.get("Content-Type", ""), url)
-    return response.content, mime
-
-
-def _normalize_cover_mime(mime: str, url: str) -> str:
-    cleaned = (mime or "").split(";", 1)[0].strip().lower()
-    if cleaned:
-        return cleaned
-    return mimetypes.guess_type(url)[0] or "image/jpeg"
-
-
-def _is_image_mime(mime: str) -> bool:
-    return mime.startswith("image/")
+    return fetch_cover_url(url)

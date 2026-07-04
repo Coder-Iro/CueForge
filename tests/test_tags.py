@@ -39,14 +39,13 @@ def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
             album_artist="Album Artist",
             genre="House",
             release_date="2026-05-01",
+            bpm=128,
             track_number=7,
             disc_number=1,
             label="Label",
             isrc="USABC260001",
             cover_url="https://example.com/cover.jpg",
             source_url="https://music.youtube.com/watch?v=abc",
-            musicbrainz_recording_id="rec-1",
-            musicbrainz_release_id="rel-1",
         ),
     )
 
@@ -56,6 +55,7 @@ def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
     assert tags["TPE1"].text[0] == "Artist"
     assert tags["TALB"].text[0] == "Album"
     assert tags["TCON"].text[0] == "House"
+    assert tags["TBPM"].text[0] == "128"
     assert tags["TRCK"].text[0] == "7"
     assert tags["TSRC"].text[0] == "USABC260001"
     pictures = tags.getall("APIC")
@@ -66,6 +66,43 @@ def test_writer_saves_id3v23_fields(tmp_path: Path) -> None:
     assert pictures[0].data == b"image-bytes"
     assert "cover" in result.written_fields
     assert not result.warnings
+
+
+def test_writer_uses_cached_cover_file_without_network_fetch(tmp_path: Path) -> None:
+    target = tmp_path / "track.mp3"
+    target.write_bytes(b"")
+    cover = tmp_path / "cover.jpg"
+    cover.write_bytes(b"cached-image-bytes")
+    writer = RekordboxTagWriter()
+
+    result = writer.write(
+        target,
+        TrackMetadata(
+            title="Song",
+            artist="Artist",
+            cover_url="https://example.com/cover.jpg",
+            cover_path=str(cover),
+        ),
+    )
+
+    pictures = ID3(target).getall("APIC")
+    assert len(pictures) == 1
+    assert pictures[0].data == b"cached-image-bytes"
+    assert "cover" in result.written_fields
+    assert not result.warnings
+
+
+def test_writer_does_not_fetch_cover_url_without_cached_file_by_default(tmp_path: Path) -> None:
+    target = tmp_path / "track.mp3"
+    target.write_bytes(b"")
+    writer = RekordboxTagWriter()
+
+    result = writer.write(target, TrackMetadata(title="Song", artist="Artist", cover_url="https://example.com/cover.jpg"))
+
+    assert not ID3(target).getall("APIC")
+    assert "cover" in result.skipped_fields
+    assert result.warnings == ("cover URL was not cached before tagging",)
+
 
 def test_writer_skips_non_image_cover_response(tmp_path: Path) -> None:
     target = tmp_path / "track.mp3"

@@ -60,7 +60,7 @@ procedure InitializeWizard;
 begin
   DownloadPage := CreateDownloadPage(
     'Download external dependencies',
-    'Setup will download ffmpeg, fpcalc, and Deno, then verify each archive before installing.',
+    'Setup will download ffmpeg and Deno, then verify each archive before installing.',
     @OnDownloadProgress
   );
 end;
@@ -118,7 +118,7 @@ begin
     try
       DownloadPage.Download;
     except
-      MsgBox('Failed to download external dependencies (ffmpeg, fpcalc, and Deno): ' + GetExceptionMessage, mbError, MB_OK);
+      MsgBox('Failed to download external dependencies (ffmpeg and Deno): ' + GetExceptionMessage, mbError, MB_OK);
       Result := False;
     end;
   finally

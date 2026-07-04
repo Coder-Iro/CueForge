@@ -292,6 +292,7 @@ def _parse_theme_line(line: str, context: str, raw_text: str) -> MetadataHint | 
         context=context,
         source="description",
         raw_text=raw_text,
+        prefer_initial=True,
     )
 
 

@@ -279,6 +279,7 @@ def _summaries_json(summaries: list[StoredCandidateSummary]) -> str:
                 "title": summary.title,
                 "artist": summary.artist,
                 "album": summary.album,
+                "bpm": summary.bpm,
                 "matched_fields": list(summary.matched_fields),
             }
             for summary in summaries
@@ -315,7 +316,7 @@ def _job_from_row(row: tuple[Any, ...]) -> DownloadJob:
             provider=summary.provider,
             score=summary.score,
             matched_fields=summary.matched_fields,
-            metadata=TrackMetadata(title=summary.title, artist=summary.artist, album=summary.album),
+            metadata=TrackMetadata(title=summary.title, artist=summary.artist, album=summary.album, bpm=summary.bpm),
         )
         for summary in summaries
     ]
@@ -372,7 +373,17 @@ def _load_summaries(payload: str) -> list[StoredCandidateSummary]:
                 title=str(item.get("title") or ""),
                 artist=str(item.get("artist") or ""),
                 album=str(item.get("album") or ""),
+                bpm=_optional_int(item.get("bpm")),
                 matched_fields=tuple(str(field) for field in item.get("matched_fields") or []),
             )
         )
     return summaries
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

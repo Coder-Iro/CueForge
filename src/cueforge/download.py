@@ -9,13 +9,13 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlparse
 
 from cueforge.rate_limit import global_rate_limiter
+from cueforge.sources import normalize_source_url
 
 
 @dataclass(slots=True)
 class DownloadConfig:
     output_dir: Path
     ffmpeg_location: Path | None = None
-    cookie_file: Path | None = None
     allow_playlists: bool = False
     audio_bitrate_kbps: int = 0
     keep_original: bool = False
@@ -78,12 +78,14 @@ class YTDLPDownloader:
         self._progress_callback = progress_callback
 
     def fetch_info(self, url: str) -> dict[str, Any]:
+        url = normalize_source_url(url)
         options = self._base_options()
         self._wait_for_youtube_request(url)
         with self._ydl_factory(options) as ydl:
             return ydl.extract_info(url, download=False)
 
     def expand_playlist(self, url: str) -> PlaylistExpansionResult:
+        url = normalize_source_url(url)
         options = self._base_options()
         options.update(
             {
@@ -112,6 +114,7 @@ class YTDLPDownloader:
         return _playlist_expansion_result(info, source_url=url)
 
     def download_audio(self, url: str) -> DownloadResult:
+        url = normalize_source_url(url)
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
         options = self._base_options()
         options.update(
@@ -140,6 +143,7 @@ class YTDLPDownloader:
             return DownloadResult(path=final_path, info=info)
 
     def _wait_for_youtube_request(self, url: str) -> None:
+        url = normalize_source_url(url)
         if self.config.youtube_request_interval_seconds <= 0 or not _is_youtube_url(url):
             return
         global_rate_limiter("yt-dlp-youtube").wait(self.config.youtube_request_interval_seconds)
@@ -153,8 +157,6 @@ class YTDLPDownloader:
         }
         if self.config.ffmpeg_location:
             options["ffmpeg_location"] = str(self.config.ffmpeg_location)
-        if self.config.cookie_file:
-            options["cookiefile"] = str(self.config.cookie_file)
         if self.config.allow_remote_js_components:
             options["remote_components"] = ["ejs:github"]
         youtube_lang = self.config.youtube_preferred_lang.strip()
@@ -224,8 +226,9 @@ def _playlist_entry_url(entry: Any, *, source_url: str) -> str:
 
     for key in ("webpage_url", "original_url", "url"):
         value = str(entry.get(key) or "").strip()
-        if value.startswith(("http://", "https://")):
-            return value
+        url = normalize_source_url(value)
+        if url.startswith(("http://", "https://")):
+            return url
 
     video_id = str(entry.get("id") or "").strip()
     ie_key = str(entry.get("ie_key") or entry.get("extractor_key") or "").casefold()
@@ -244,6 +247,7 @@ def _is_youtube_playlist_url(url: str) -> bool:
 
 
 def _is_youtube_url(url: str) -> bool:
+    url = normalize_source_url(url)
     host = urlparse(url).netloc.casefold()
     return "youtube.com" in host or "youtu.be" in host
 

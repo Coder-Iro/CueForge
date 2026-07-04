@@ -7,11 +7,6 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
-from cueforge.metadata.ytmusic_auth import (
-    YTMusicCookieAuthConfig,
-    YTMusicCookieAuthError,
-    build_ytmusic_cookie_auth,
-)
 from cueforge.metadata.normalize import clean_metadata, clean_title, parse_artist_title
 from cueforge.models import TrackMetadata
 
@@ -26,22 +21,16 @@ class YouTubeMusicProvider:
     def __init__(
         self,
         *,
-        auth_path: Path | None = None,
-        cookie_file: Path | None = None,
         oauth_client_file: Path | None = None,
         oauth_token_file: Path | None = None,
         client: YTMusicLike | None = None,
         client_factory: Callable[..., YTMusicLike] | None = None,
-        browser_auth_builder: Callable[[], dict[str, str] | None] | None = None,
         log: Callable[[str], None] | None = None,
     ) -> None:
-        self.auth_path = auth_path
-        self.cookie_file = cookie_file
         self.oauth_client_file = oauth_client_file
         self.oauth_token_file = oauth_token_file
         self._client = client
         self._client_factory = client_factory
-        self._browser_auth_builder = browser_auth_builder
         self._log = log
 
     def lookup(self, url_or_video_id: str) -> TrackMetadata:
@@ -76,30 +65,8 @@ class YouTubeMusicProvider:
     def _resolve_auth(self) -> tuple[Any, Any]:
         if self.oauth_client_file and self.oauth_token_file and self.oauth_token_file.exists():
             self._emit("YTMusic 인증: Google OAuth는 YouTube Data API 전용으로 사용")
-
-        if self.auth_path and self.auth_path.exists():
-            self._emit("YTMusic 인증: 수동 JSON 사용")
-            return str(self.auth_path), None
-
-        if self.cookie_file and self.cookie_file.exists():
-            builder = self._browser_auth_builder or self._build_browser_auth
-            try:
-                self._emit("YTMusic 인증: 쿠키 파일 읽는 중")
-                auth = builder()
-            except YTMusicCookieAuthError as exc:
-                self._emit(f"YTMusic 쿠키 파일 인증 생략: {exc}")
-                return None, None
-            if auth:
-                self._emit("YTMusic 인증: 쿠키 파일 사용")
-            return auth, None
-
         self._emit("YTMusic 인증: 무인증 조회 사용")
         return None, None
-
-    def _build_browser_auth(self) -> dict[str, str] | None:
-        if not self.cookie_file:
-            return None
-        return build_ytmusic_cookie_auth(YTMusicCookieAuthConfig(cookie_file=self.cookie_file))
 
     def _emit(self, message: str) -> None:
         if self._log:

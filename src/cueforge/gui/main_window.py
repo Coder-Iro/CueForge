@@ -6,16 +6,17 @@ import re
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import requests
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QPixmap
+from PySide6.QtGui import QAction, QColor, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFormLayout,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -44,58 +46,56 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from cueforge.artwork import cache_cover_url
 from cueforge.download import DownloadCanceled, DownloadConfig, DownloadProgress, PlaylistExpansionResult, YTDLPDownloader
 from cueforge.errors import action_hint, user_facing_error
 from cueforge.gui.scheduler import JobScheduler
 from cueforge.metadata import (
-    AcoustIDConfig,
-    AcoustIDProvider,
-    CoverArtProvider,
-    GemmaE2BConfig,
-    GemmaE2BMetadataSuggester,
+    DEFAULT_OPENAI_MODEL,
     MetadataResolver,
-    SemanticCandidateRanker,
-    SemanticRankerConfig,
+    OpenAIMetadataConfig,
+    OpenAIMetadataSuggester,
+    default_openai_codex_oauth_token_path,
     default_ytmusic_oauth_account_path,
     default_ytmusic_oauth_token_path,
+    fetch_openai_codex_models,
+    fetch_openai_codex_usage,
     fetch_ytmusic_oauth_account,
     find_ytmusic_oauth_client_file,
+    format_openai_codex_usage,
+    openai_codex_model_ids,
     google_oauth_account_label,
     load_ytmusic_oauth_client,
+    openai_codex_oauth_account_label,
+    read_openai_codex_oauth_token,
     read_ytmusic_oauth_account,
-    gemma_e2b_cached,
-    prepare_gemma_e2b,
-    prepare_semantic_model,
     refresh_ytmusic_oauth_token_if_needed,
+    run_openai_codex_oauth_desktop_flow,
     run_ytmusic_oauth_desktop_flow,
-    semantic_model_cached,
+    write_openai_codex_oauth_token,
     write_ytmusic_oauth_account,
     write_ytmusic_oauth_token,
 )
-from cueforge.metadata.fingerprint import FingerprintError, FingerprintUnavailable
 from cueforge.metadata.matching import text_similarity
-from cueforge.metadata.normalize import merge_metadata
 from cueforge.models import ErrorCategory, DownloadJob, DownloadStatus, JobEvent, MetadataCandidate, ReviewState, SchedulerLimits, TagWriteResult, TrackMetadata
 from cueforge.paths import default_output_dir, legacy_cwd_output_dir
 from cueforge.runtime import app_root, find_executable, format_diagnostics
-from cueforge.sources import SourcePlatform, detect_source_platform
+from cueforge.sources import SourcePlatform, detect_source_platform, normalize_source_url
 from cueforge.store import JobStore
 from cueforge.tags import MAX_COVER_BYTES, RekordboxTagWriter, safe_track_filename
 
 DownloaderFactory = Callable[[DownloadConfig, Any], YTDLPDownloader]
 PlaylistExpander = Callable[[str], PlaylistExpansionResult]
 ResolverFactory = Callable[[], MetadataResolver]
-AcoustIDProviderFactory = Callable[[AcoustIDConfig], Any]
-CoverArtProviderFactory = Callable[[], Any]
 TagWriterFactory = Callable[[], Any]
 OnboardingPrepareStep = tuple[str, Callable[[Callable[[str], None], Callable[[float | None], None]], None]]
 YOUTUBE_DATA_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 YOUTUBE_YTDLP_REQUEST_INTERVAL_SECONDS = 1.5
+OPENAI_CODEX_MODEL_OPTIONS = ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-5.3")
 _ACTIVE_STATUSES = {DownloadStatus.DOWNLOADING, DownloadStatus.METADATA, DownloadStatus.TAGGING}
 _TERMINAL_STATUSES = {DownloadStatus.DONE, DownloadStatus.FAILED, DownloadStatus.CANCELED}
 _ANALYZABLE_STATUSES = {
     DownloadStatus.PENDING,
-    DownloadStatus.REVIEW_REQUIRED,
     DownloadStatus.APPROVED,
     DownloadStatus.FAILED,
     DownloadStatus.CANCELED,
@@ -104,7 +104,6 @@ _NON_RETRYABLE_ERROR_CATEGORIES = {ErrorCategory.VIDEO_UNAVAILABLE.value}
 _PIPELINE_STATUSES = (
     DownloadStatus.PENDING,
     DownloadStatus.METADATA,
-    DownloadStatus.REVIEW_REQUIRED,
     DownloadStatus.APPROVED,
     DownloadStatus.DOWNLOADING,
     DownloadStatus.DONE,
@@ -124,39 +123,25 @@ class JobWorker(QThread):
         self,
         job: DownloadJob,
         *,
-        cookie_file: Path | None = None,
-        ytmusic_auth_path: Path | None = None,
         ytmusic_oauth_client_file: Path | None = None,
         ytmusic_oauth_token_file: Path | None = None,
         ffmpeg_location: Path | None = None,
-        acoustid_config: AcoustIDConfig | None = None,
-        audio_recognition_enabled: bool = True,
-        verify_auto_approved_metadata: bool = False,
         approved_metadata: TrackMetadata | None = None,
         analyze_only: bool = False,
         downloader_factory: DownloaderFactory | None = None,
         resolver_factory: ResolverFactory | None = None,
-        acoustid_provider_factory: AcoustIDProviderFactory | None = None,
-        cover_art_provider_factory: CoverArtProviderFactory | None = None,
         tag_writer_factory: TagWriterFactory | None = None,
         tag_semaphore: threading.Semaphore | None = None,
     ) -> None:
         super().__init__()
         self.job = job
-        self.cookie_file = cookie_file
-        self.ytmusic_auth_path = ytmusic_auth_path
         self.ytmusic_oauth_client_file = ytmusic_oauth_client_file
         self.ytmusic_oauth_token_file = ytmusic_oauth_token_file
         self.ffmpeg_location = ffmpeg_location
-        self.acoustid_config = acoustid_config or AcoustIDConfig()
-        self.audio_recognition_enabled = audio_recognition_enabled
-        self.verify_auto_approved_metadata = verify_auto_approved_metadata
         self.approved_metadata = approved_metadata
         self.analyze_only = analyze_only
         self._downloader_factory = downloader_factory or _create_downloader
         self._resolver_factory = resolver_factory
-        self._acoustid_provider_factory = acoustid_provider_factory or AcoustIDProvider
-        self._cover_art_provider_factory = cover_art_provider_factory or CoverArtProvider
         self._tag_writer_factory = tag_writer_factory or RekordboxTagWriter
         self._tag_semaphore = tag_semaphore
         self._current_download_path: Path | None = None
@@ -172,17 +157,11 @@ class JobWorker(QThread):
                 self._check_canceled()
                 metadata, state, candidates, platform = self._resolve_metadata(downloader)
                 self._check_canceled()
-                if state != ReviewState.AUTO_APPROVED or self.verify_auto_approved_metadata:
-                    metadata, state, candidates, downloaded_path = self._try_audio_recognition(
-                        metadata=metadata,
-                        state=state,
-                        candidates=candidates,
-                        platform=platform,
-                    )
-                self._check_canceled()
                 self.metadata_ready.emit(self.job.id, metadata, state, candidates)
-                if self.analyze_only or state != ReviewState.AUTO_APPROVED:
+                if self.analyze_only:
                     return
+            else:
+                metadata = self._cache_cover_for_tagging(metadata)
 
             self._check_canceled()
             if downloaded_path and not downloaded_path.exists():
@@ -232,7 +211,6 @@ class JobWorker(QThread):
         return self._downloader_factory(
             DownloadConfig(
                 output_dir=output_dir,
-                cookie_file=self.cookie_file,
                 ffmpeg_location=self.ffmpeg_location,
                 youtube_request_interval_seconds=YOUTUBE_YTDLP_REQUEST_INTERVAL_SECONDS,
             ),
@@ -242,13 +220,7 @@ class JobWorker(QThread):
     def _new_resolver(self) -> MetadataResolver:
         if self._resolver_factory:
             return self._resolver_factory()
-        return MetadataResolver(
-            cover_art_provider_factory=self._cover_art_provider_factory,
-            semantic_ranker_factory=lambda: SemanticCandidateRanker(SemanticRankerConfig(allow_download=True)),
-            generative_suggester_factory=lambda: GemmaE2BMetadataSuggester(
-                GemmaE2BConfig(allow_download=False, timeout_seconds=90)
-            ),
-        )
+        return MetadataResolver()
 
     def _resolve_metadata(self, downloader: YTDLPDownloader) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate], SourcePlatform]:
         self.progress_changed.emit(self.job.id, 0.0, DownloadStatus.METADATA.value)
@@ -271,8 +243,6 @@ class JobWorker(QThread):
         resolution = self._new_resolver().resolve(
             url=self.job.url,
             info=info,
-            ytmusic_auth_path=self.ytmusic_auth_path,
-            ytmusic_cookie_file=self.cookie_file,
             ytmusic_oauth_client_file=self.ytmusic_oauth_client_file,
             ytmusic_oauth_token_file=self.ytmusic_oauth_token_file,
             log=lambda message: self.log_message.emit(self.job.id, message),
@@ -290,66 +260,19 @@ class JobWorker(QThread):
         if resolution.metadata.cover_url:
             cover_source = resolution.metadata.cover_source or _cover_source_from_url(resolution.metadata.cover_url)
             self.log_message.emit(self.job.id, f"커버 출처: {cover_source}")
-        return resolution.metadata, resolution.state, resolution.candidates, resolution.platform
+        metadata = self._cache_cover_for_tagging(resolution.metadata)
+        return metadata, resolution.state, resolution.candidates, resolution.platform
 
-    def _try_audio_recognition(
-        self,
-        *,
-        metadata: TrackMetadata,
-        state: ReviewState,
-        candidates: list[MetadataCandidate],
-        platform: SourcePlatform,
-    ) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate], Path | None]:
-        reason = _audio_recognition_skip_reason(
-            platform=platform,
-            state=state,
-            enabled=self.audio_recognition_enabled,
-            verify_auto_approved=self.verify_auto_approved_metadata,
-            config=self.acoustid_config,
-        )
-        if reason:
-            self.log_message.emit(self.job.id, f"오디오 인식 생략: {reason}")
-            return metadata, state, candidates, None
-
-        self._check_canceled()
-        if state == ReviewState.AUTO_APPROVED:
-            self.log_message.emit(self.job.id, "자동 승인 메타데이터를 AcoustID로 검증 중")
-        else:
-            self.log_message.emit(self.job.id, "메타데이터 신뢰도가 낮아 AcoustID 조회용 임시 오디오 다운로드 중")
-        result = self._new_downloader(_temp_output_dir(self.job)).download_audio(self.job.url)
-        self.job.downloaded_path = result.path
-        self._check_canceled()
-
+    def _cache_cover_for_tagging(self, metadata: TrackMetadata) -> TrackMetadata:
+        if metadata.cover_path or not metadata.cover_url:
+            return metadata
         try:
-            fingerprint_candidates = self._acoustid_provider_factory(self.acoustid_config).lookup(result.path)
-        except FingerprintUnavailable as exc:
-            self.log_message.emit(self.job.id, f"오디오 인식 생략: {exc}")
-            return metadata, state, candidates, result.path
-        except FingerprintError as exc:
-            self.log_message.emit(self.job.id, f"오디오 인식 실패: {exc}")
-            return metadata, state, candidates, result.path
-
-        if not fingerprint_candidates:
-            self.log_message.emit(self.job.id, "AcoustID 일치 항목 없음")
-            return metadata, state, candidates, result.path
-
-        merged_metadata, merged_state, merged_candidates = _merge_audio_recognition_candidates(
-            metadata=metadata,
-            state=state,
-            candidates=candidates,
-            fingerprint_candidates=fingerprint_candidates,
-        )
-        resolver = self._new_resolver()
-        merged_metadata = resolver.enrich_cover_art(
-            merged_metadata,
-            platform=platform,
-            fallback_cover_url=metadata.cover_url,
-            log=lambda message: self.log_message.emit(self.job.id, message),
-        )
-        self._check_canceled()
-        best = fingerprint_candidates[0]
-        self.log_message.emit(self.job.id, f"AcoustID 최상위 일치: {best.metadata.artist} - {best.metadata.title} ({best.score:.2f})")
-        return merged_metadata, merged_state, merged_candidates, result.path
+            cached = cache_cover_url(metadata.cover_url, cache_key=self.job.id)
+        except Exception as exc:
+            self.log_message.emit(self.job.id, f"커버 캐시 실패: {exc}")
+            return metadata
+        self.log_message.emit(self.job.id, f"커버 캐시 완료: {cached.path.name}")
+        return replace(metadata, cover_path=str(cached.path)).normalized()
 
     def _on_progress(self, progress: DownloadProgress) -> None:
         if progress.filename:
@@ -466,6 +389,60 @@ class GoogleOAuthWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class OpenAICodexOAuthWorker(QThread):
+    connected = Signal(str)
+    failed = Signal(str)
+    log_message = Signal(str)
+
+    def __init__(self, token_file: Path) -> None:
+        super().__init__()
+        self.token_file = token_file
+
+    def run(self) -> None:
+        try:
+            self.log_message.emit("ChatGPT OAuth 연결 시작: 브라우저에서 계정 승인을 완료하세요.")
+            token = run_openai_codex_oauth_desktop_flow()
+            write_openai_codex_oauth_token(token, self.token_file)
+            account_label = openai_codex_oauth_account_label(token)
+            if account_label:
+                self.log_message.emit(f"ChatGPT OAuth 계정 확인됨: {account_label}")
+            self.connected.emit(account_label)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class OpenAICodexModelsWorker(QThread):
+    models_ready = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, token_file: Path) -> None:
+        super().__init__()
+        self.token_file = token_file
+
+    def run(self) -> None:
+        try:
+            payload = fetch_openai_codex_models(self.token_file)
+            self.models_ready.emit(openai_codex_model_ids(payload))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class OpenAICodexQuotaWorker(QThread):
+    quota_ready = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, token_file: Path) -> None:
+        super().__init__()
+        self.token_file = token_file
+
+    def run(self) -> None:
+        try:
+            payload = fetch_openai_codex_usage(self.token_file)
+            self.quota_ready.emit(format_openai_codex_usage(payload))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class OnboardingPrepareWorker(QThread):
     status_changed = Signal(str)
     progress_changed = Signal(object)
@@ -522,7 +499,7 @@ class OnboardingDialog(QDialog):
 
         layout = QVBoxLayout(self)
         intro_text = (
-            "필수 모델을 다운로드하고 준비합니다. 준비가 끝날 때까지 앱 사용을 시작할 수 없습니다."
+            "필수 구성 요소를 다운로드하고 준비합니다. 준비가 끝날 때까지 앱 사용을 시작할 수 없습니다."
             if self._prepare_steps
             else "설치된 외부 도구 상태를 확인하고 선택 설정을 점검합니다. 건너뛰어도 앱은 계속 사용할 수 있습니다."
         )
@@ -590,7 +567,7 @@ class OnboardingDialog(QDialog):
         self._prepare_started = True
         self.skip_button.setEnabled(False)
         self.done_button.setEnabled(False)
-        self.prepare_status_label.setText("필수 모델을 준비하는 중입니다. 창을 닫지 말고 기다려 주세요.")
+        self.prepare_status_label.setText("필수 구성 요소를 준비하는 중입니다. 창을 닫지 말고 기다려 주세요.")
         self.prepare_progress_bar.setRange(0, 100)
         self.prepare_progress_bar.setValue(0)
         worker = OnboardingPrepareWorker(self._prepare_steps)
@@ -603,13 +580,13 @@ class OnboardingDialog(QDialog):
         worker.start()
 
     def _prepare_succeeded(self) -> None:
-        self.prepare_status_label.setText("필수 모델 준비 완료")
+        self.prepare_status_label.setText("필수 구성 요소 준비 완료")
         self._set_prepare_progress(100.0)
         self._on_done()
         self.accept()
 
     def _prepare_failed(self, message: str) -> None:
-        self.prepare_status_label.setText(f"필수 모델 준비 실패: {message}")
+        self.prepare_status_label.setText(f"필수 구성 요소 준비 실패: {message}")
         QMessageBox.warning(self, "초기 준비 실패", message)
         self.skip_button.setEnabled(self._can_skip)
         self.done_button.setEnabled(True)
@@ -635,21 +612,110 @@ class OnboardingDialog(QDialog):
         if not self._prepare_steps:
             return "추가 다운로드가 필요하지 않습니다."
         labels = ", ".join(label for label, _step in self._prepare_steps)
-        return f"필수 모델 준비 필요: {labels}"
+        return f"필수 구성 요소 준비 필요: {labels}"
 
 
 class UrlInput(QPlainTextEdit):
+    submit_requested = Signal()
+
     def text(self) -> str:
         return self.toPlainText()
 
     def setText(self, value: str) -> None:
         self.setPlainText(value)
 
+    def insertFromMimeData(self, source: Any) -> None:
+        text = self._mime_text(source)
+        if text:
+            self._append_text_block(text)
+            return
+        super().insertFromMimeData(source)
+
+    def dropEvent(self, event: Any) -> None:
+        text = self._mime_text(event.mimeData())
+        if text:
+            self._append_text_block(text)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
+
+    def keyPressEvent(self, event: Any) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.submit_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _append_text_block(self, text: str) -> None:
+        payload = _url_input_payload(text)
+        if not payload:
+            return
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+        current = self.toPlainText()
+        prefix = "\n" if current.strip() and not current.endswith("\n") else ""
+        suffix = "\n" if not payload.endswith("\n") else ""
+        self.insertPlainText(f"{prefix}{payload}{suffix}")
+
+    @staticmethod
+    def _mime_text(source: Any) -> str:
+        urls = []
+        if hasattr(source, "hasUrls") and source.hasUrls():
+            urls = [url.toString() for url in source.urls() if url.toString()]
+        if urls:
+            return "\n".join(urls)
+        if hasattr(source, "hasText") and source.hasText():
+            return str(source.text() or "")
+        return ""
+
+
+class ModelComboBox(QComboBox):
+    def __init__(self, models: tuple[str, ...], default: str) -> None:
+        super().__init__()
+        self.setEditable(False)
+        self._default = default
+        self._pending_text = ""
+        self.clear_models()
+
+    def text(self) -> str:
+        return self.currentText()
+
+    def setText(self, value: str) -> None:
+        text = str(value or "").strip()
+        self._pending_text = text
+        if not text:
+            return
+        index = self.findText(text)
+        if index >= 0:
+            self.setCurrentIndex(index)
+
+    def set_models(self, models: list[str]) -> None:
+        current = self.text().strip() or self._pending_text or self._default
+        unique = list(dict.fromkeys([model for model in models if model]))
+        if not unique:
+            self.clear_models()
+            return
+        self.blockSignals(True)
+        self.clear()
+        self.addItems(unique)
+        self.setEnabled(True)
+        preferred = current if current in unique else self._default if self._default in unique else unique[0]
+        self.setText(preferred)
+        self._pending_text = preferred
+        self.blockSignals(False)
+
+    def clear_models(self) -> None:
+        self.blockSignals(True)
+        self.clear()
+        self.setEnabled(False)
+        self.blockSignals(False)
+
 
 class MainWindow(QMainWindow):
-    COLUMNS = ("상태", "진행률", "소스", "URL", "제목", "아티스트", "출력")
+    COLUMNS = ("상태", "진행률", "소스", "URL", "제목", "아티스트", "BPM")
     REVIEW_QUEUE_COLUMNS = ("제목", "아티스트", "신뢰도", "URL")
-    CANDIDATE_COLUMNS = ("제공자", "점수", "신뢰도", "배지", "일치 항목", "제목", "아티스트", "앨범", "날짜", "ISRC", "커버")
+    CANDIDATE_COLUMNS = ("제공자", "점수", "신뢰도", "배지", "일치 항목", "제목", "아티스트", "앨범", "날짜", "BPM", "ISRC", "커버")
     CANDIDATE_PREVIEW_COLUMNS = ("필드", "현재 값", "후보 적용 값")
 
     def __init__(
@@ -668,6 +734,9 @@ class MainWindow(QMainWindow):
         self.row_job_ids: list[str] = []
         self.worker: QThread | None = None
         self.google_oauth_worker: GoogleOAuthWorker | None = None
+        self.openai_oauth_worker: OpenAICodexOAuthWorker | None = None
+        self.openai_models_worker: OpenAICodexModelsWorker | None = None
+        self.openai_quota_worker: OpenAICodexQuotaWorker | None = None
         self.scheduler: JobScheduler | None = None
         self.worker_mode = ""
         self._playlist_expanded_job_ids: list[str] = []
@@ -675,7 +744,7 @@ class MainWindow(QMainWindow):
         self.active_review_job_id: str | None = None
         self.tabs: QTabWidget | None = None
         self.queue_tab_index = 0
-        self.review_tab_index = 1
+        self.review_tab_index = -1
         self.pipeline_tab_index = 0
         self.history_tab_index = 0
         self.settings_tab_index = 0
@@ -697,10 +766,17 @@ class MainWindow(QMainWindow):
         self.approve_button: QPushButton | None = None
         self.reopen_review_button: QPushButton | None = None
         self.remove_review_button: QPushButton | None = None
+        self.change_cover_url_button: QPushButton | None = None
         self.open_onboarding_button: QPushButton | None = None
         self.google_oauth_connect_button: QPushButton | None = None
         self.google_oauth_disconnect_button: QPushButton | None = None
+        self.openai_oauth_connect_button: QPushButton | None = None
+        self.openai_oauth_disconnect_button: QPushButton | None = None
+        self.openai_models_refresh_button: QPushButton | None = None
+        self.openai_quota_refresh_button: QPushButton | None = None
         self.onboarding_dialog: OnboardingDialog | None = None
+        self.review_dialog: QDialog | None = None
+        self.review_panel: QWidget | None = None
         self.apply_candidate_button: QPushButton | None = None
         self.pending_candidate_index: int | None = None
         self.review_scroll_area: QScrollArea | None = None
@@ -716,23 +792,24 @@ class MainWindow(QMainWindow):
         self._loading_history = False
         self._dependency_status_cache = ""
         self._dependency_status_cache_key: tuple[Any, ...] | None = None
+        self._openai_quota_status_text = ""
+        self._openai_quota_log_result = True
         self._playlist_expander = playlist_expander
 
         self.url_input = UrlInput()
-        self.url_input.setPlaceholderText("YouTube / YouTube Music / SoundCloud URL을 하나 이상 붙여넣으세요")
+        self.url_input.setPlaceholderText("YouTube / YouTube Music / SoundCloud URL을 붙여넣고 Enter를 누르세요")
         self.url_input.setFixedHeight(76)
         self.output_dir_input = QLineEdit(str(default_output_dir()))
-        self.cookie_file_input = QLineEdit()
-        self.auth_path_input = QLineEdit()
         self.ffmpeg_path_input = QLineEdit()
+        self.openai_model_input = ModelComboBox(OPENAI_CODEX_MODEL_OPTIONS, DEFAULT_OPENAI_MODEL)
+        self.openai_oauth_status_label = QLabel("")
+        self.openai_oauth_status_label.setWordWrap(True)
+        self.openai_quota_status_label = QLabel("")
+        self.openai_quota_status_label.setWordWrap(True)
+        self.openai_status_bar_label = QLabel("")
+        self.openai_status_bar_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.google_oauth_status_label = QLabel("")
         self.google_oauth_status_label.setWordWrap(True)
-        self.audio_recognition_checkbox = QCheckBox("메타데이터 신뢰도가 낮으면 AcoustID 사용")
-        self.audio_recognition_checkbox.setChecked(True)
-        self.verify_auto_approved_checkbox = QCheckBox("YouTube 자동 승인 메타데이터를 AcoustID로 검증")
-        self.acoustid_key_input = QLineEdit()
-        self.acoustid_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.fpcalc_path_input = QLineEdit()
         self.metadata_parallel_spin = QSpinBox()
         self.metadata_parallel_spin.setRange(1, 8)
         self.metadata_parallel_spin.setValue(3)
@@ -746,12 +823,15 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.setColumnWidth(3, 360)
-        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(6, 72)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.itemSelectionChanged.connect(self._load_selected_job)
+        self.table.cellDoubleClicked.connect(self._open_queue_job_for_review)
 
         self.review_queue_table = QTableWidget(0, len(self.REVIEW_QUEUE_COLUMNS))
         self.review_queue_table.setHorizontalHeaderLabels(self.REVIEW_QUEUE_COLUMNS)
@@ -761,7 +841,13 @@ class MainWindow(QMainWindow):
         self.review_queue_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.review_queue_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.review_queue_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.review_queue_table.setMinimumHeight(72)
+        self.review_queue_table.verticalHeader().setVisible(False)
+        self.review_queue_table.verticalHeader().setDefaultSectionSize(32)
+        self.review_queue_table.verticalHeader().setMinimumSectionSize(30)
+        self.review_queue_table.setWordWrap(False)
+        self.review_queue_table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.review_queue_table.setMinimumHeight(128)
+        self.review_queue_table.setMaximumHeight(190)
         self.review_queue_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.review_queue_table.itemSelectionChanged.connect(self._load_selected_review_queue_job)
 
@@ -772,7 +858,16 @@ class MainWindow(QMainWindow):
         self.candidate_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.candidate_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.candidate_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.candidate_table.setMinimumHeight(88)
+        self.candidate_table.verticalHeader().setVisible(False)
+        self.candidate_table.verticalHeader().setDefaultSectionSize(34)
+        self.candidate_table.verticalHeader().setMinimumSectionSize(32)
+        self.candidate_table.horizontalHeader().setMinimumSectionSize(64)
+        self.candidate_table.setWordWrap(False)
+        self.candidate_table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.candidate_table.setMinimumHeight(136)
+        self.candidate_table.setMaximumHeight(190)
+        for column, width in enumerate((140, 74, 96, 132, 156, 190, 160, 150, 110, 78, 128, 150)):
+            self.candidate_table.setColumnWidth(column, width)
         self.candidate_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.candidate_table.itemSelectionChanged.connect(self._preview_selected_candidate)
         self.candidate_table.cellDoubleClicked.connect(self._apply_candidate_row)
@@ -782,13 +877,19 @@ class MainWindow(QMainWindow):
         self.candidate_preview_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.candidate_preview_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.candidate_preview_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.candidate_preview_table.setMinimumHeight(96)
+        self.candidate_preview_table.verticalHeader().setVisible(False)
+        self.candidate_preview_table.verticalHeader().setDefaultSectionSize(32)
+        self.candidate_preview_table.verticalHeader().setMinimumSectionSize(30)
+        self.candidate_preview_table.setWordWrap(False)
+        self.candidate_preview_table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.candidate_preview_table.setMinimumHeight(128)
+        self.candidate_preview_table.setMaximumHeight(190)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
 
-        self.queue_status_label = QLabel("URL을 추가한 뒤 큐를 처리하세요.")
+        self.queue_status_label = QLabel("URL을 붙여넣고 Enter를 누르면 자동으로 분석합니다.")
         self.queue_status_label.setWordWrap(True)
         self.dependency_status_label = QLabel("")
         self.dependency_status_label.setWordWrap(True)
@@ -808,6 +909,7 @@ class MainWindow(QMainWindow):
             "album_artist": QLineEdit(),
             "genre": QLineEdit(),
             "release_date": QLineEdit(),
+            "bpm": QLineEdit(),
             "label": QLineEdit(),
             "isrc": QLineEdit(),
             "cover_url": QLineEdit(),
@@ -837,11 +939,14 @@ class MainWindow(QMainWindow):
 
         self._load_settings()
         self._build_ui()
+        self._build_status_bar()
         self._connect_settings_status_updates()
+        self._refresh_openai_oauth_status()
         self._refresh_google_oauth_status()
         self.scheduler = JobScheduler(worker_factory=self._create_scheduled_worker, limits=self._scheduler_limits(), parent=self)
         self.scheduler.job_started.connect(self._on_scheduled_job_started)
         self.scheduler.idle.connect(self._on_scheduler_idle)
+        self._refresh_openai_account_data_on_startup()
         self._load_jobs_from_store()
         if self._should_open_startup_onboarding():
             self._open_onboarding()
@@ -852,30 +957,47 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
         add_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder), "URL 추가", self)
         add_action.triggered.connect(self._add_url)
-        self.start_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay), "전체 처리 시작", self)
+        self.start_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay), "대기 항목 처리", self)
         self.start_action.triggered.connect(self._start_pipeline)
-        self.download_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton), "승인 항목 다운로드", self)
+        self.download_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton), "다운로드 시작", self)
         self.download_action.triggered.connect(self._schedule_approved_downloads)
         self.retry_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload), "실패 재시도", self)
         self.retry_action.triggered.connect(self._retry_failed)
         remove_action = QAction(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon), "삭제", self)
         remove_action.triggered.connect(self._remove_selected)
         toolbar.addAction(add_action)
-        toolbar.addAction(self.start_action)
-        toolbar.addAction(self.download_action)
         toolbar.addAction(self.retry_action)
         toolbar.addAction(remove_action)
 
         self.tabs = QTabWidget()
         self.queue_tab_index = self.tabs.addTab(self._queue_tab(), "작업")
         self.pipeline_tab_index = self.tabs.addTab(self._pipeline_tab(), "상태")
-        self.review_tab_index = self.tabs.addTab(self._review_tab(), "검수")
         self.history_tab_index = self.tabs.addTab(self._history_tab(), "이력")
         self.settings_tab_index = self.tabs.addTab(self._settings_tab(), "설정")
+        self.review_tab_index = -1
+        self.review_panel = self._review_tab()
+        self.review_dialog = self._build_review_dialog(self.review_panel)
         self._last_tab_index = self.tabs.currentIndex()
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs)
         self._refresh_actions()
+
+    def _build_review_dialog(self, panel: QWidget) -> QDialog:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("태그 수정")
+        dialog.setModal(False)
+        dialog.resize(1180, 820)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.addWidget(panel)
+        return dialog
+
+    def _build_status_bar(self) -> None:
+        bar = self.statusBar()
+        bar.setSizeGripEnabled(False)
+        self.openai_status_bar_label.setMinimumWidth(360)
+        bar.addPermanentWidget(self.openai_status_bar_label, 1)
+        self._refresh_openai_status_bar()
 
     def _queue_tab(self) -> QWidget:
         root = QWidget()
@@ -884,7 +1006,8 @@ class MainWindow(QMainWindow):
         url_row = QGridLayout()
         url_row.addWidget(QLabel("URL"), 0, 0)
         url_row.addWidget(self.url_input, 0, 1)
-        self.add_url_button = QPushButton("추가")
+        self.url_input.submit_requested.connect(self._add_url)
+        self.add_url_button = QPushButton("추가 및 처리")
         self.add_url_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
         self.add_url_button.clicked.connect(self._add_url)
         url_row.addWidget(self.add_url_button, 0, 2)
@@ -892,14 +1015,14 @@ class MainWindow(QMainWindow):
         layout.addLayout(url_row)
 
         primary_action_row = QHBoxLayout()
-        self.start_queue_button = QPushButton("전체 처리 시작")
+        self.start_queue_button = QPushButton("대기 항목 처리")
         self.start_queue_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.start_queue_button.clicked.connect(self._start_pipeline)
-        primary_action_row.addWidget(self.start_queue_button)
-        self.download_approved_button = QPushButton("승인 항목 다운로드")
+        self.start_queue_button.setVisible(False)
+        self.download_approved_button = QPushButton("다운로드 시작")
         self.download_approved_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.download_approved_button.clicked.connect(self._schedule_approved_downloads)
-        primary_action_row.addWidget(self.download_approved_button)
+        self.download_approved_button.setVisible(False)
         self.retry_failed_button = QPushButton("실패 재시도")
         self.retry_failed_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.retry_failed_button.clicked.connect(self._retry_failed)
@@ -920,12 +1043,12 @@ class MainWindow(QMainWindow):
         self.analyze_selected_button = QPushButton("처리")
         self.analyze_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.analyze_selected_button.clicked.connect(self._analyze_selected)
-        selection_layout.addWidget(self.analyze_selected_button)
+        self.analyze_selected_button.setVisible(False)
         self.download_selected_button = QPushButton("다운로드")
         self.download_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.download_selected_button.clicked.connect(self._download_selected_approved)
-        selection_layout.addWidget(self.download_selected_button)
-        self.review_selected_button = QPushButton("검수로 이동")
+        self.download_selected_button.setVisible(False)
+        self.review_selected_button = QPushButton("태그 수정")
         self.review_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.review_selected_button.clicked.connect(self._move_selected_to_review_queue)
         selection_layout.addWidget(self.review_selected_button)
@@ -987,14 +1110,14 @@ class MainWindow(QMainWindow):
         root = QWidget()
         layout = QVBoxLayout(root)
         action_row = QHBoxLayout()
-        self.pipeline_start_button = QPushButton("전체 처리 시작")
+        self.pipeline_start_button = QPushButton("대기 항목 처리")
         self.pipeline_start_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.pipeline_start_button.clicked.connect(self._start_pipeline)
-        action_row.addWidget(self.pipeline_start_button)
-        self.pipeline_download_button = QPushButton("승인 항목 다운로드")
+        self.pipeline_start_button.setVisible(False)
+        self.pipeline_download_button = QPushButton("다운로드 시작")
         self.pipeline_download_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.pipeline_download_button.clicked.connect(self._schedule_approved_downloads)
-        action_row.addWidget(self.pipeline_download_button)
+        self.pipeline_download_button.setVisible(False)
         self.pipeline_retry_button = QPushButton("실패 재시도")
         self.pipeline_retry_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.pipeline_retry_button.clicked.connect(self._retry_failed)
@@ -1036,23 +1159,25 @@ class MainWindow(QMainWindow):
         self.review_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
         content = QWidget()
-        content.setMinimumHeight(680)
+        content.setMinimumHeight(940)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(8, 8, 8, 8)
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(12)
+        splitter.setMinimumHeight(910)
         self.review_splitter = splitter
 
-        review_queue_group = QGroupBox("검수 큐")
-        review_queue_group.setMinimumHeight(96)
-        review_queue_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        review_queue_group = QGroupBox("태그 수정 목록")
+        review_queue_group.setMinimumHeight(160)
+        review_queue_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         review_queue_layout = QVBoxLayout(review_queue_group)
         review_queue_layout.addWidget(self.review_queue_table)
+        review_queue_group.setVisible(False)
 
         provider_group = QGroupBox("태그 제공자")
-        provider_group.setMinimumHeight(112)
-        provider_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        provider_group.setMinimumHeight(340)
+        provider_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         provider_layout = QVBoxLayout(provider_group)
         provider_layout.addWidget(self.review_state_label)
         provider_layout.addWidget(self.review_hint_label)
@@ -1074,7 +1199,7 @@ class MainWindow(QMainWindow):
         provider_layout.addLayout(candidate_action_row)
 
         tag_editor_group = QGroupBox("태그 편집")
-        tag_editor_group.setMinimumHeight(240)
+        tag_editor_group.setMinimumHeight(360)
         tag_editor_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         tag_editor_layout = QVBoxLayout(tag_editor_group)
         tag_editor_layout.setSpacing(10)
@@ -1106,8 +1231,8 @@ class MainWindow(QMainWindow):
         tag_fields_layout.addWidget(tag_field("장르", self.review_fields["genre"]), 2, 0)
         tag_fields_layout.addWidget(tag_field("날짜", self.review_fields["release_date"]), 2, 1)
         tag_fields_layout.addWidget(tag_field("레이블", self.review_fields["label"]), 3, 0)
-        tag_fields_layout.addWidget(tag_field("ISRC", self.review_fields["isrc"]), 3, 1)
-        tag_fields_layout.addWidget(tag_field("커버 URL", self.review_fields["cover_url"]), 4, 0, 1, 2)
+        tag_fields_layout.addWidget(tag_field("BPM", self.review_fields["bpm"]), 3, 1)
+        tag_fields_layout.addWidget(tag_field("ISRC", self.review_fields["isrc"]), 4, 0)
         tag_fields_layout.setColumnStretch(0, 1)
         tag_fields_layout.setColumnStretch(1, 1)
 
@@ -1136,6 +1261,10 @@ class MainWindow(QMainWindow):
         cover_layout.setContentsMargins(0, 0, 0, 0)
         cover_layout.addWidget(self.cover_preview_label, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         cover_layout.addWidget(self.cover_source_label)
+        self.change_cover_url_button = QPushButton("커버 변경")
+        self.change_cover_url_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
+        self.change_cover_url_button.clicked.connect(self._change_cover_url)
+        cover_layout.addWidget(self.change_cover_url_button)
         side_layout.addWidget(cover_panel)
         side_layout.addWidget(self.source_details_group)
         side_layout.addStretch(1)
@@ -1156,11 +1285,12 @@ class MainWindow(QMainWindow):
         self.remove_review_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
         self.remove_review_button.clicked.connect(self._remove_active_review_job)
         review_action_row.addWidget(self.remove_review_button)
-        self.reopen_review_button = QPushButton("검수 큐로 이동")
+        self.reopen_review_button = QPushButton("태그 수정")
         self.reopen_review_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.reopen_review_button.clicked.connect(self._move_active_to_review_queue)
         review_action_row.addWidget(self.reopen_review_button)
-        self.approve_button = QPushButton("메타데이터 승인")
+        self.reopen_review_button.setVisible(False)
+        self.approve_button = QPushButton("저장")
         self.approve_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.approve_button.clicked.connect(self._approve_selected)
         review_action_row.addWidget(self.approve_button)
@@ -1169,10 +1299,10 @@ class MainWindow(QMainWindow):
         splitter.addWidget(review_queue_group)
         splitter.addWidget(provider_group)
         splitter.addWidget(tag_editor_group)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        splitter.setStretchFactor(2, 3)
-        splitter.setSizes([210, 270, 280])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 0)
+        splitter.setStretchFactor(2, 1)
+        splitter.setSizes([0, 360, 520])
         content_layout.addWidget(splitter)
         self.review_scroll_area.setWidget(content)
         layout.addWidget(self.review_scroll_area)
@@ -1194,9 +1324,34 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(output_button, 0, 1)
         form.addRow("출력 폴더", output_row)
 
-        form.addRow("쿠키 파일", self._path_row(self.cookie_file_input, self._browse_cookie_file))
-        form.addRow("YTMusic 인증 JSON (고급)", self._path_row(self.auth_path_input, self._browse_auth_file))
         form.addRow("ffmpeg 경로", self._path_row(self.ffmpeg_path_input, self._browse_ffmpeg))
+
+        openai_group = QGroupBox("ChatGPT 메타데이터")
+        openai_layout = QVBoxLayout(openai_group)
+        openai_form = QFormLayout()
+        openai_form.addRow("모델", self.openai_model_input)
+        openai_layout.addLayout(openai_form)
+        openai_layout.addWidget(self.openai_oauth_status_label)
+        openai_layout.addWidget(self.openai_quota_status_label)
+        openai_action_row = QHBoxLayout()
+        self.openai_oauth_connect_button = QPushButton("ChatGPT 계정 연결")
+        self.openai_oauth_connect_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
+        self.openai_oauth_connect_button.clicked.connect(self._connect_openai_oauth)
+        openai_action_row.addWidget(self.openai_oauth_connect_button)
+        self.openai_models_refresh_button = QPushButton("모델 새로고침")
+        self.openai_models_refresh_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.openai_models_refresh_button.clicked.connect(self._refresh_openai_models)
+        openai_action_row.addWidget(self.openai_models_refresh_button)
+        self.openai_quota_refresh_button = QPushButton("사용량 새로고침")
+        self.openai_quota_refresh_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.openai_quota_refresh_button.clicked.connect(lambda: self._refresh_openai_quota(log_result=True))
+        openai_action_row.addWidget(self.openai_quota_refresh_button)
+        self.openai_oauth_disconnect_button = QPushButton("연결 해제")
+        self.openai_oauth_disconnect_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton))
+        self.openai_oauth_disconnect_button.clicked.connect(self._disconnect_openai_oauth)
+        openai_action_row.addWidget(self.openai_oauth_disconnect_button)
+        openai_action_row.addStretch(1)
+        openai_layout.addLayout(openai_action_row)
 
         google_group = QGroupBox("Google 계정")
         google_layout = QVBoxLayout(google_group)
@@ -1213,13 +1368,6 @@ class MainWindow(QMainWindow):
         google_action_row.addStretch(1)
         google_layout.addLayout(google_action_row)
 
-        recognition_group = QGroupBox("오디오 인식")
-        recognition_form = QFormLayout(recognition_group)
-        recognition_form.addRow(self.audio_recognition_checkbox)
-        recognition_form.addRow(self.verify_auto_approved_checkbox)
-        recognition_form.addRow("AcoustID 클라이언트 키", self.acoustid_key_input)
-        recognition_form.addRow("fpcalc 경로", self._path_row(self.fpcalc_path_input, self._browse_fpcalc))
-
         scheduler_group = QGroupBox("병렬 처리")
         scheduler_form = QFormLayout(scheduler_group)
         scheduler_form.addRow("메타데이터 동시 작업", self.metadata_parallel_spin)
@@ -1234,8 +1382,8 @@ class MainWindow(QMainWindow):
         diagnostics_button.clicked.connect(self._copy_diagnostics)
 
         layout.addWidget(paths_group)
+        layout.addWidget(openai_group)
         layout.addWidget(google_group)
-        layout.addWidget(recognition_group)
         layout.addWidget(scheduler_group)
         layout.addWidget(self.open_onboarding_button)
         layout.addWidget(diagnostics_button)
@@ -1255,15 +1403,8 @@ class MainWindow(QMainWindow):
 
     def _load_settings(self) -> None:
         self.output_dir_input.setText(str(self._saved_output_dir_or_default()))
-        self.auth_path_input.setText(str(self._settings.value("paths/ytmusic_auth", "")))
-        self.cookie_file_input.setText(str(self._settings.value("auth/cookie_file", "")))
-        self.ffmpeg_path_input.setText(str(self._settings.value("paths/ffmpeg", "")))
-        self.fpcalc_path_input.setText(str(self._settings.value("paths/fpcalc", "")))
-        self.acoustid_key_input.setText(str(self._settings.value("acoustid/client_key", "")))
-        self.audio_recognition_checkbox.setChecked(_settings_bool(self._settings.value("acoustid/enabled", True), default=True))
-        self.verify_auto_approved_checkbox.setChecked(
-            _settings_bool(self._settings.value("acoustid/verify_auto_approved", False), default=False)
-        )
+        self.ffmpeg_path_input.setText(self._saved_ffmpeg_path_or_detected())
+        self.openai_model_input.setText(str(self._settings.value("openai/model", DEFAULT_OPENAI_MODEL) or DEFAULT_OPENAI_MODEL))
         self.metadata_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/metadata_parallel", 3), default=3))
         self.download_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/download_parallel", 2), default=2))
         self.tagging_parallel_spin.setValue(_settings_int(self._settings.value("scheduler/tagging_parallel", 1), default=1))
@@ -1280,17 +1421,26 @@ class MainWindow(QMainWindow):
             return fallback
         return saved_path
 
+    def _saved_ffmpeg_path_or_detected(self) -> str:
+        saved = str(self._settings.value("paths/ffmpeg", "") or "").strip()
+        status = find_executable("ffmpeg", explicit_path=Path(saved) if saved else None)
+        if status.path:
+            return str(status.path)
+        return saved
+
     def save_settings(self) -> None:
         self._settings.setValue("paths/output_dir", self.output_dir_input.text().strip())
-        self._settings.setValue("paths/ytmusic_auth", self.auth_path_input.text().strip())
-        self._settings.setValue("auth/cookie_file", self.cookie_file_input.text().strip())
         self._settings.setValue("paths/ffmpeg", self.ffmpeg_path_input.text().strip())
-        self._settings.setValue("paths/fpcalc", self.fpcalc_path_input.text().strip())
-        self._settings.setValue("acoustid/client_key", self.acoustid_key_input.text().strip())
-        self._settings.setValue("acoustid/enabled", self.audio_recognition_checkbox.isChecked())
-        self._settings.setValue("acoustid/verify_auto_approved", self.verify_auto_approved_checkbox.isChecked())
-        self._settings.remove("metadata/semantic_ranking")
-        self._settings.remove("metadata/gemma_suggestions")
+        model = self.openai_model_input.text().strip()
+        if model:
+            self._settings.setValue("openai/model", model)
+        else:
+            self._settings.remove("openai/model")
+        self._settings.remove("metadata/openai_enabled")
+        self._settings.remove("paths/ytmusic_auth")
+        self._settings.remove("auth/cookie_file")
+        self._settings.remove("openai/api_key")
+        self._settings.remove("openai/web_search")
         self._settings.remove("auth/cookie_browser")
         self._settings.remove("auth/unlock_browser_cookie_database")
         self._settings.setValue("scheduler/metadata_parallel", self.metadata_parallel_spin.value())
@@ -1306,9 +1456,9 @@ class MainWindow(QMainWindow):
     def _settings_status_text(self) -> str:
         cache_key = (
             self.ffmpeg_path_input.text().strip(),
-            self.fpcalc_path_input.text().strip(),
-            self.acoustid_key_input.text().strip(),
-            self.cookie_file_input.text().strip(),
+            self.openai_model_input.text().strip(),
+            str(self._openai_oauth_token_file().exists()),
+            self._openai_oauth_account_label(),
             str(self._ytmusic_oauth_client_file() or ""),
             str(self._ytmusic_oauth_token_file().exists()),
             self._google_oauth_account_label(),
@@ -1319,11 +1469,7 @@ class MainWindow(QMainWindow):
         if self._dependency_status_cache_key == cache_key and self._dependency_status_cache:
             return self._dependency_status_cache
         ffmpeg = find_executable("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text()))
-        fpcalc = find_executable("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))
-        acoustid = "설정됨" if self.acoustid_key_input.text().strip() else "미설정"
-        cookie_file = "설정됨" if self.cookie_file_input.text().strip() else "미설정"
-        semantic_model = self._semantic_model_setup_status()
-        gemma_model = self._gemma_model_setup_status()
+        chatgpt = self._openai_status_text()
         google_oauth = (
             f"연결됨: {self._google_oauth_account_label()}"
             if self._ytmusic_oauth_connected() and self._google_oauth_account_label()
@@ -1336,34 +1482,57 @@ class MainWindow(QMainWindow):
         ytmusic_auth = (
             "Google OAuth"
             if self._ytmusic_oauth_connected()
-            else "수동 JSON"
-            if self.auth_path_input.text().strip()
-            else "쿠키 파일"
-            if self.cookie_file_input.text().strip()
-            else "미설정"
+            else "무인증"
         )
         text = (
             f"설정: ffmpeg {ffmpeg.source if ffmpeg.available else '없음'}; "
-            f"fpcalc {fpcalc.source if fpcalc.available else '없음'}; "
-            f"AcoustID {acoustid}; 쿠키 파일 {cookie_file}; "
+            f"ChatGPT {chatgpt}; "
             f"Google OAuth {google_oauth}; YTMusic 인증 {ytmusic_auth}; "
-            f"MiniLM {semantic_model}; "
-            f"Gemma E2B {gemma_model}; "
             f"병렬 {self.metadata_parallel_spin.value()}/{self.download_parallel_spin.value()}/{self.tagging_parallel_spin.value()}."
         )
         self._dependency_status_cache_key = cache_key
         self._dependency_status_cache = text
         return text
 
+    def _openai_status_text(self) -> str:
+        account_label = self._openai_oauth_account_label()
+        if account_label:
+            auth = f"연결됨: {account_label}"
+        elif self._openai_oauth_connected():
+            auth = "연결됨"
+        elif self._openai_oauth_token_file().exists():
+            auth = "토큰 오류"
+        else:
+            auth = "미연결"
+        if not self._openai_oauth_connected():
+            return auth
+        model = self.openai_model_input.text().strip() or "모델 미선택"
+        return f"{auth}, {model}"
+
+    def _openai_metadata_config(self) -> OpenAIMetadataConfig | None:
+        if not self._openai_oauth_connected():
+            return None
+        return OpenAIMetadataConfig(
+            model=self.openai_model_input.text().strip() or DEFAULT_OPENAI_MODEL,
+            auth_path=self._openai_oauth_token_file(),
+        )
+
+    def _metadata_resolver_factory(self) -> ResolverFactory:
+        config = self._openai_metadata_config()
+
+        def factory() -> MetadataResolver:
+            if not config:
+                return MetadataResolver()
+            return MetadataResolver(generative_suggester_factory=lambda: OpenAIMetadataSuggester(config))
+
+        return factory
+
     def _connect_settings_status_updates(self) -> None:
         for line_edit in (
-            self.auth_path_input,
-            self.cookie_file_input,
             self.ffmpeg_path_input,
-            self.fpcalc_path_input,
-            self.acoustid_key_input,
         ):
             line_edit.textChanged.connect(self._refresh_settings_status_label)
+        self.openai_model_input.currentTextChanged.connect(self._refresh_settings_status_label)
         self.metadata_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
         self.download_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
         self.tagging_parallel_spin.valueChanged.connect(self._refresh_settings_status_label)
@@ -1374,17 +1543,212 @@ class MainWindow(QMainWindow):
             self.scheduler.set_limits(self._scheduler_limits())
         if hasattr(self, "dependency_status_label"):
             self.dependency_status_label.setText(self._settings_status_text())
+        self._refresh_openai_oauth_status()
         self._refresh_google_oauth_status()
+        self._refresh_openai_status_bar()
+
+    def _refresh_openai_status_bar(self) -> None:
+        if not hasattr(self, "openai_status_bar_label"):
+            return
+        if not self._openai_oauth_connected():
+            self.openai_status_bar_label.setText("ChatGPT: 미연결")
+            return
+        model = self.openai_model_input.text().strip() or "모델 미선택"
+        quota = _compact_openai_quota_status(self._openai_quota_status_text)
+        self.openai_status_bar_label.setText(f"ChatGPT: {model} · {quota}")
+
+    def _refresh_openai_account_data_on_startup(self) -> None:
+        if QApplication.platformName() == "offscreen":
+            return
+        if not self._openai_oauth_connected():
+            return
+        self._refresh_openai_models()
+        self._refresh_openai_quota(log_result=False)
+
+    def _refresh_openai_oauth_status(self) -> None:
+        token_file = self._openai_oauth_token_file()
+        is_connecting = bool(self.openai_oauth_worker and self.openai_oauth_worker.isRunning())
+        is_loading_models = bool(self.openai_models_worker and self.openai_models_worker.isRunning())
+        is_loading_quota = bool(self.openai_quota_worker and self.openai_quota_worker.isRunning())
+        is_connected = self._openai_oauth_connected()
+        if is_connecting:
+            text = "ChatGPT OAuth 연결 중입니다. 브라우저에서 계정 승인을 완료하세요."
+        elif is_connected:
+            account_label = self._openai_oauth_account_label()
+            text = f"ChatGPT 계정 연결됨: {account_label}." if account_label else "ChatGPT 계정 연결됨."
+        elif token_file.exists():
+            text = "ChatGPT OAuth 토큰을 읽을 수 없습니다. 다시 연결하세요."
+        else:
+            text = "ChatGPT 계정 미연결."
+        if not is_connected:
+            self.openai_model_input.clear_models()
+            self._openai_quota_status_text = ""
+        self.openai_oauth_status_label.setText(text)
+        self._refresh_openai_status_bar()
+        if self.openai_oauth_connect_button:
+            self.openai_oauth_connect_button.setVisible(not is_connected)
+            self.openai_oauth_connect_button.setEnabled(not is_connecting)
+        if self.openai_models_refresh_button:
+            self.openai_models_refresh_button.setVisible(is_connected)
+            self.openai_models_refresh_button.setEnabled(is_connected and not is_connecting and not is_loading_models)
+        if self.openai_quota_refresh_button:
+            self.openai_quota_refresh_button.setVisible(is_connected)
+            self.openai_quota_refresh_button.setEnabled(is_connected and not is_connecting and not is_loading_quota)
+        if self.openai_oauth_disconnect_button:
+            self.openai_oauth_disconnect_button.setVisible(is_connected)
+            self.openai_oauth_disconnect_button.setEnabled(is_connected and not is_connecting)
+
+    def _openai_oauth_token_file(self) -> Path:
+        return default_openai_codex_oauth_token_path()
+
+    def _openai_oauth_account_label(self) -> str:
+        try:
+            return openai_codex_oauth_account_label(read_openai_codex_oauth_token(self._openai_oauth_token_file()))
+        except Exception:
+            return ""
+
+    def _openai_oauth_connected(self) -> bool:
+        try:
+            return bool(read_openai_codex_oauth_token(self._openai_oauth_token_file()).get("access_token"))
+        except Exception:
+            return False
+
+    def _connect_openai_oauth(self) -> None:
+        if self.openai_oauth_worker and self.openai_oauth_worker.isRunning():
+            return
+        worker = OpenAICodexOAuthWorker(self._openai_oauth_token_file())
+        worker.log_message.connect(lambda message: self._append_log("system", message))
+        worker.connected.connect(self._on_openai_oauth_connected)
+        worker.failed.connect(self._on_openai_oauth_failed)
+        worker.finished.connect(self._openai_oauth_worker_finished)
+        self.openai_oauth_worker = worker
+        self._refresh_openai_oauth_status()
+        worker.start()
+
+    def _on_openai_oauth_connected(self, account_label: str) -> None:
+        suffix = f": {account_label}" if account_label else ""
+        self._append_log("system", f"ChatGPT 계정 연결됨{suffix}")
+        self._dependency_status_cache_key = None
+        self._refresh_settings_status_label()
+        self._refresh_openai_models()
+        self._refresh_openai_quota()
+
+    def _on_openai_oauth_failed(self, message: str) -> None:
+        self._append_log("system", f"ChatGPT OAuth 연결 실패: {message}")
+        QMessageBox.warning(self, "ChatGPT 연결 실패", message)
+
+    def _openai_oauth_worker_finished(self) -> None:
+        worker = self.openai_oauth_worker
+        self.openai_oauth_worker = None
+        if worker:
+            worker.deleteLater()
+        self._refresh_openai_oauth_status()
+
+    def _disconnect_openai_oauth(self) -> None:
+        token_file = self._openai_oauth_token_file()
+        if token_file.exists():
+            try:
+                token_file.unlink()
+            except Exception as exc:
+                QMessageBox.warning(self, "연결 해제 실패", str(exc))
+                return
+        self._append_log("system", "ChatGPT 계정 연결 해제됨")
+        self.openai_quota_status_label.setText("")
+        self._openai_quota_status_text = ""
+        self.openai_model_input.clear_models()
+        self._dependency_status_cache_key = None
+        self._refresh_settings_status_label()
+
+    def _refresh_openai_models(self) -> None:
+        if self.openai_models_worker and self.openai_models_worker.isRunning():
+            return
+        if not self._openai_oauth_connected():
+            self._append_log("system", "ChatGPT 모델 목록 조회 생략: 계정 연결이 필요합니다.")
+            return
+        worker = OpenAICodexModelsWorker(self._openai_oauth_token_file())
+        worker.models_ready.connect(self._on_openai_models_ready)
+        worker.failed.connect(self._on_openai_models_failed)
+        worker.finished.connect(self._openai_models_worker_finished)
+        self.openai_models_worker = worker
+        self._refresh_openai_oauth_status()
+        worker.start()
+
+    def _on_openai_models_ready(self, models: object) -> None:
+        model_ids = [str(model).strip() for model in models if str(model).strip()] if isinstance(models, list) else []
+        if model_ids:
+            self.openai_model_input.set_models(model_ids)
+            self._append_log("system", f"ChatGPT 모델 목록 갱신됨: {', '.join(model_ids[:8])}")
+        else:
+            self.openai_model_input.clear_models()
+            self._append_log("system", "ChatGPT 모델 목록 조회 결과가 비어 있어 선택 목록을 비웁니다.")
+        self._dependency_status_cache_key = None
+        self._refresh_settings_status_label()
+
+    def _on_openai_models_failed(self, message: str) -> None:
+        self._append_log("system", f"ChatGPT 모델 목록 조회 실패: {message}")
+
+    def _openai_models_worker_finished(self) -> None:
+        worker = self.openai_models_worker
+        self.openai_models_worker = None
+        if worker:
+            worker.deleteLater()
+        self._refresh_openai_oauth_status()
+
+    def _refresh_openai_quota(self, *, log_result: bool = True) -> None:
+        if self.openai_quota_worker and self.openai_quota_worker.isRunning():
+            return
+        if not self._openai_oauth_connected():
+            self.openai_quota_status_label.setText("")
+            self._openai_quota_status_text = ""
+            self._refresh_openai_status_bar()
+            if log_result:
+                self._append_log("system", "Codex 사용량 조회 생략: ChatGPT 계정 연결이 필요합니다.")
+            return
+        self.openai_quota_status_label.setText("Codex 사용량 조회 중...")
+        self._openai_quota_status_text = "사용량 조회 중..."
+        self._refresh_openai_status_bar()
+        self._openai_quota_log_result = log_result
+        worker = OpenAICodexQuotaWorker(self._openai_oauth_token_file())
+        worker.quota_ready.connect(self._on_openai_quota_ready)
+        worker.failed.connect(self._on_openai_quota_failed)
+        worker.finished.connect(self._openai_quota_worker_finished)
+        self.openai_quota_worker = worker
+        self._refresh_openai_oauth_status()
+        worker.start()
+
+    def _on_openai_quota_ready(self, text: str) -> None:
+        self.openai_quota_status_label.setText(text)
+        self._openai_quota_status_text = text
+        self._refresh_openai_status_bar()
+        if self._openai_quota_log_result:
+            self._append_log("system", text)
+
+    def _on_openai_quota_failed(self, message: str) -> None:
+        text = f"Codex 사용량 조회 실패: {message}"
+        self.openai_quota_status_label.setText(text)
+        self._openai_quota_status_text = text
+        self._refresh_openai_status_bar()
+        if self._openai_quota_log_result:
+            self._append_log("system", text)
+
+    def _openai_quota_worker_finished(self) -> None:
+        worker = self.openai_quota_worker
+        self.openai_quota_worker = None
+        if worker:
+            worker.deleteLater()
+        self._openai_quota_log_result = True
+        self._refresh_openai_oauth_status()
 
     def _refresh_google_oauth_status(self) -> None:
         client_file = self._ytmusic_oauth_client_file()
         token_file = self._ytmusic_oauth_token_file()
         is_connecting = bool(self.google_oauth_worker and self.google_oauth_worker.isRunning())
+        is_connected = bool(client_file and token_file.exists())
         if is_connecting:
             text = "Google OAuth 연결 중입니다. 브라우저에서 계정 승인을 완료하세요."
         elif not client_file:
             text = "배포 설정에 Google OAuth 클라이언트가 없습니다. config/google_oauth_client.json을 포함하면 계정 연결을 사용할 수 있습니다."
-        elif token_file.exists():
+        elif is_connected:
             account_label = self._google_oauth_account_label()
             if account_label:
                 text = f"Google 계정 연결됨: {account_label}. 비공개 YouTube Music 플레이리스트 조회에 OAuth를 우선 사용합니다."
@@ -1394,9 +1758,11 @@ class MainWindow(QMainWindow):
             text = "Google OAuth 클라이언트 준비됨. 계정 연결 후 비공개 플레이리스트 조회에 OAuth를 사용합니다."
         self.google_oauth_status_label.setText(text)
         if self.google_oauth_connect_button:
+            self.google_oauth_connect_button.setVisible(not is_connected and client_file is not None)
             self.google_oauth_connect_button.setEnabled(client_file is not None and not is_connecting)
         if self.google_oauth_disconnect_button:
-            self.google_oauth_disconnect_button.setEnabled(token_file.exists() and not is_connecting)
+            self.google_oauth_disconnect_button.setVisible(is_connected)
+            self.google_oauth_disconnect_button.setEnabled(is_connected and not is_connecting)
 
     def _ytmusic_oauth_client_file(self) -> Path | None:
         return find_ytmusic_oauth_client_file(app_root())
@@ -1487,9 +1853,7 @@ class MainWindow(QMainWindow):
     def _should_open_startup_onboarding(self) -> bool:
         if not _settings_bool(self._settings.value("onboarding/completed", False), default=False):
             return True
-        if QApplication.platformName() == "offscreen":
-            return False
-        return bool(self._startup_model_prepare_steps())
+        return False
 
     def _onboarding_finished(self, dialog: OnboardingDialog) -> None:
         if self.onboarding_dialog is dialog:
@@ -1500,64 +1864,18 @@ class MainWindow(QMainWindow):
         return [
             ("ffmpeg", _dependency_setup_status("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text()))),
             ("Deno", _dependency_setup_status("deno")),
-            ("fpcalc", _dependency_setup_status("fpcalc", explicit_path=_optional_path(self.fpcalc_path_input.text()))),
-            ("MiniLM", self._semantic_model_setup_status()),
-            ("Gemma E2B", self._gemma_model_setup_status()),
         ]
 
     def _onboarding_optional_rows(self) -> list[tuple[str, str]]:
-        cookie_file = "설정됨" if self.cookie_file_input.text().strip() else "미설정"
         google_oauth = "연결됨" if self._ytmusic_oauth_connected() else "클라이언트 준비" if self._ytmusic_oauth_client_file() else "미설정"
-        ytmusic_auth = (
-            "Google OAuth"
-            if self._ytmusic_oauth_connected()
-            else "수동 JSON"
-            if self.auth_path_input.text().strip()
-            else "쿠키 파일"
-            if self.cookie_file_input.text().strip()
-            else "미설정"
-        )
+        ytmusic_auth = "Google OAuth" if self._ytmusic_oauth_connected() else "무인증"
         return [
             ("Google OAuth", google_oauth),
-            ("쿠키 파일", cookie_file),
             ("YTMusic 인증", ytmusic_auth),
-            ("YTMusic 인증 JSON", "고급 fallback 설정됨" if self.auth_path_input.text().strip() else "고급 fallback 미설정"),
-            ("AcoustID 클라이언트 키", "설정됨" if self.acoustid_key_input.text().strip() else "미설정"),
         ]
 
     def _onboarding_prepare_steps(self) -> list[OnboardingPrepareStep]:
-        if QApplication.platformName() == "offscreen":
-            return []
-        return self._startup_model_prepare_steps()
-
-    def _startup_model_prepare_steps(self) -> list[OnboardingPrepareStep]:
-        if semantic_model_cached():
-            steps = []
-        else:
-            steps = [
-                (
-                    "MiniLM 후보 평가 모델",
-                    lambda log, progress: prepare_semantic_model(SemanticRankerConfig(allow_download=True), log=log),
-                )
-            ]
-        if not gemma_e2b_cached():
-            steps.append(
-                (
-                    "Gemma E2B fallback 모델",
-                    lambda log, progress: prepare_gemma_e2b(
-                        GemmaE2BConfig(allow_download=True, timeout_seconds=600),
-                        log=log,
-                        progress=progress,
-                    ),
-                )
-            )
-        return steps
-
-    def _semantic_model_setup_status(self) -> str:
-        return "준비됨" if semantic_model_cached() else "첫 실행 준비 필요"
-
-    def _gemma_model_setup_status(self) -> str:
-        return "준비됨" if gemma_e2b_cached() else "첫 실행 준비 필요"
+        return []
 
     def closeEvent(self, event: Any) -> None:
         if self._work_running():
@@ -1604,6 +1922,13 @@ class MainWindow(QMainWindow):
         if last_row >= 0:
             self.table.selectRow(last_row)
         self._refresh_actions()
+        self._auto_start_after_adding_urls(len(supported))
+
+    def _auto_start_after_adding_urls(self, added_count: int) -> None:
+        if added_count <= 0 or QApplication.platformName() == "offscreen":
+            return
+        self._append_log("system", f"새 URL {added_count}개 자동 처리 시작")
+        self._start_pipeline()
 
     def _insert_job(self, url: str, *, output_dir: Path, row: int | None = None, message: str = "큐에 추가됨") -> tuple[DownloadJob, int]:
         job = DownloadJob(url=url, output_dir=output_dir)
@@ -1624,9 +1949,6 @@ class MainWindow(QMainWindow):
         url: str,
         *,
         output_dir: Path,
-        cookie_file: Path | None = None,
-        auth_path: Path | None = None,
-        use_ui_auth: bool = True,
         log: Callable[[str, str], None] | None = None,
     ) -> PlaylistExpansionResult:
         emit_log = log or self._append_log
@@ -1639,29 +1961,17 @@ class MainWindow(QMainWindow):
             result = self._expand_playlist_with_ytdlp(
                 url,
                 output_dir=output_dir,
-                cookie_file=cookie_file,
-                use_ui_auth=use_ui_auth,
             )
         except Exception as exc:
             if _should_try_ytmusicapi_playlist_expansion(url):
                 try:
-                    return self._expand_playlist_with_ytmusicapi(
-                        url,
-                        auth_path=auth_path,
-                        cookie_file=cookie_file,
-                        use_ui_auth=use_ui_auth,
-                    )
+                    return self._expand_playlist_with_ytmusicapi(url)
                 except Exception as fallback_exc:
                     raise RuntimeError(f"{exc}\nYouTube Music 전체 펼치기 실패: {fallback_exc}") from fallback_exc
             raise
         if _should_retry_with_ytmusicapi_playlist_expansion(url, result):
             try:
-                fallback = self._expand_playlist_with_ytmusicapi(
-                    url,
-                    auth_path=auth_path,
-                    cookie_file=cookie_file,
-                    use_ui_auth=use_ui_auth,
-                )
+                fallback = self._expand_playlist_with_ytmusicapi(url)
             except Exception as exc:
                 emit_log("system", f"YouTube Music 전체 펼치기 보강 실패: {exc}")
                 if _is_liked_music_playlist(url) and not result.urls:
@@ -1680,35 +1990,22 @@ class MainWindow(QMainWindow):
         url: str,
         *,
         output_dir: Path,
-        cookie_file: Path | None = None,
-        use_ui_auth: bool = True,
     ) -> PlaylistExpansionResult:
-        resolved_cookie_file = cookie_file
-        if use_ui_auth and resolved_cookie_file is None:
-            resolved_cookie_file = _optional_path(self.cookie_file_input.text())
         downloader = YTDLPDownloader(
             DownloadConfig(
                 output_dir=output_dir,
-                cookie_file=resolved_cookie_file,
                 youtube_request_interval_seconds=YOUTUBE_YTDLP_REQUEST_INTERVAL_SECONDS,
             )
         )
         return downloader.expand_playlist(url)
 
-    def _expand_playlist_with_ytmusicapi(
-        self,
-        url: str,
-        *,
-        auth_path: Path | None = None,
-        cookie_file: Path | None = None,
-        use_ui_auth: bool = True,
-    ) -> PlaylistExpansionResult:
+    def _expand_playlist_with_ytmusicapi(self, url: str) -> PlaylistExpansionResult:
         playlist_id = _youtube_playlist_id(url)
         if not playlist_id:
             raise ValueError("YouTube playlist ID를 찾을 수 없습니다.")
         if self._ytmusic_oauth_connected():
             return self._expand_playlist_with_youtube_data_api(playlist_id)
-        client = self._create_ytmusic_client(auth_path=auth_path, cookie_file=cookie_file, use_ui_auth=use_ui_auth)
+        client = self._create_ytmusic_client()
         if playlist_id == "LM" and hasattr(client, "get_liked_songs"):
             playlist = client.get_liked_songs(limit=None)
         else:
@@ -1802,27 +2099,8 @@ class MainWindow(QMainWindow):
             raise ValueError("OAuth access_token이 비어 있습니다. Google 계정을 다시 연결하세요.")
         return access_token
 
-    def _create_ytmusic_client(
-        self,
-        *,
-        auth_path: Path | None = None,
-        cookie_file: Path | None = None,
-        use_ui_auth: bool = True,
-    ) -> Any:
+    def _create_ytmusic_client(self) -> Any:
         from ytmusicapi import YTMusic
-
-        if use_ui_auth and auth_path is None:
-            auth_path = _optional_path(self.auth_path_input.text())
-        if auth_path and auth_path.exists():
-            return YTMusic(str(auth_path))
-
-        if use_ui_auth and cookie_file is None:
-            cookie_file = _optional_path(self.cookie_file_input.text())
-        if cookie_file and cookie_file.exists():
-            from cueforge.metadata.ytmusic_auth import YTMusicCookieAuthConfig, build_ytmusic_cookie_auth
-
-            auth = build_ytmusic_cookie_auth(YTMusicCookieAuthConfig(cookie_file=cookie_file))
-            return YTMusic(auth)
 
         return YTMusic()
 
@@ -1865,6 +2143,9 @@ class MainWindow(QMainWindow):
         if job.status == DownloadStatus.FAILED and not _can_retry_job(job):
             self._append_log(job.id, "재시도 대상이 아닌 실패 항목이라 분석을 다시 시작하지 않음")
             self._refresh_actions()
+            return
+        if job.status == DownloadStatus.APPROVED:
+            self._download_selected_approved()
             return
         if _is_playlist_url(job.url):
             if self._start_playlist_expansion(job, mode="playlist_single"):
@@ -2010,16 +2291,10 @@ class MainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             return True
 
-        auth_path = _optional_path(self.auth_path_input.text())
-        cookie_file = _optional_path(self.cookie_file_input.text())
-
         def expand(url: str, output_dir: Path, log: Callable[[str, str], None]) -> PlaylistExpansionResult:
             return self._expand_playlist(
                 url,
                 output_dir=output_dir,
-                auth_path=auth_path,
-                cookie_file=cookie_file,
-                use_ui_auth=False,
                 log=log,
             )
 
@@ -2135,21 +2410,7 @@ class MainWindow(QMainWindow):
             return "Google OAuth 연결은 되어 있지만 YouTube Data API가 좋아요 표시한 음악 목록 접근을 거부했습니다. 연결 해제 후 다시 연결하거나 계정 권한을 확인하세요."
         if self._ytmusic_oauth_client_file():
             return "Google OAuth 클라이언트는 포함됐지만 아직 Google 계정 연결이 완료되지 않았습니다."
-
-        cookie_file = _optional_path(self.cookie_file_input.text())
-        if not cookie_file:
-            return "현재 설정에 Google OAuth 연결 또는 쿠키 파일이 없습니다."
-        if not cookie_file.exists():
-            return "설정된 쿠키 파일을 찾을 수 없습니다."
-        try:
-            from cueforge.metadata.ytmusic_auth import YTMusicCookieAuthConfig, YTMusicCookieAuthError, build_ytmusic_cookie_auth
-
-            build_ytmusic_cookie_auth(YTMusicCookieAuthConfig(cookie_file=cookie_file))
-        except YTMusicCookieAuthError as exc:
-            return f"쿠키 파일은 설정됐지만 music.youtube.com 인증 쿠키를 만들 수 없습니다: {exc}"
-        except Exception as exc:
-            return f"쿠키 파일을 확인할 수 없습니다: {exc}"
-        return "쿠키 파일에 music.youtube.com 인증 쿠키는 있지만, 세션 만료 또는 계정 권한 문제일 수 있습니다."
+        return "Google OAuth 클라이언트가 포함되지 않았거나 Google 계정 연결이 필요합니다."
 
     def _cancel_current_job(self) -> None:
         if self.scheduler and self.scheduler.is_running():
@@ -2187,19 +2448,12 @@ class MainWindow(QMainWindow):
         self.worker_mode = worker_mode or (("analysis" if analyze_only else "download") if continue_queue else "single")
         self.worker = JobWorker(
             job,
-            cookie_file=_optional_path(self.cookie_file_input.text()),
-            ytmusic_auth_path=_optional_path(self.auth_path_input.text()),
             ytmusic_oauth_client_file=self._ytmusic_oauth_client_file(),
             ytmusic_oauth_token_file=self._ytmusic_oauth_token_file() if self._ytmusic_oauth_token_file().exists() else None,
             ffmpeg_location=_optional_path(self.ffmpeg_path_input.text()),
-            acoustid_config=AcoustIDConfig(
-                client_key=self.acoustid_key_input.text().strip(),
-                fpcalc_path=_optional_path(self.fpcalc_path_input.text()),
-            ),
-            audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
-            verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
             approved_metadata=approved_metadata,
             analyze_only=analyze_only,
+            resolver_factory=self._metadata_resolver_factory(),
             tag_semaphore=self.scheduler.tag_semaphore if self.scheduler else None,
         )
         self.worker.progress_changed.connect(self._on_progress)
@@ -2233,20 +2487,23 @@ class MainWindow(QMainWindow):
         job.selected_metadata = metadata
         job.candidates = candidates
         job.candidate_summaries = []
-        if review_state == ReviewState.AUTO_APPROVED:
-            job.status = DownloadStatus.APPROVED
-        else:
-            job.status = DownloadStatus.REVIEW_REQUIRED
-            loaded_review = self._loaded_review_job()
-            if not loaded_review or loaded_review.id == job.id or loaded_review.status != DownloadStatus.REVIEW_REQUIRED:
-                self._load_job_for_review(job, select_row=False)
+        quota_status = _openai_quota_status_from_candidates(candidates)
+        if quota_status:
+            self.openai_quota_status_label.setText(quota_status)
+            self._openai_quota_status_text = quota_status
+            self._refresh_openai_status_bar()
+        elif any(candidate.provider == "chatgpt" for candidate in candidates) and QApplication.platformName() != "offscreen":
+            self._refresh_openai_quota(log_result=False)
+        job.status = DownloadStatus.APPROVED
         self._update_row(job)
+        if self.active_review_job_id == job.id:
+            self._load_job_for_review(job, select_row=False)
         if review_state == ReviewState.AUTO_APPROVED:
-            self._append_log(job_id, "메타데이터 자동 승인됨; 다운로드 준비 완료")
-            if scheduled_metadata and self.scheduler:
-                self.scheduler.enqueue_downloads([job])
+            self._append_log(job_id, "메타데이터 자동 선택됨; 다운로드 진행")
         else:
-            self._append_log(job_id, f"메타데이터 검수 필요: {_review_state_label(review_state)}")
+            self._append_log(job_id, "최상위 메타데이터 후보로 다운로드 진행; 필요하면 큐에서 더블클릭해 수정하세요")
+        if scheduled_metadata and self.scheduler:
+            self.scheduler.enqueue_downloads([job])
         self._refresh_actions()
 
     def _on_job_done(self, job_id: str, final_path: str) -> None:
@@ -2314,12 +2571,16 @@ class MainWindow(QMainWindow):
     def _approve_selected(self) -> None:
         job = self._active_review_job()
         if not job:
-            self.log.appendPlainText("[검수] 승인 생략: 검수할 트랙이 로드되지 않음")
-            QMessageBox.warning(self, "트랙 없음", "승인하기 전에 검수 탭에서 트랙을 로드하세요.")
+            self._append_plain_log("태그", "저장 생략: 수정할 트랙이 로드되지 않음")
+            QMessageBox.warning(self, "트랙 없음", "저장하기 전에 큐에서 트랙을 더블클릭하세요.")
+            return
+        block_reason = _tag_edit_block_reason(job)
+        if block_reason:
+            self._append_log(job.id, block_reason)
             return
         metadata = self._metadata_from_review_fields(job.selected_metadata)
-        if not metadata.is_minimum_viable():
-            QMessageBox.warning(self, "필수 태그 누락", "제목과 아티스트를 입력한 뒤 승인하세요.")
+        if job.status in _ACTIVE_STATUSES:
+            QMessageBox.warning(self, "저장할 수 없음", "실행 중인 작업이 끝난 뒤 태그를 수정하세요.")
             return
         retag_existing = bool(job.final_path and job.final_path.exists())
         job.selected_metadata = metadata
@@ -2330,8 +2591,9 @@ class MainWindow(QMainWindow):
         if retag_existing:
             self._append_log(job.id, "메타데이터 승인됨; 완료 파일 태그 갱신 시작")
         else:
-            self._append_log(job.id, "메타데이터 승인됨; 다운로드 시작")
-        self._load_next_review_or_current(job)
+            self._append_log(job.id, "메타데이터 수정됨; 다운로드 시작")
+        if self.review_dialog:
+            self.review_dialog.hide()
         self._download_approved_job(job)
         self._refresh_actions()
 
@@ -2350,33 +2612,24 @@ class MainWindow(QMainWindow):
     def _move_selected_to_review_queue(self) -> None:
         job = self._selected_job()
         if not job:
-            QMessageBox.warning(self, "트랙 선택 없음", "먼저 큐 탭에서 승인된 트랙을 선택하세요.")
+            QMessageBox.warning(self, "트랙 선택 없음", "먼저 큐에서 트랙을 선택하세요.")
             return
         self._move_job_to_review_queue(job)
 
     def _move_active_to_review_queue(self) -> None:
         job = self._active_review_job()
         if not job:
-            QMessageBox.warning(self, "트랙 없음", "검수 큐로 이동하기 전에 승인된 트랙을 로드하세요.")
+            QMessageBox.warning(self, "트랙 없음", "큐에서 트랙을 더블클릭하세요.")
             return
         self._move_job_to_review_queue(job)
 
     def _move_job_to_review_queue(self, job: DownloadJob) -> None:
-        if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "이동할 수 없음", "검수 상태를 바꾸기 전에 현재 작업이 끝날 때까지 기다리세요.")
+        block_reason = _tag_edit_block_reason(job)
+        if block_reason:
+            self._append_log(job.id, block_reason)
+            self._refresh_actions()
             return
-        if job.status not in {DownloadStatus.APPROVED, DownloadStatus.DONE}:
-            QMessageBox.warning(self, "이동할 수 없음", "승인 또는 완료된 트랙만 검수 큐로 다시 이동할 수 있습니다.")
-            return
-        job.status = DownloadStatus.REVIEW_REQUIRED
-        self._update_row(job)
-        if job.final_path:
-            self._append_log(job.id, "완료된 메타데이터를 검수 큐로 다시 이동함")
-        else:
-            self._append_log(job.id, "승인된 메타데이터를 검수 큐로 다시 이동함")
-        self._load_job_for_review(job)
-        if self.tabs:
-            self.tabs.setCurrentIndex(self.review_tab_index)
+        self._open_review_dialog(job)
         self._refresh_actions()
 
     def _remove_active_review_job(self) -> None:
@@ -2447,11 +2700,9 @@ class MainWindow(QMainWindow):
         self.job_store.delete_jobs(removed_ids)
         if active_review_removed:
             self.active_review_job_id = None
-            next_review = self._next_review_job()
-            if next_review:
-                self._load_job_for_review(next_review, select_row=False)
-            else:
-                self._clear_review_panel()
+            if self.review_dialog:
+                self.review_dialog.hide()
+            self._clear_review_panel()
         self._refresh_pipeline_board()
         self._refresh_history()
 
@@ -2460,6 +2711,27 @@ class MainWindow(QMainWindow):
         if job:
             self._load_job_for_review(job)
             self._refresh_actions()
+
+    def _open_queue_job_for_review(self, row: int, _column: int) -> None:
+        if row < 0 or row >= len(self.row_job_ids):
+            return
+        job = self.jobs.get(self.row_job_ids[row])
+        if not job:
+            return
+        block_reason = _tag_edit_block_reason(job)
+        if block_reason:
+            self._append_log(job.id, block_reason)
+            return
+        self._open_review_dialog(job)
+
+    def _open_review_dialog(self, job: DownloadJob) -> None:
+        self._load_job_for_review(job)
+        if not self.review_dialog:
+            return
+        self.review_dialog.setWindowTitle(f"태그 수정 - {job.selected_metadata.artist or job.source_channel or 'Unknown'} - {job.selected_metadata.title or job.source_title or job.url}")
+        self.review_dialog.show()
+        self.review_dialog.raise_()
+        self.review_dialog.activateWindow()
 
     def _load_selected_review_queue_job(self) -> None:
         if self._loading_review_queue:
@@ -2484,17 +2756,17 @@ class MainWindow(QMainWindow):
         self.review_state_label.setText(f"{_download_status_label(job.status)}: {platform.display_name}")
         if job.status == DownloadStatus.REVIEW_REQUIRED:
             if job.final_path:
-                self.review_hint_label.setText("필요하면 태그를 수정하세요. 승인하면 기존 완료 파일의 태그와 파일명을 갱신합니다.")
+                self.review_hint_label.setText("필요하면 태그를 수정하세요. 저장하면 기존 완료 파일의 태그와 파일명을 갱신합니다.")
             else:
-                self.review_hint_label.setText("필요하면 태그를 수정하세요. 승인하면 이 트랙이 다운로드 준비 상태가 됩니다.")
+                self.review_hint_label.setText("필요하면 태그를 수정하세요. 저장하면 이 트랙이 다운로드됩니다.")
         elif job.status == DownloadStatus.APPROVED:
-            self.review_hint_label.setText("승인됨. 승인 항목 다운로드를 실행하거나, 추가 수정을 위해 검수 큐로 되돌릴 수 있습니다.")
+            self.review_hint_label.setText("다운로드 대기 상태입니다. 저장하면 수정된 태그로 다운로드합니다.")
         elif job.status == DownloadStatus.DONE:
-            self.review_hint_label.setText("이미 다운로드 및 태깅이 완료된 트랙입니다. 추가 수정을 위해 검수 큐로 되돌릴 수 있습니다.")
+            self.review_hint_label.setText("이미 다운로드 및 태깅이 완료된 트랙입니다. 저장하면 기존 파일의 태그와 파일명을 갱신합니다.")
         elif job.status == DownloadStatus.FAILED:
             self.review_hint_label.setText(job.error or "이 트랙은 실패했습니다. 필요하면 태그를 수정한 뒤 재시도하세요.")
         else:
-            self.review_hint_label.setText("선택한 큐 항목의 메타데이터 미리보기입니다.")
+            self.review_hint_label.setText("선택한 큐 항목의 태그 미리보기입니다. 실행 중이면 작업이 끝난 뒤 수정할 수 있습니다.")
         if job.candidates:
             best = job.candidates[0]
             self._set_candidate_summary(best, reference=metadata)
@@ -2555,6 +2827,7 @@ class MainWindow(QMainWindow):
                 candidate.metadata.artist,
                 candidate.metadata.album,
                 candidate.metadata.release_date,
+                candidate.metadata.bpm or "",
                 candidate.metadata.isrc,
                 candidate.metadata.cover_source or _cover_source_from_url(candidate.metadata.cover_url),
             )
@@ -2621,7 +2894,10 @@ class MainWindow(QMainWindow):
 
     def _apply_candidate(self, job: DownloadJob, candidate_index: int) -> None:
         candidate = job.candidates[candidate_index]
+        previous_cover_url = job.selected_metadata.cover_url
         metadata = candidate.metadata.with_defaults_from(job.selected_metadata).normalized()
+        if metadata.cover_url != previous_cover_url:
+            metadata = replace(metadata, cover_path="").normalized()
         job.selected_metadata = metadata
         self._set_candidate_summary(candidate, reference=metadata)
         self._set_review_fields(metadata)
@@ -2664,6 +2940,22 @@ class MainWindow(QMainWindow):
         metadata = self._metadata_from_review_fields(job.selected_metadata)
         job.selected_metadata = metadata
         self._refresh_cover_preview(job, metadata)
+
+    def _change_cover_url(self) -> None:
+        job = self._active_review_job()
+        if not job:
+            return
+        text, accepted = QInputDialog.getText(
+            self,
+            "커버 변경",
+            "이미지 URL",
+            QLineEdit.EchoMode.Normal,
+            self.review_fields["cover_url"].text().strip(),
+        )
+        if not accepted:
+            return
+        self.review_fields["cover_url"].setText(text.strip())
+        self._cover_url_edited()
 
     def _refresh_cover_preview(self, job: DownloadJob, metadata: TrackMetadata) -> None:
         cover_url = self.review_fields["cover_url"].text().strip()
@@ -2711,6 +3003,7 @@ class MainWindow(QMainWindow):
     def _metadata_from_review_fields(self, base: TrackMetadata) -> TrackMetadata:
         cover_url = self.review_fields["cover_url"].text().strip()
         cover_source = "manual" if cover_url and cover_url != base.cover_url else base.cover_source
+        cover_path = base.cover_path if cover_url == base.cover_url else ""
         return TrackMetadata(
             title=self.review_fields["title"].text().strip(),
             artist=self.review_fields["artist"].text().strip(),
@@ -2718,15 +3011,15 @@ class MainWindow(QMainWindow):
             album_artist=self.review_fields["album_artist"].text().strip(),
             genre=self.review_fields["genre"].text().strip(),
             release_date=self.review_fields["release_date"].text().strip(),
+            bpm=_optional_int(self.review_fields["bpm"].text().strip()),
             track_number=base.track_number,
             disc_number=base.disc_number,
             label=self.review_fields["label"].text().strip(),
             isrc=self.review_fields["isrc"].text().strip(),
             cover_url=cover_url,
+            cover_path=cover_path,
             cover_source=cover_source,
             source_url=base.source_url,
-            musicbrainz_recording_id=base.musicbrainz_recording_id,
-            musicbrainz_release_id=base.musicbrainz_release_id,
             comments=base.comments,
         ).normalized()
 
@@ -2740,7 +3033,7 @@ class MainWindow(QMainWindow):
             job.url,
             job.selected_metadata.title,
             job.selected_metadata.artist,
-            str(job.final_path or job.output_dir),
+            _bpm_text(job.selected_metadata.bpm),
         )
         for col, value in enumerate(values):
             self.table.item(row, col).setText(value)
@@ -2848,19 +3141,12 @@ class MainWindow(QMainWindow):
         self._update_row(job)
         worker = JobWorker(
             job,
-            cookie_file=_optional_path(self.cookie_file_input.text()),
-            ytmusic_auth_path=_optional_path(self.auth_path_input.text()),
             ytmusic_oauth_client_file=self._ytmusic_oauth_client_file(),
             ytmusic_oauth_token_file=self._ytmusic_oauth_token_file() if self._ytmusic_oauth_token_file().exists() else None,
             ffmpeg_location=_optional_path(self.ffmpeg_path_input.text()),
-            acoustid_config=AcoustIDConfig(
-                client_key=self.acoustid_key_input.text().strip(),
-                fpcalc_path=_optional_path(self.fpcalc_path_input.text()),
-            ),
-            audio_recognition_enabled=self.audio_recognition_checkbox.isChecked(),
-            verify_auto_approved_metadata=self.verify_auto_approved_checkbox.isChecked(),
             approved_metadata=approved_metadata,
             analyze_only=stage == "metadata",
+            resolver_factory=self._metadata_resolver_factory(),
             tag_semaphore=tag_semaphore,
         )
         worker.progress_changed.connect(self._on_progress)
@@ -2915,7 +3201,7 @@ class MainWindow(QMainWindow):
         try:
             self.job_store.upsert_job(job)
         except Exception as exc:
-            self.log.appendPlainText(f"[store] 저장 실패: {exc}")
+            self._append_plain_log("store", f"저장 실패: {exc}")
 
     def _record_event(self, job_id: str, event_type: str, message: str, category: str = "") -> None:
         if job_id not in self.jobs:
@@ -2923,17 +3209,19 @@ class MainWindow(QMainWindow):
         try:
             self.job_store.record_event(JobEvent(job_id=job_id, event_type=event_type, category=category, message=message))
         except Exception as exc:
-            self.log.appendPlainText(f"[store] 이벤트 저장 실패: {exc}")
+            self._append_plain_log("store", f"이벤트 저장 실패: {exc}")
 
     def _load_jobs_from_store(self) -> None:
         try:
             stored_jobs = self.job_store.load_jobs()
         except Exception as exc:
-            self.log.appendPlainText(f"[store] 이력 로드 실패: {exc}")
+            self._append_plain_log("store", f"이력 로드 실패: {exc}")
             return
         for job in stored_jobs:
             if job.id in self.jobs:
                 continue
+            if job.status == DownloadStatus.REVIEW_REQUIRED:
+                job.status = DownloadStatus.APPROVED
             self.jobs[job.id] = job
             self.row_job_ids.append(job.id)
             row = self.table.rowCount()
@@ -3092,7 +3380,6 @@ class MainWindow(QMainWindow):
         running = self._work_running()
         pending_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.PENDING)
         approved_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.APPROVED)
-        review_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.REVIEW_REQUIRED)
         failed_count = sum(1 for job in self.jobs.values() if job.status == DownloadStatus.FAILED)
         retryable_failed_count = sum(
             1 for job in self.jobs.values() if _can_retry_job(job) and job.status == DownloadStatus.FAILED
@@ -3103,13 +3390,9 @@ class MainWindow(QMainWindow):
         can_start_pipeline = (pending_count > 0 or approved_count > 0) and not running
         can_download = approved_count > 0 and not running
         can_retry = retryable_failed_count > 0 and not running
-        can_approve = bool(active_review and active_review.status == DownloadStatus.REVIEW_REQUIRED)
-        can_move_selected_to_review = bool(
-            selected_job and selected_job.status in {DownloadStatus.APPROVED, DownloadStatus.DONE} and not running
-        )
-        can_move_active_to_review = bool(
-            active_review and active_review.status in {DownloadStatus.APPROVED, DownloadStatus.DONE} and not running
-        )
+        can_approve = bool(active_review and not _tag_edit_block_reason(active_review))
+        can_move_selected_to_review = bool(selected_job and not _tag_edit_block_reason(selected_job))
+        can_move_active_to_review = bool(active_review and not _tag_edit_block_reason(active_review))
         can_analyze_selected = bool(
             selected_job
             and selected_job.status in _ANALYZABLE_STATUSES
@@ -3157,6 +3440,8 @@ class MainWindow(QMainWindow):
             self.reopen_review_button.setEnabled(can_move_active_to_review)
         if self.remove_review_button:
             self.remove_review_button.setEnabled(can_remove_active_review)
+        if self.change_cover_url_button:
+            self.change_cover_url_button.setEnabled(can_approve)
         if self.pipeline_start_button:
             self.pipeline_start_button.setEnabled((pending_count > 0 or approved_count > 0) and not running)
         if self.pipeline_download_button:
@@ -3165,23 +3450,14 @@ class MainWindow(QMainWindow):
             self.pipeline_retry_button.setEnabled(can_retry)
         if self.clear_history_button:
             self.clear_history_button.setEnabled(any(job.status in _TERMINAL_STATUSES for job in self.jobs.values()))
-        if self.tabs:
-            self.tabs.setTabText(self.review_tab_index, f"검수 ({review_count})" if review_count else "검수")
-
-        if running and review_count:
-            text = f"처리는 계속 진행 중입니다. 검수가 필요한 {review_count}개 트랙은 검수 탭에서 확인하세요."
-        elif running:
-            text = "현재 트랙을 처리 중입니다."
+        if running:
+            text = "자동 처리 중입니다. 태그가 마음에 들지 않으면 완료 후 큐에서 더블클릭해 수정하세요."
         elif approved_count and pending_count:
-            text = f"{pending_count}개는 분석 대기, {approved_count}개는 다운로드 준비 완료입니다. 전체 처리 시작으로 이어서 진행할 수 있습니다."
+            text = f"{pending_count}개는 분석 대기, {approved_count}개는 다운로드 대기 중입니다. 새 URL은 자동으로 처리됩니다."
         elif approved_count:
-            text = f"{approved_count}개 트랙이 다운로드 준비 완료 상태입니다. 전체 처리 시작 또는 승인 항목 다운로드로 마무리하세요."
-        elif review_count and pending_count:
-            text = f"{review_count}개는 검수가 필요하고 {pending_count}개는 분석 대기 중입니다. 검수와 처리를 병행할 수 있습니다."
-        elif review_count:
-            text = f"{review_count}개 트랙은 메타데이터 검수가 필요합니다."
+            text = f"{approved_count}개 트랙이 다운로드 대기 중입니다."
         elif pending_count:
-            text = f"{pending_count}개 트랙이 추가되었습니다. 전체 처리 시작으로 분석을 시작하세요."
+            text = f"{pending_count}개 트랙이 분석 대기 중입니다. 실제 앱에서는 추가 후 자동으로 처리됩니다."
         elif failed_count and retryable_failed_count:
             text = f"{failed_count}개 트랙이 실패했습니다. 재시도 가능한 {retryable_failed_count}개는 실패 재시도로 다시 분석할 수 있습니다."
         elif failed_count:
@@ -3189,33 +3465,14 @@ class MainWindow(QMainWindow):
         elif self.jobs:
             text = "대기 중인 트랙이 없습니다."
         else:
-            text = "URL을 추가한 뒤 큐를 처리하세요."
+            text = "URL을 붙여넣고 Enter를 누르면 자동으로 분석합니다."
         self.queue_status_label.setText(text)
         self.dependency_status_label.setText(self._settings_status_text())
 
     def _refresh_review_queue(self) -> None:
-        review_jobs = [self.jobs[job_id] for job_id in self.row_job_ids if self.jobs[job_id].status == DownloadStatus.REVIEW_REQUIRED]
         self._loading_review_queue = True
-        self.review_queue_table.setRowCount(len(review_jobs))
-        selected_row = -1
-        for row, job in enumerate(review_jobs):
-            best = max(job.candidates, key=lambda candidate: candidate.score, default=None)
-            values = (
-                job.selected_metadata.title,
-                job.selected_metadata.artist,
-                _confidence_bucket(best) if best else "수동",
-                job.url,
-            )
-            for col, value in enumerate(values):
-                item = QTableWidgetItem(str(value or ""))
-                item.setData(Qt.ItemDataRole.UserRole, job.id)
-                self.review_queue_table.setItem(row, col, item)
-            if job.id == self.active_review_job_id:
-                selected_row = row
-        if selected_row >= 0:
-            self.review_queue_table.selectRow(selected_row)
-        else:
-            self.review_queue_table.clearSelection()
+        self.review_queue_table.setRowCount(0)
+        self.review_queue_table.clearSelection()
         self.review_queue_table.resizeRowsToContents()
         self._loading_review_queue = False
 
@@ -3224,18 +3481,10 @@ class MainWindow(QMainWindow):
         self._last_tab_index = index
         if previous_index == self.settings_tab_index and index != self.settings_tab_index:
             self.save_settings()
-        if index != self.review_tab_index:
-            return
-        loaded_review = self._loaded_review_job()
-        if loaded_review and loaded_review.status == DownloadStatus.REVIEW_REQUIRED:
-            return
-        next_review = self._next_review_job()
-        if next_review:
-            self._load_job_for_review(next_review, select_row=False)
 
     def _append_log(self, job_id: str, message: str) -> None:
         short_id = job_id[:8]
-        self.log.appendPlainText(f"[{short_id}] {message}")
+        self._append_plain_log(short_id, message)
         event_type = _event_type_for_log(message)
         if event_type:
             category = self.jobs[job_id].error_category if job_id in self.jobs else ""
@@ -3245,30 +3494,18 @@ class MainWindow(QMainWindow):
                 if active and active.id == job_id:
                     self.pipeline_detail.setPlainText(self._job_detail_text(active))
 
+    def _append_plain_log(self, source: str, message: str) -> None:
+        self.log.appendPlainText(_format_log_line(source, message))
+
     def _browse_output_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "출력 폴더", self.output_dir_input.text())
         if folder:
             self.output_dir_input.setText(folder)
 
-    def _browse_auth_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "YTMusic 인증 JSON", "", "JSON 파일 (*.json);;모든 파일 (*)")
-        if path:
-            self.auth_path_input.setText(path)
-
-    def _browse_cookie_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "쿠키 파일", "", "쿠키 파일 (*.txt *.cookies);;모든 파일 (*)")
-        if path:
-            self.cookie_file_input.setText(path)
-
     def _browse_ffmpeg(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "ffmpeg 실행 파일", "", "실행 파일 (*.exe);;모든 파일 (*)")
         if path:
             self.ffmpeg_path_input.setText(path)
-
-    def _browse_fpcalc(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "fpcalc 실행 파일", "", "실행 파일 (*.exe);;모든 파일 (*)")
-        if path:
-            self.fpcalc_path_input.setText(path)
 
     def _copy_diagnostics(self) -> None:
         QApplication.clipboard().setText(format_diagnostics())
@@ -3285,6 +3522,20 @@ def run_app() -> int:
 def _optional_path(value: str) -> Path | None:
     stripped = value.strip()
     return Path(stripped) if stripped else None
+
+
+def _optional_int(value: str) -> int | None:
+    stripped = str(value or "").strip()
+    if not stripped:
+        return None
+    try:
+        return int(round(float(stripped)))
+    except ValueError:
+        return None
+
+
+def _bpm_text(value: int | None) -> str:
+    return str(value) if value else ""
 
 
 def _elapsed(started_at: float) -> str:
@@ -3339,33 +3590,6 @@ def _create_downloader(config: DownloadConfig, progress_callback: Any) -> YTDLPD
     return YTDLPDownloader(config, progress_callback=progress_callback)
 
 
-def _audio_recognition_skip_reason(
-    *,
-    platform: SourcePlatform,
-    state: ReviewState,
-    enabled: bool,
-    verify_auto_approved: bool,
-    config: AcoustIDConfig,
-) -> str:
-    if state == ReviewState.AUTO_APPROVED and not verify_auto_approved:
-        return "메타데이터가 이미 자동 승인됨"
-    if platform not in {SourcePlatform.YOUTUBE, SourcePlatform.YOUTUBE_MUSIC}:
-        if platform == SourcePlatform.SOUNDCLOUD:
-            return "SoundCloud 기본 메타데이터 신뢰"
-        return "지원 대상 소스가 아님"
-    if not enabled:
-        return "비활성화됨"
-    if not config.client_key.strip():
-        return "AcoustID 클라이언트 키 미설정"
-    if not _has_fpcalc(config):
-        return "fpcalc 실행 파일을 찾을 수 없음"
-    return ""
-
-
-def _has_fpcalc(config: AcoustIDConfig) -> bool:
-    return find_executable("fpcalc", explicit_path=config.fpcalc_path).available
-
-
 def _dependency_setup_status(name: str, *, explicit_path: Path | None = None) -> str:
     status = find_executable(name, explicit_path=explicit_path)
     if status.available and status.source == "bundled":
@@ -3375,31 +3599,6 @@ def _dependency_setup_status(name: str, *, explicit_path: Path | None = None) ->
     if status.available:
         return f"개발/portable fallback 감지됨 ({status.source}): {status.path}"
     return "누락됨: 개발/portable 실행이라면 PATH 또는 고급 경로 설정을 확인하세요."
-
-
-def _merge_audio_recognition_candidates(
-    *,
-    metadata: TrackMetadata,
-    state: ReviewState,
-    candidates: list[MetadataCandidate],
-    fingerprint_candidates: list[MetadataCandidate],
-) -> tuple[TrackMetadata, ReviewState, list[MetadataCandidate]]:
-    combined = sorted([*candidates, *fingerprint_candidates], key=lambda candidate: candidate.score, reverse=True)
-    best_fingerprint = max(fingerprint_candidates, key=lambda candidate: candidate.score, default=None)
-    if (
-        state == ReviewState.AUTO_APPROVED
-        and best_fingerprint
-        and best_fingerprint.score >= 0.85
-        and _metadata_conflicts(metadata, best_fingerprint.metadata)
-    ):
-        merged = best_fingerprint.metadata.with_defaults_from(metadata).normalized()
-        return merged, ReviewState.REVIEW_REQUIRED, combined
-
-    mergeable = [candidate for candidate in combined if candidate.score >= 0.65]
-    if not mergeable:
-        return metadata, state, combined
-    merged, merged_state = merge_metadata(youtube=metadata, candidates=mergeable, fallback=metadata)
-    return merged, merged_state, combined
 
 
 def _temp_output_dir(job: DownloadJob) -> Path:
@@ -3461,13 +3660,43 @@ def _unique_path(path: Path) -> Path:
 
 def _cover_source_from_url(url: str) -> str:
     lowered = url.casefold()
-    if "coverartarchive.org" in lowered:
-        return "Cover Art Archive"
     if "sndcdn.com" in lowered or "soundcloud" in lowered:
         return "SoundCloud 기본 커버"
     if "ytimg.com" in lowered or "youtube" in lowered:
         return "YouTube 대체 썸네일"
     return "수동" if url else ""
+
+
+def _format_log_line(source: str, message: str) -> str:
+    return f"[{time.strftime('%H:%M:%S')}] [{source}] {message}"
+
+
+def _compact_openai_quota_status(text: str) -> str:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return "사용량 미조회"
+    if "\n" not in stripped:
+        return stripped
+    parts: list[str] = []
+    for line in stripped.splitlines():
+        item = line.strip()
+        if not item or item.startswith("Codex 사용량"):
+            continue
+        if item.startswith("- "):
+            item = item[2:].strip()
+        if item:
+            parts.append(item)
+    return " · ".join(parts) if parts else "사용량 미조회"
+
+
+def _openai_quota_status_from_candidates(candidates: list[MetadataCandidate]) -> str:
+    for candidate in candidates:
+        if candidate.provider != "chatgpt":
+            continue
+        status = str(candidate.raw.get("quota_status") or "").strip()
+        if status:
+            return status
+    return ""
 
 
 def _can_retry_job(job: DownloadJob) -> bool:
@@ -3484,14 +3713,24 @@ def _download_status_label(status: DownloadStatus | str) -> str:
     return {
         DownloadStatus.PENDING: "대기",
         DownloadStatus.METADATA: "메타데이터",
-        DownloadStatus.REVIEW_REQUIRED: "검수 필요",
-        DownloadStatus.APPROVED: "승인됨",
+        DownloadStatus.REVIEW_REQUIRED: "다운로드 대기",
+        DownloadStatus.APPROVED: "다운로드 대기",
         DownloadStatus.DOWNLOADING: "다운로드 중",
         DownloadStatus.TAGGING: "태깅 중",
         DownloadStatus.DONE: "완료",
         DownloadStatus.FAILED: "실패",
         DownloadStatus.CANCELED: "취소됨",
     }.get(status, str(status))
+
+
+def _tag_edit_block_reason(job: DownloadJob) -> str:
+    if job.status != DownloadStatus.DONE:
+        return "태그 수정은 다운로드와 태깅이 완료된 뒤에 열 수 있습니다"
+    if not job.final_path:
+        return "완료 파일 경로가 없어 태그 수정 팝업을 열 수 없습니다"
+    if not job.final_path.exists():
+        return f"완료 파일을 찾을 수 없어 태그 수정 팝업을 열 수 없습니다: {job.final_path}"
+    return ""
 
 
 def _pipeline_status(status: DownloadStatus) -> DownloadStatus:
@@ -3517,8 +3756,8 @@ def _review_state_label(state: ReviewState | str) -> str:
         state = ReviewState(state)
     return {
         ReviewState.AUTO_APPROVED: "자동 승인",
-        ReviewState.REVIEW_REQUIRED: "검수 필요",
-        ReviewState.MANUAL_REQUIRED: "수동 입력 필요",
+        ReviewState.REVIEW_REQUIRED: "확인 권장",
+        ReviewState.MANUAL_REQUIRED: "정보 부족",
     }.get(state, str(state))
 
 
@@ -3527,7 +3766,7 @@ def _trust_note_ko(platform: SourcePlatform) -> str:
         return "리믹스, 부트렉, 에딧, 매시업 작업을 위해 SoundCloud 기본 메타데이터를 신뢰합니다."
     if platform in {SourcePlatform.YOUTUBE, SourcePlatform.YOUTUBE_MUSIC}:
         return "YouTube 메타데이터는 보조값으로 보고 음악 메타데이터 제공자로 보강합니다."
-    return "알 수 없는 소스는 태깅 전에 검수가 필요합니다."
+    return "알 수 없는 소스는 다운로드 후 태그를 수정할 수 있습니다."
 
 
 def _candidate_badges(candidate: MetadataCandidate, current: TrackMetadata) -> str:
@@ -3538,6 +3777,8 @@ def _candidate_badges(candidate: MetadataCandidate, current: TrackMetadata) -> s
         badges.append("아티스트 충돌")
     if candidate.metadata.cover_url:
         badges.append("커버 있음")
+    if candidate.metadata.bpm:
+        badges.append("BPM 있음")
     if candidate.metadata.isrc:
         badges.append("ISRC 있음")
     return ", ".join(badges)
@@ -3551,6 +3792,7 @@ def _candidate_preview_rows(current: TrackMetadata, applied: TrackMetadata) -> l
         ("album_artist", "앨범 아티스트"),
         ("genre", "장르"),
         ("release_date", "날짜"),
+        ("bpm", "BPM"),
         ("label", "레이블"),
         ("isrc", "ISRC"),
         ("cover_url", "커버 URL"),
@@ -3567,19 +3809,15 @@ def _confidence_bucket(candidate: MetadataCandidate | None) -> str:
     if candidate.score >= 0.85:
         return "자동"
     if candidate.score >= 0.65:
-        return "검수"
+        return "확인"
     return "수동"
 
 
 def _confidence_explanation(candidate: MetadataCandidate, *, reference: TrackMetadata | None = None) -> str:
-    threshold = "자동 승인" if candidate.score >= 0.85 else "검수 필요" if candidate.score >= 0.65 else "수동 입력"
+    threshold = "자동 선택" if candidate.score >= 0.85 else "확인 권장" if candidate.score >= 0.65 else "정보 부족"
     matched = ", ".join(candidate.matched_fields) or "없음"
     parts = [f"{candidate.provider} 점수 {candidate.score:.2f}: {threshold}. 일치 항목: {matched}."]
-    missing = [
-        field
-        for field in ("title", "artist", "album", "release_date", "isrc", "cover_url")
-        if not getattr(candidate.metadata, field)
-    ]
+    missing = [field for field in ("title", "artist", "album", "release_date", "bpm", "isrc", "cover_url") if not getattr(candidate.metadata, field)]
     if missing:
         parts.append(f"후보에서 누락된 필드: {', '.join(missing)}.")
     if reference:
@@ -3598,11 +3836,20 @@ def _metadata_conflict_fields(left: TrackMetadata, right: TrackMetadata) -> list
             conflicts.append(field)
     if left.release_date and right.release_date and left.release_date[:4] != right.release_date[:4]:
         conflicts.append("release_year")
+    if left.bpm and right.bpm and abs(left.bpm - right.bpm) > 1:
+        conflicts.append("bpm")
     return conflicts
 
 
-_URL_PATTERN = re.compile(r"https?://[^\s<>()\"']+", flags=re.IGNORECASE)
-_ADJACENT_URL_SEPARATOR_PATTERN = re.compile(r"(?<=[^\s,;])[,;](?=https?://)", flags=re.IGNORECASE)
+_SCHEMELESS_SOURCE_HOST_PATTERN = r"(?:www\.)?(?:youtu\.be|youtube\.com|music\.youtube\.com|m\.youtube\.com|soundcloud\.com)"
+_URL_PATTERN = re.compile(
+    rf"https?://[^\s<>()\"']+|{_SCHEMELESS_SOURCE_HOST_PATTERN}/[^\s<>()\"']+",
+    flags=re.IGNORECASE,
+)
+_ADJACENT_URL_SEPARATOR_PATTERN = re.compile(
+    rf"(?<=[^\s,;])[,;](?=(?:https?://|{_SCHEMELESS_SOURCE_HOST_PATTERN}/))",
+    flags=re.IGNORECASE,
+)
 
 
 def _is_playlist_url(url: str) -> bool:
@@ -3674,7 +3921,7 @@ def _playlist_incomplete_message(url: str, result: PlaylistExpansionResult) -> s
         return (
             "YouTube Music 플레이리스트 전체를 가져오지 못했습니다. "
             f"확인된 항목 {expected}개 중 {extracted}개만 읽었습니다. "
-            "Google 계정 연결 또는 쿠키 파일 세션을 확인한 뒤 다시 시도하세요."
+            "Google 계정 연결을 확인한 뒤 다시 시도하세요."
         )
     return (
         "yt-dlp가 플레이리스트 전체를 가져오지 못했습니다. "
@@ -3689,7 +3936,7 @@ def _playlist_expansion_failure_message(url: str, error: object, *, auth_diagnos
         parts = [
             f"{message}\n"
             "YouTube Music 좋아요 표시한 음악(LM)은 계정 접근이 필요합니다. "
-            "설정에서 Google 계정을 연결하거나 최신 Netscape 형식 cookies.txt를 지정한 뒤 playlist URL을 다시 추가하세요."
+            "설정에서 Google 계정을 연결한 뒤 playlist URL을 다시 추가하세요."
         ]
         if auth_diagnostic:
             parts.append(auth_diagnostic)
@@ -3729,14 +3976,20 @@ def _extract_urls(value: str) -> list[str]:
     urls: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
-        url = candidate.strip().strip("<>()[]{}\"'")
-        url = url.rstrip(".,;")
+        url = normalize_source_url(candidate)
         parsed = urlparse(url)
         if not url or parsed.scheme not in {"http", "https"} or url in seen:
             continue
         urls.append(url)
         seen.add(url)
     return urls
+
+
+def _url_input_payload(value: str) -> str:
+    urls = _extract_urls(value)
+    if urls:
+        return "\n".join(urls)
+    return str(value or "").strip()
 
 
 def _supported_urls(urls: list[str]) -> tuple[list[str], list[str]]:
@@ -3748,14 +4001,6 @@ def _supported_urls(urls: list[str]) -> tuple[list[str], list[str]]:
         else:
             unsupported.append(url)
     return supported, unsupported
-
-
-def _metadata_conflicts(left: TrackMetadata, right: TrackMetadata) -> bool:
-    if left.title and right.title and text_similarity(left.title, right.title) < 0.65:
-        return True
-    if left.artist and right.artist and text_similarity(left.artist, right.artist) < 0.65:
-        return True
-    return False
 
 
 def _settings_bool(value: Any, *, default: bool) -> bool:
@@ -3796,7 +4041,7 @@ def _event_type_for_log(message: str) -> str:
         return "approved_auto"
     if "메타데이터 승인" in message:
         return "approved"
-    if "검수 필요" in message:
+    if "확인 권장" in message:
         return "review_required"
     if message.startswith("완료:"):
         return "done"

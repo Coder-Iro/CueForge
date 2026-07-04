@@ -14,16 +14,6 @@
       "license": "MIT"
     },
     {
-      "name": "chromaprint-fpcalc",
-      "package_id": "AcoustID.Chromaprint",
-      "manifest_path": "manifests/a/AcoustID/Chromaprint",
-      "architecture": "x64",
-      "installer_type": "zip",
-      "install_subdir": "chromaprint",
-      "executables": ["fpcalc.exe"],
-      "license": "LGPL-2.1-or-later"
-    },
-    {
       "name": "ffmpeg",
       "package_id": "Gyan.FFmpeg.Shared",
       "manifest_path": "manifests/g/Gyan/FFmpeg/Shared",

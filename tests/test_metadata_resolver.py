@@ -10,42 +10,24 @@ class FailingYTMusicProvider:
         raise AssertionError("YTMusic should not be called for SoundCloud")
 
 
-class FakeMusicBrainzProvider:
-    def lookup(self, reference: TrackMetadata, *, duration_ms: int | None = None) -> list[MetadataCandidate]:
-        if reference.title == "明日の私に幸あれ" and reference.artist == "ナナヲアカリ":
-            return [
-                MetadataCandidate(
-                    provider="musicbrainz",
-                    score=0.871,
-                    matched_fields=("title", "artist", "duration"),
-                    metadata=TrackMetadata(
-                        title="明日の私に幸あれ (Anime Size)",
-                        artist="ナナヲアカリ",
-                        album="明日の私に幸あれ",
-                        genre="Anison",
-                        release_date="2025-02-19",
-                        isrc="JPU902500162",
-                    ),
-                )
-            ]
-        return [
-            MetadataCandidate(
-                provider="musicbrainz",
-                score=0.97,
-                matched_fields=("title", "artist"),
-                metadata=TrackMetadata(title="Canonical Title", artist="Canonical Artist", album="Official Release"),
-            )
-        ]
-
-
 class FakeYTMusicProvider:
     def lookup(self, url: str) -> TrackMetadata:
         return TrackMetadata(title="YT Title", artist="YT Artist")
 
 
+class EmptyYTMusicProvider:
+    def lookup(self, url: str) -> TrackMetadata:
+        return TrackMetadata()
+
+
 class FakeYTMusicWithCoverProvider:
     def lookup(self, url: str) -> TrackMetadata:
-        return TrackMetadata(title="YT Title", artist="YT Artist", cover_url="https://img.youtube.com/yt-thumb.jpg")
+        return TrackMetadata(
+            title="YT Title",
+            artist="YT Artist",
+            cover_url="https://img.youtube.com/yt-thumb.jpg",
+            cover_source="YouTube Music thumbnail",
+        )
 
 
 class OfficialProjectYTMusicProvider:
@@ -53,29 +35,7 @@ class OfficialProjectYTMusicProvider:
         return TrackMetadata(title="Ex-Otogibanashi", artist="『超かぐや姫 ! 』公式")
 
 
-class FakeReleaseMusicBrainzProvider:
-    def lookup(self, reference: TrackMetadata, *, duration_ms: int | None = None) -> list[MetadataCandidate]:
-        return [
-            MetadataCandidate(
-                provider="musicbrainz",
-                score=0.97,
-                matched_fields=("title", "artist"),
-                metadata=TrackMetadata(
-                    title="Canonical Title",
-                    artist="Canonical Artist",
-                    album="Official Release",
-                    musicbrainz_release_id="rel-1",
-                ),
-            )
-        ]
-
-
-class EmptyMusicBrainzProvider:
-    def lookup(self, reference: TrackMetadata, *, duration_ms: int | None = None) -> list[MetadataCandidate]:
-        return []
-
-
-class FakeGemmaSuggester:
+class FakeChatGPTSuggester:
     def suggest(
         self,
         *,
@@ -86,20 +46,42 @@ class FakeGemmaSuggester:
     ) -> list[MetadataCandidate]:
         return [
             MetadataCandidate(
-                provider="gemma_e2b",
-                score=0.0,
-                matched_fields=("gemma_e2b", "title", "artist"),
-                metadata=TrackMetadata(title="Gemma Song", artist="Gemma Artist"),
-                raw={"review_only": True, "requires_semantic_score": True},
+                provider="chatgpt",
+                score=0.72,
+                matched_fields=("llm", "title", "artist"),
+                metadata=TrackMetadata(title="ChatGPT Song", artist="ChatGPT Artist"),
+                raw={"review_only": True},
             )
         ]
 
 
-def test_soundcloud_resolver_trusts_native_metadata_and_downgrades_external() -> None:
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: FailingYTMusicProvider(),
-        musicbrainz_provider_factory=FakeMusicBrainzProvider,
-    )
+class FakeChatGPTArtworkSuggester:
+    def suggest(
+        self,
+        *,
+        info: dict,
+        reference: TrackMetadata,
+        candidates: list[MetadataCandidate],
+        log=None,
+    ) -> list[MetadataCandidate]:
+        return [
+            MetadataCandidate(
+                provider="chatgpt",
+                score=0.82,
+                matched_fields=("title", "artist", "cover_url"),
+                metadata=TrackMetadata(
+                    title="YT Title",
+                    artist="YT Artist",
+                    cover_url="https://is1-ssl.mzstatic.com/image/thumb/Music/source/1200x1200bb.jpg",
+                    cover_source="official release artwork",
+                ),
+                raw={"prefer_initial_metadata": True},
+            )
+        ]
+
+
+def test_soundcloud_resolver_trusts_native_metadata() -> None:
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: FailingYTMusicProvider())
 
     resolution = resolver.resolve(
         url="https://soundcloud.com/dj/anime-song-bootleg",
@@ -116,17 +98,12 @@ def test_soundcloud_resolver_trusts_native_metadata_and_downgrades_external() ->
     assert resolution.platform == SourcePlatform.SOUNDCLOUD
     assert resolution.state == ReviewState.AUTO_APPROVED
     assert resolution.metadata.title == "DJ Name - Anime Song (Bootleg Remix) [Free DL]"
-    assert resolution.candidates[0].provider == "soundcloud"
-    assert resolution.candidates[1].provider == "musicbrainz_reference"
-    assert resolution.candidates[1].score == 0.84
-    assert resolution.candidates[1].raw["reference_only"] is True
+    assert resolution.metadata.artist == "DJ Name"
+    assert [candidate.provider for candidate in resolution.candidates] == ["soundcloud"]
 
 
-def test_youtube_resolver_still_uses_ytmusic_and_musicbrainz() -> None:
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: FakeYTMusicProvider(),
-        musicbrainz_provider_factory=FakeMusicBrainzProvider,
-    )
+def test_youtube_resolver_uses_ytmusic_without_external_enrichment() -> None:
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: FakeYTMusicProvider())
 
     resolution = resolver.resolve(
         url="https://music.youtube.com/watch?v=abc",
@@ -139,31 +116,10 @@ def test_youtube_resolver_still_uses_ytmusic_and_musicbrainz() -> None:
     )
 
     assert resolution.platform == SourcePlatform.YOUTUBE_MUSIC
-    assert resolution.metadata.title == "Canonical Title"
-    assert resolution.metadata.artist == "Canonical Artist"
-    assert resolution.state == ReviewState.AUTO_APPROVED
-
-
-def test_youtube_resolver_passes_cookie_file_auth_option(tmp_path: Path) -> None:
-    calls: list[dict] = []
-    cookie_file = tmp_path / "cookies.txt"
-
-    def factory(**kwargs: object) -> FakeYTMusicProvider:
-        calls.append(kwargs)
-        return FakeYTMusicProvider()
-
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=factory,
-        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
-    )
-
-    resolver.resolve(
-        url="https://music.youtube.com/watch?v=abc",
-        info={"extractor_key": "Youtube", "title": "Fallback"},
-        ytmusic_cookie_file=cookie_file,
-    )
-
-    assert calls[0]["cookie_file"] == cookie_file
+    assert resolution.metadata.title == "YT Title"
+    assert resolution.metadata.artist == "YT Artist"
+    assert resolution.state == ReviewState.REVIEW_REQUIRED
+    assert resolution.candidates == []
 
 
 def test_youtube_resolver_passes_oauth_auth_options(tmp_path: Path) -> None:
@@ -175,10 +131,7 @@ def test_youtube_resolver_passes_oauth_auth_options(tmp_path: Path) -> None:
         calls.append(kwargs)
         return FakeYTMusicProvider()
 
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=factory,
-        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
-    )
+    resolver = MetadataResolver(ytmusic_provider_factory=factory)
 
     resolver.resolve(
         url="https://music.youtube.com/watch?v=abc",
@@ -191,44 +144,8 @@ def test_youtube_resolver_passes_oauth_auth_options(tmp_path: Path) -> None:
     assert calls[0]["oauth_token_file"] == oauth_token_file
 
 
-def test_youtube_resolver_prefers_cover_art_archive_over_platform_thumbnail() -> None:
-    calls: list[str] = []
-
-    class FakeCoverArtProvider:
-        def lookup(self, release_id: str) -> str:
-            calls.append(release_id)
-            return "https://coverartarchive.org/release/rel-1/front-500.jpg"
-
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: FakeYTMusicWithCoverProvider(),
-        musicbrainz_provider_factory=FakeReleaseMusicBrainzProvider,
-        cover_art_provider_factory=FakeCoverArtProvider,
-    )
-
-    resolution = resolver.resolve(
-        url="https://music.youtube.com/watch?v=abc",
-        info={
-            "extractor_key": "Youtube",
-            "title": "Fallback",
-            "uploader": "Uploader",
-            "thumbnail": "https://img.youtube.com/fallback.jpg",
-        },
-    )
-
-    assert resolution.metadata.cover_url == "https://coverartarchive.org/release/rel-1/front-500.jpg"
-    assert calls == ["rel-1"]
-
-
-def test_youtube_resolver_falls_back_to_platform_thumbnail_when_cover_art_missing() -> None:
-    class MissingCoverArtProvider:
-        def lookup(self, release_id: str) -> str:
-            return ""
-
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: FakeYTMusicWithCoverProvider(),
-        musicbrainz_provider_factory=FakeReleaseMusicBrainzProvider,
-        cover_art_provider_factory=MissingCoverArtProvider,
-    )
+def test_youtube_resolver_keeps_ytmusic_cover_before_platform_thumbnail() -> None:
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: FakeYTMusicWithCoverProvider())
 
     resolution = resolver.resolve(
         url="https://music.youtube.com/watch?v=abc",
@@ -241,13 +158,48 @@ def test_youtube_resolver_falls_back_to_platform_thumbnail_when_cover_art_missin
     )
 
     assert resolution.metadata.cover_url == "https://img.youtube.com/yt-thumb.jpg"
+    assert resolution.metadata.cover_source == "YouTube Music thumbnail"
+
+
+def test_youtube_resolver_falls_back_to_platform_thumbnail_when_ytmusic_has_no_cover() -> None:
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: FakeYTMusicProvider())
+
+    resolution = resolver.resolve(
+        url="https://music.youtube.com/watch?v=abc",
+        info={
+            "extractor_key": "Youtube",
+            "title": "Fallback",
+            "uploader": "Uploader",
+            "thumbnail": "https://img.youtube.com/fallback.jpg",
+        },
+    )
+
+    assert resolution.metadata.cover_url == "https://img.youtube.com/fallback.jpg"
+    assert resolution.metadata.cover_source == "platform thumbnail"
+
+
+def test_youtube_resolver_prefers_release_artwork_over_platform_thumbnail() -> None:
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=lambda **_: FakeYTMusicProvider(),
+        generative_suggester_factory=FakeChatGPTArtworkSuggester,
+    )
+
+    resolution = resolver.resolve(
+        url="https://www.youtube.com/watch?v=abc",
+        info={
+            "extractor_key": "Youtube",
+            "title": "YT Title",
+            "uploader": "YT Artist",
+            "thumbnail": "https://img.youtube.com/fallback.jpg",
+        },
+    )
+
+    assert resolution.metadata.cover_url == "https://is1-ssl.mzstatic.com/image/thumb/Music/source/1200x1200bb.jpg"
+    assert resolution.metadata.cover_source == "official release artwork"
 
 
 def test_youtube_resolver_prefers_mixed_creator_artist_over_official_project_artist() -> None:
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: OfficialProjectYTMusicProvider(),
-        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
-    )
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: OfficialProjectYTMusicProvider())
 
     resolution = resolver.resolve(
         url="https://youtu.be/qbT7bBYz5YA",
@@ -264,16 +216,8 @@ def test_youtube_resolver_prefers_mixed_creator_artist_over_official_project_art
     assert resolution.metadata.artist == "ryo (supercell)"
 
 
-def test_soundcloud_resolver_keeps_native_artwork_even_with_release_match() -> None:
-    class FailingCoverArtProvider:
-        def lookup(self, release_id: str) -> str:
-            raise AssertionError("SoundCloud native artwork should be kept")
-
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: FailingYTMusicProvider(),
-        musicbrainz_provider_factory=FakeReleaseMusicBrainzProvider,
-        cover_art_provider_factory=FailingCoverArtProvider,
-    )
+def test_soundcloud_resolver_keeps_native_artwork() -> None:
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: FailingYTMusicProvider())
 
     resolution = resolver.resolve(
         url="https://soundcloud.com/dj/anime-song-bootleg",
@@ -287,13 +231,11 @@ def test_soundcloud_resolver_keeps_native_artwork_even_with_release_match() -> N
     )
 
     assert resolution.metadata.cover_url == "https://i1.sndcdn.com/artworks-native.jpg"
+    assert resolution.metadata.cover_source == "SoundCloud native"
 
 
-def test_youtube_resolver_uses_description_theme_hints_before_fallback() -> None:
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: FakeYTMusicProvider(),
-        musicbrainz_provider_factory=FakeMusicBrainzProvider,
-    )
+def test_youtube_resolver_uses_description_theme_hints_as_review_metadata() -> None:
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: EmptyYTMusicProvider())
 
     resolution = resolver.resolve(
         url="https://youtu.be/VEb3rctB3dc",
@@ -307,12 +249,11 @@ def test_youtube_resolver_uses_description_theme_hints_before_fallback() -> None
         },
     )
 
-    assert resolution.metadata.title == "明日の私に幸あれ (Anime Size)"
+    assert resolution.metadata.title == "明日の私に幸あれ"
     assert resolution.metadata.artist == "ナナヲアカリ"
-    assert resolution.metadata.album == "明日の私に幸あれ"
-    assert resolution.metadata.isrc == "JPU902500162"
-    assert resolution.state == ReviewState.AUTO_APPROVED
-    assert resolution.candidates[0].provider == "musicbrainz_from_description_エンディングテーマ"
+    assert resolution.metadata.genre == "Anison"
+    assert resolution.state == ReviewState.REVIEW_REQUIRED
+    assert resolution.candidates[0].provider == "description_エンディングテーマ"
 
 
 def test_youtube_auto_generated_description_does_not_create_theme_hint() -> None:
@@ -324,10 +265,7 @@ def test_youtube_auto_generated_description_does_not_create_theme_hint() -> None
                 album="Dear Mother Father",
             )
 
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: FeaturedArtistYTMusicProvider(),
-        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
-    )
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: FeaturedArtistYTMusicProvider())
 
     resolution = resolver.resolve(
         url="https://youtu.be/stx3Nve3a-0",
@@ -349,14 +287,7 @@ def test_youtube_auto_generated_description_does_not_create_theme_hint() -> None
 
 
 def test_youtube_resolver_keeps_compact_title_pattern_as_review_candidate() -> None:
-    class EmptyYTMusicProvider:
-        def lookup(self, url: str) -> TrackMetadata:
-            return TrackMetadata()
-
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: EmptyYTMusicProvider(),
-        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
-    )
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: EmptyYTMusicProvider())
 
     resolution = resolver.resolve(
         url="https://youtu.be/Jty1MDOAKvQ",
@@ -379,14 +310,7 @@ def test_youtube_resolver_keeps_compact_title_pattern_as_review_candidate() -> N
 
 
 def test_youtube_resolver_uses_cover_hint_as_initial_review_metadata() -> None:
-    class EmptyYTMusicProvider:
-        def lookup(self, url: str) -> TrackMetadata:
-            return TrackMetadata()
-
-    resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: EmptyYTMusicProvider(),
-        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
-    )
+    resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: EmptyYTMusicProvider())
 
     resolution = resolver.resolve(
         url="https://youtu.be/MvbPY6mrcy4",
@@ -405,15 +329,10 @@ def test_youtube_resolver_uses_cover_hint_as_initial_review_metadata() -> None:
     assert resolution.candidates[0].provider == "title_cover"
 
 
-def test_youtube_resolver_adds_gemma_fallback_as_review_candidate() -> None:
-    class EmptyYTMusicProvider:
-        def lookup(self, url: str) -> TrackMetadata:
-            return TrackMetadata()
-
+def test_youtube_resolver_adds_chatgpt_fallback_as_review_candidate() -> None:
     resolver = MetadataResolver(
-        ytmusic_provider_factory=lambda auth_path: EmptyYTMusicProvider(),
-        musicbrainz_provider_factory=EmptyMusicBrainzProvider,
-        generative_suggester_factory=FakeGemmaSuggester,
+        ytmusic_provider_factory=lambda **_: EmptyYTMusicProvider(),
+        generative_suggester_factory=FakeChatGPTSuggester,
     )
 
     resolution = resolver.resolve(
@@ -425,6 +344,7 @@ def test_youtube_resolver_adds_gemma_fallback_as_review_candidate() -> None:
         },
     )
 
-    assert any(candidate.provider == "gemma_e2b" for candidate in resolution.candidates)
+    assert any(candidate.provider == "chatgpt" for candidate in resolution.candidates)
     assert resolution.metadata.title == "Noisy Video Title"
     assert resolution.metadata.artist == "Uploader"
+    assert resolution.state == ReviewState.REVIEW_REQUIRED

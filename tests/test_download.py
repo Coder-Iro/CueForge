@@ -83,6 +83,18 @@ def test_fetch_info_uses_ytdlp_without_download(tmp_path: Path) -> None:
     assert FakeYDL.calls[-1]["extractor_args"] == {"youtube": {"lang": ["ko"]}}
 
 
+def test_fetch_info_normalizes_supported_schemeless_url(tmp_path: Path) -> None:
+    FakeYDL.calls.clear()
+    downloader = YTDLPDownloader(
+        DownloadConfig(output_dir=tmp_path),
+        ydl_factory=FakeYDL,
+    )
+
+    info = downloader.fetch_info("music.youtube.com/watch?v=abc")
+
+    assert info["id"] == "abc"
+
+
 def test_fetch_info_can_disable_youtube_locale(tmp_path: Path) -> None:
     FakeYDL.calls.clear()
     downloader = YTDLPDownloader(
@@ -158,21 +170,6 @@ def test_expand_playlist_retries_youtube_pagination_with_skip_webpage(tmp_path: 
     ]
 
 
-def test_fetch_info_uses_cookie_file(tmp_path: Path) -> None:
-    FakeYDL.calls.clear()
-    cookie_file = tmp_path / "cookies.txt"
-    cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
-    downloader = YTDLPDownloader(
-        DownloadConfig(output_dir=tmp_path, cookie_file=cookie_file),
-        ydl_factory=FakeYDL,
-    )
-
-    downloader.fetch_info("https://music.youtube.com/watch?v=abc")
-
-    assert FakeYDL.calls[-1]["cookiefile"] == str(cookie_file)
-    assert "cookiesfrombrowser" not in FakeYDL.calls[-1]
-
-
 def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
     progresses: list[DownloadProgress] = []
     downloader = YTDLPDownloader(
@@ -188,20 +185,6 @@ def test_download_audio_configures_mp3_extraction(tmp_path: Path) -> None:
     assert options["postprocessors"][0]["preferredquality"] == "0"
     assert result.path == Path("D:/music/abc.mp3")
     assert progresses[0].percent == 50.0
-
-
-def test_download_audio_uses_cookie_file(tmp_path: Path) -> None:
-    FakeYDL.calls.clear()
-    cookie_file = tmp_path / "cookies.txt"
-    cookie_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
-    downloader = YTDLPDownloader(
-        DownloadConfig(output_dir=tmp_path, cookie_file=cookie_file),
-        ydl_factory=FakeYDL,
-    )
-
-    downloader.download_audio("https://music.youtube.com/watch?v=abc")
-
-    assert FakeYDL.calls[-1]["cookiefile"] == str(cookie_file)
 
 
 def test_download_can_disable_remote_js_components(tmp_path: Path) -> None:

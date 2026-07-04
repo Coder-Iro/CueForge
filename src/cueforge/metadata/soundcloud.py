@@ -64,8 +64,6 @@ def build_soundcloud_metadata(info: dict[str, Any], source_url: str = "") -> Tra
         cover_url=cleaned.cover_url,
         cover_source=cleaned.cover_source,
         source_url=cleaned.source_url,
-        musicbrainz_recording_id=cleaned.musicbrainz_recording_id,
-        musicbrainz_release_id=cleaned.musicbrainz_release_id,
         comments=cleaned.comments,
     )
 
@@ -86,19 +84,8 @@ def build_soundcloud_native_candidate(info: dict[str, Any], source_url: str = ""
         matched_fields=tuple(matched),
         raw={
             "trusted_native": True,
-            "reference_only": False,
             "reason": "SoundCloud native metadata is trusted for remix, bootleg, edit, and mashup tracks.",
         },
-    )
-
-
-def as_reference_candidate(candidate: MetadataCandidate) -> MetadataCandidate:
-    return MetadataCandidate(
-        provider=f"{candidate.provider}_reference",
-        metadata=candidate.metadata,
-        score=min(candidate.score, 0.84),
-        matched_fields=candidate.matched_fields,
-        raw={**candidate.raw, "reference_only": True},
     )
 
 

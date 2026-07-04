@@ -9,15 +9,18 @@ CueForge is a Windows-first desktop app for preparing authorized YouTube, YouTub
 - YouTube, YouTube Music, and SoundCloud URLs supported through yt-dlp
 - ffmpeg conversion to MP3 320 kbps
 - ID3v2.3 tagging for rekordbox compatibility
-- YouTube description/YTMusic metadata first, MusicBrainz enrichment second
-- Cover Art Archive release artwork preferred over YouTube thumbnails when MusicBrainz release metadata is available
-- AcoustID/Chromaprint audio recognition for low-confidence YouTube metadata
-- MiniLM ONNX semantic scoring and Gemma E2B fallback candidate generation, used as review assistance rather than blind approval
+- YouTube Music metadata plus title/description hints for YouTube sources
+- ChatGPT/OpenAI metadata parser for YouTube sources when a ChatGPT account is connected, including review-only BPM candidates with always-on web search
+- SoundCloud native title, uploader/creator, genre, artwork, and source URL preserved by default
+- Platform artwork fallback from SoundCloud, YouTube Music, or YouTube thumbnails
+- BPM tagging through ID3 `TBPM`
+- Google OAuth support for account-scoped YouTube Music playlist access
 - Separate metadata analysis, review approval, and approved download/tagging steps
 - Low-confidence metadata review queue before final tagging
 
-SoundCloud tracks are treated differently from YouTube videos: native SoundCloud title, artist/uploader, genre, tags, artwork, and source URL are trusted by default so remix, bootleg, edit, and mashup titles are preserved.
-Automatic audio recognition is skipped for SoundCloud by default to avoid replacing remix or bootleg metadata with the original commercial release.
+The ChatGPT metadata parser uses CueForge's own Codex OAuth connection. When a ChatGPT account is connected and a catalog model is selected, YouTube analysis automatically adds ChatGPT review candidates. CueForge fetches the account's Codex model list for selection, shows current model/usage in the status bar, uses structured output and always-on web search for BPM and official metadata, then returns review candidates rather than blindly tagging files.
+
+SoundCloud tracks are treated differently from YouTube videos: native SoundCloud metadata is trusted by default so remix, bootleg, edit, and mashup titles are preserved.
 The review screen shows a review queue, alternative metadata candidates, confidence details, cover-art source, and a cover preview so beta testers can catch bad matches before tagging. Use `Analyze Metadata` first, review or approve tracks as needed, then use `Download Approved` to download and tag the approved tracks. `Retry Failed` returns failed jobs to the analysis queue.
 
 ## Development
@@ -29,13 +32,14 @@ python -m venv .venv
 .\.venv\Scripts\python -m cueforge
 ```
 
-The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component and runs Gemma E2B metadata fallback suggestions through Transformers.js. Optional AcoustID recognition also requires an AcoustID application client key and `fpcalc` from Chromaprint, either on PATH or selected in Settings. MiniLM metadata candidate scoring uses ONNX Runtime on CPU and prepares `Xenova/paraphrase-multilingual-MiniLM-L12-v2` during the first-run onboarding flow unless the model is already cached or bundled under `models/semantic-ranker`. Gemma E2B prepares `onnx-community/gemma-4-E2B-it-ONNX` during onboarding as a required metadata model; Gemma only generates review-only fallback candidates, and MiniLM assigns their semantic score.
-For account-scoped YouTube Music metadata and playlist expansion, packaged builds can include `config/google_oauth_client.json`; end users then use Settings > Google Account to connect their Google account through the browser. CueForge stores only the user's refresh token under the app data directory and prefers OAuth over manual JSON or cookies for YouTube Music metadata. A Netscape-format cookies.txt file is still supported as a fallback and is still passed to yt-dlp for download authorization when a video itself requires a logged-in session. Direct browser-cookie extraction is intentionally not exposed because Chromium-based browser cookie decryption is unreliable on current Windows builds. Manual YTMusic auth JSON remains available as an advanced fallback.
-Use `python -m cueforge --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver matching, Cover Art Archive lookup, and diagnostics without downloading audio.
+The app expects `ffmpeg` and Deno to be available on PATH during development. Deno lets yt-dlp solve current YouTube JavaScript challenges through its `ejs:github` remote component.
+Use Settings > ChatGPT Metadata to connect a ChatGPT account for YouTube metadata parsing. CueForge stores that app-owned Codex OAuth token under the app data directory, does not read local Codex CLI credentials, and uses the connected account to refresh available models and Codex usage.
+For account-scoped YouTube Music playlist expansion, packaged builds can include `config/google_oauth_client.json`; end users then use Settings > Google Account to connect their Google account through the browser. CueForge stores only the user's refresh token under the app data directory. cookies.txt, browser-cookie extraction, and manual YTMusic auth JSON are no longer supported.
+Use `python -m cueforge --smoke-metadata-url <url>` to validate yt-dlp metadata extraction, resolver hints, cover fallback, and diagnostics without downloading audio.
 
 ## Windows Packaging
 
-The release flow builds a PyInstaller app and an Inno Setup online installer. At build time, the package script resolves the latest x64 ZIP manifests for Deno, Chromaprint `fpcalc`, and ffmpeg from `microsoft/winget-pkgs`. The installer then downloads those resolved URLs directly, verifies each archive by SHA-256, and installs them under the app's `bin` directory so end users do not need to install those tools manually.
+The release flow builds a PyInstaller app and an Inno Setup online installer. At build time, the package script resolves the latest x64 ZIP manifests for Deno and ffmpeg from `microsoft/winget-pkgs`. The installer then downloads those resolved URLs directly, verifies each archive by SHA-256, and installs them under the app's `bin` directory so end users do not need to install those tools manually.
 
 ```powershell
 .\scripts\package_windows.ps1

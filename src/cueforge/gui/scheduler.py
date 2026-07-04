@@ -56,6 +56,9 @@ class JobScheduler(QObject):
     def enqueue_downloads(self, jobs: Iterable[DownloadJob], *, priority: bool = False) -> None:
         self._enqueue("download", jobs, priority=priority)
 
+    def remove_queued_job(self, job_id: str, *, stage: str | None = None) -> bool:
+        return self._remove_queued_job(job_id, stage=stage)
+
     def cancel_all(self) -> None:
         for queue in self._queues.values():
             queue.clear()
@@ -100,13 +103,23 @@ class JobScheduler(QObject):
             self._queues[stage].extend(ready)
         self._pump()
 
-    def _remove_queued_job(self, job_id: str) -> None:
-        for queue in self._queues.values():
+    def _remove_queued_job(self, job_id: str, *, stage: str | None = None) -> bool:
+        if stage is None:
+            queues = list(self._queues.values())
+        else:
+            queue = self._queues.get(stage)
+            if queue is None:
+                return False
+            queues = [queue]
+        removed = False
+        for queue in queues:
             if not any(job.id == job_id for job in queue):
                 continue
             retained = deque(job for job in queue if job.id != job_id)
+            removed = len(retained) != len(queue) or removed
             queue.clear()
             queue.extend(retained)
+        return removed
 
     def _pump(self) -> None:
         self._pump_stage("metadata", self._limits.metadata)

@@ -38,7 +38,6 @@ def test_windows_dependency_config_uses_winget_manifest_sources() -> None:
     assert payload["winget_repository"] == "microsoft/winget-pkgs"
     assert {item["package_id"] for item in payload["dependencies"]} == {
         "DenoLand.Deno",
-        "AcoustID.Chromaprint",
         "Gyan.FFmpeg.Shared",
     }
     for dependency in payload["dependencies"]:
@@ -58,9 +57,8 @@ def test_online_installer_uses_generated_dependency_include() -> None:
     assert "#include DependencyInclude" in script
     assert "AddDependencyDownloads;" in script
     assert "ExtractAllDependencies" in script
-    assert "Failed to download external dependencies (ffmpeg, fpcalc, and Deno)" in script
+    assert "Failed to download external dependencies (ffmpeg and Deno)" in script
     assert "github.com/denoland/deno/releases" not in script
-    assert "github.com/acoustid/chromaprint/releases" not in script
     assert "github.com/GyanD/codexffmpeg/releases" not in script
 
 

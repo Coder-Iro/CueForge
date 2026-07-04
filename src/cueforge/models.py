@@ -50,15 +50,15 @@ class TrackMetadata:
     album_artist: str = ""
     genre: str = ""
     release_date: str = ""
+    bpm: int | None = None
     track_number: int | None = None
     disc_number: int | None = None
     label: str = ""
     isrc: str = ""
     cover_url: str = ""
+    cover_path: str = ""
     cover_source: str = ""
     source_url: str = ""
-    musicbrainz_recording_id: str = ""
-    musicbrainz_release_id: str = ""
     comments: str = ""
 
     def with_defaults_from(self, fallback: "TrackMetadata") -> "TrackMetadata":
@@ -112,6 +112,7 @@ class StoredCandidateSummary:
     title: str = ""
     artist: str = ""
     album: str = ""
+    bpm: int | None = None
     matched_fields: tuple[str, ...] = ()
 
     @classmethod
@@ -122,6 +123,7 @@ class StoredCandidateSummary:
             title=candidate.metadata.title,
             artist=candidate.metadata.artist,
             album=candidate.metadata.album,
+            bpm=candidate.metadata.bpm,
             matched_fields=tuple(candidate.matched_fields),
         )
 

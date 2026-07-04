@@ -37,6 +37,11 @@ def squash_spaces(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
 
+def sanitize_cover_url(value: Any) -> str:
+    url = squash_spaces(str(value or "")).strip(" \"'<>")
+    return url.rstrip(".,;:")
+
+
 def clean_title(value: str) -> str:
     title = value or ""
     for pattern in NOISE_PATTERNS:
@@ -84,22 +89,24 @@ def _clean_date(value: str) -> str:
 
 
 def clean_metadata(metadata: TrackMetadata) -> TrackMetadata:
+    cover_url = sanitize_cover_url(metadata.cover_url)
+    cover_path = squash_spaces(metadata.cover_path)
     return TrackMetadata(
         title=clean_title(metadata.title),
         artist=clean_artist(metadata.artist),
         album=squash_spaces(metadata.album),
-        album_artist=squash_spaces(metadata.album_artist),
+        album_artist=clean_artist(metadata.album_artist),
         genre=squash_spaces(metadata.genre),
         release_date=_clean_date(metadata.release_date),
+        bpm=_clean_bpm(metadata.bpm),
         track_number=metadata.track_number,
         disc_number=metadata.disc_number,
         label=squash_spaces(metadata.label),
         isrc=squash_spaces(metadata.isrc).upper(),
-        cover_url=squash_spaces(metadata.cover_url),
-        cover_source=squash_spaces(metadata.cover_source),
+        cover_url=cover_url,
+        cover_path=cover_path,
+        cover_source=squash_spaces(metadata.cover_source) if cover_url or cover_path else "",
         source_url=squash_spaces(metadata.source_url),
-        musicbrainz_recording_id=squash_spaces(metadata.musicbrainz_recording_id),
-        musicbrainz_release_id=squash_spaces(metadata.musicbrainz_release_id),
         comments=squash_spaces(metadata.comments),
     )
 
@@ -125,6 +132,7 @@ def build_safe_fallback(info: dict[str, Any], source_url: str = "") -> TrackMeta
             album_artist=str(info.get("album_artist") or _first(info.get("album_artists")) or ""),
             genre=str(info.get("genre") or _first(info.get("genres")) or _first(info.get("categories")) or ""),
             release_date=str(info.get("release_date") or info.get("upload_date") or ""),
+            bpm=_clean_bpm(info.get("bpm") or info.get("average_bpm")),
             track_number=_to_int(info.get("track_number")),
             disc_number=_to_int(info.get("disc_number")),
             cover_url=str(info.get("thumbnail") or ""),
@@ -259,3 +267,13 @@ def _to_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _clean_bpm(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        bpm = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return bpm if 20 <= bpm <= 300 else None

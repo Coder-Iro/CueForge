@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_data_files
 
 
 SPEC_DIR = Path(SPECPATH).parent
@@ -11,20 +11,11 @@ datas = collect_data_files("ytmusicapi", includes=["locales/**/*"])
 oauth_client_config = ROOT / "config" / "google_oauth_client.json"
 if oauth_client_config.exists():
     datas.append((str(oauth_client_config), "config"))
-semantic_model_dir = ROOT / "models" / "semantic-ranker"
-if semantic_model_dir.exists():
-    for path in semantic_model_dir.rglob("*"):
-        if path.is_file():
-            target = Path("models") / "semantic-ranker" / path.relative_to(semantic_model_dir).parent
-            datas.append((str(path), str(target)))
-binaries = collect_dynamic_libs("onnxruntime")
+binaries = []
 hiddenimports = [
-    "huggingface_hub",
-    "onnxruntime.capi._pybind_state",
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
-    "tokenizers",
 ]
 
 

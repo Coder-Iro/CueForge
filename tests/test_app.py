@@ -19,22 +19,22 @@ class FakeDownloader:
 
 class FakeResolver:
     def resolve(self, *, url: str, info: dict, log) -> MetadataResolution:
-        log("cover art: Cover Art Archive 500px")
+        log("cover art fallback: platform thumbnail")
         return MetadataResolution(
             metadata=TrackMetadata(
                 title="Song",
                 artist="Artist",
                 album="Album",
-                cover_url="https://coverartarchive.org/release/rel/front-500.jpg",
-                cover_source="Cover Art Archive",
+                cover_url="https://img.youtube.com/cover.jpg",
+                cover_source="platform thumbnail",
             ),
             state=ReviewState.AUTO_APPROVED,
             candidates=[
                 MetadataCandidate(
-                    provider="musicbrainz",
+                    provider="ytmusic",
                     score=0.97,
                     matched_fields=("title", "artist"),
-                    metadata=TrackMetadata(title="Song", artist="Artist", musicbrainz_release_id="rel-1"),
+                    metadata=TrackMetadata(title="Song", artist="Artist"),
                 )
             ],
             platform=SourcePlatform.YOUTUBE,
@@ -53,9 +53,9 @@ def test_smoke_metadata_reports_resolved_metadata(monkeypatch) -> None:
     assert payload["state"] == "auto_approved"
     assert payload["platform"] == "youtube"
     assert payload["metadata"]["title"] == "Song"
-    assert payload["metadata"]["cover_source"] == "Cover Art Archive"
-    assert payload["candidates"][0]["provider"] == "musicbrainz"
-    assert payload["logs"] == ["cover art: Cover Art Archive 500px"]
+    assert payload["metadata"]["cover_source"] == "platform thumbnail"
+    assert payload["candidates"][0]["provider"] == "ytmusic"
+    assert payload["logs"] == ["cover art fallback: platform thumbnail"]
     assert payload["diagnostics"] == "diagnostics"
 
 

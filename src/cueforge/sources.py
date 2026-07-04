@@ -8,6 +8,17 @@ from typing import Any
 from urllib.parse import urlparse
 
 
+SUPPORTED_SCHEMELESS_HOSTS = (
+    "youtu.be",
+    "youtube.com",
+    "www.youtube.com",
+    "music.youtube.com",
+    "m.youtube.com",
+    "soundcloud.com",
+    "www.soundcloud.com",
+)
+
+
 class SourcePlatform(str, Enum):
     YOUTUBE = "youtube"
     YOUTUBE_MUSIC = "youtube_music"
@@ -34,6 +45,7 @@ class SourceTrustPolicy:
 
 
 def detect_source_platform(url: str = "", info: dict[str, Any] | None = None) -> SourcePlatform:
+    url = normalize_source_url(url)
     extractor = str((info or {}).get("extractor_key") or (info or {}).get("extractor") or "").casefold()
     if "soundcloud" in extractor:
         return SourcePlatform.SOUNDCLOUD
@@ -48,6 +60,21 @@ def detect_source_platform(url: str = "", info: dict[str, Any] | None = None) ->
     if "youtube.com" in host or "youtu.be" in host:
         return SourcePlatform.YOUTUBE
     return SourcePlatform.UNKNOWN
+
+
+def normalize_source_url(value: str) -> str:
+    url = str(value or "").strip().strip("<>()[]{}\"'")
+    url = url.rstrip(".,;")
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if parsed.scheme:
+        return url
+
+    host = url.split("/", 1)[0].casefold()
+    if host in SUPPORTED_SCHEMELESS_HOSTS:
+        return f"https://{url}"
+    return url
 
 
 def trust_policy_for(platform: SourcePlatform) -> SourceTrustPolicy:
@@ -78,4 +105,3 @@ def trust_policy_for(platform: SourcePlatform) -> SourceTrustPolicy:
 
 def _is_youtube_music_url(url: str) -> bool:
     return "music.youtube.com" in urlparse(url).netloc.casefold()
-

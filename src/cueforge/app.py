@@ -153,7 +153,6 @@ def _smoke_metadata(
                 "album": candidate.metadata.album,
                 "release_date": candidate.metadata.release_date,
                 "isrc": candidate.metadata.isrc,
-                "musicbrainz_release_id": candidate.metadata.musicbrainz_release_id,
             }
             for candidate in resolution.candidates[:5]
         ],

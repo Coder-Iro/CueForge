@@ -419,8 +419,10 @@ def test_openai_codex_oauth_authorization_url_uses_registered_callback() -> None
     assert parsed.netloc == "auth.openai.com"
     assert query["redirect_uri"] == ["http://localhost:1455/auth/callback"]
     assert query["response_type"] == ["code"]
-    assert query["scope"] == ["openid profile email offline_access"]
+    assert query["scope"] == ["openid profile email offline_access api.connectors.read api.connectors.invoke"]
     assert query["code_challenge_method"] == ["S256"]
+    assert query["id_token_add_organizations"] == ["true"]
+    assert query["codex_cli_simplified_flow"] == ["true"]
 
 
 def test_openai_codex_models_are_fetched_from_oauth_catalog(tmp_path) -> None:

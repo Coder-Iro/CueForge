@@ -24,7 +24,11 @@ OPENAI_CODEX_OAUTH_TOKEN_URI = "https://auth.openai.com/oauth/token"
 OPENAI_CODEX_MODELS_URI = "https://chatgpt.com/backend-api/codex/models"
 OPENAI_CODEX_MODELS_CLIENT_VERSION = "99.99.99"
 OPENAI_CODEX_USAGE_URI = "https://chatgpt.com/backend-api/wham/usage"
-OPENAI_CODEX_OAUTH_SCOPE = "openid profile email offline_access"
+OPENAI_CODEX_OAUTH_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+OPENAI_CODEX_OAUTH_AUTHORIZATION_HINTS = {
+    "id_token_add_organizations": "true",
+    "codex_cli_simplified_flow": "true",
+}
 OPENAI_CODEX_OAUTH_TOKEN_FILE_NAME = "openai_codex_oauth_token.json"
 OPENAI_CODEX_OAUTH_LOCAL_CALLBACK_HOST = "localhost"
 OPENAI_CODEX_OAUTH_LOCAL_CALLBACK_PORT = 1455
@@ -76,6 +80,7 @@ def build_openai_codex_oauth_authorization_url(
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
             "state": state,
+            **OPENAI_CODEX_OAUTH_AUTHORIZATION_HINTS,
         }
     )
     return f"{auth_uri}?{query}"

@@ -1472,9 +1472,17 @@ def test_settings_are_saved_when_leaving_settings_tab(tmp_path, monkeypatch) -> 
         app.processEvents()
 
 
-def test_first_run_onboarding_requires_both_account_logins_to_complete(tmp_path) -> None:
+def test_first_run_onboarding_requires_both_account_logins_to_complete(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     settings = _test_settings(tmp_path)
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_openai_codex_oauth_token_path",
+        lambda: tmp_path / "missing-openai-oauth-token.json",
+    )
+    monkeypatch.setattr(
+        "cueforge.gui.main_window.default_ytmusic_oauth_token_path",
+        lambda: tmp_path / "missing-ytmusic-oauth-token.json",
+    )
     window = MainWindow(settings=settings)
     try:
         assert window.onboarding_dialog is not None

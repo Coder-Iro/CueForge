@@ -1480,9 +1480,14 @@ class MainWindow(QMainWindow):
 
     def _saved_ffmpeg_path_or_detected(self) -> str:
         saved = str(self._settings.value("paths/ffmpeg", "") or "").strip()
+        detected = find_executable("ffmpeg")
+        if detected.path and detected.source == "bundled":
+            return str(detected.path)
         status = find_executable("ffmpeg", explicit_path=Path(saved) if saved else None)
         if status.path:
             return str(status.path)
+        if detected.path:
+            return str(detected.path)
         return saved
 
     def save_settings(self) -> None:

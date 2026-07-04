@@ -1376,6 +1376,30 @@ def test_main_window_replaces_stale_saved_ffmpeg_path_with_detected_dependency(t
         app.processEvents()
 
 
+def test_main_window_prefers_bundled_ffmpeg_over_saved_external_path(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    settings.setValue("onboarding/completed", True)
+    saved = tmp_path / "external" / "ffmpeg.exe"
+    bundled = tmp_path / "app" / "bin" / "ffmpeg" / "bin" / "ffmpeg.exe"
+    settings.setValue("paths/ffmpeg", str(saved))
+
+    def fake_find_executable(name: str, *, explicit_path=None, root=None) -> DependencyStatus:
+        assert name == "ffmpeg"
+        if explicit_path:
+            return DependencyStatus(name=name, path=explicit_path, source="settings")
+        return DependencyStatus(name=name, path=bundled, source="bundled")
+
+    monkeypatch.setattr("cueforge.gui.main_window.find_executable", fake_find_executable)
+
+    window = MainWindow(settings=settings)
+    try:
+        assert window.ffmpeg_path_input.text() == str(bundled)
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_main_window_persists_beta_settings(tmp_path, monkeypatch) -> None:
     app = QApplication.instance() or QApplication([])
     monkeypatch.setattr(

@@ -14,6 +14,17 @@ def test_find_executable_prefers_explicit_path(tmp_path: Path) -> None:
     assert status.source == "settings"
 
 
+def test_find_executable_treats_explicit_bundled_path_as_bundled(tmp_path: Path) -> None:
+    bundled = tmp_path / "bin" / "ffmpeg" / "ffmpeg-8.1.1-full_build-shared" / "bin" / "ffmpeg.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("", encoding="utf-8")
+
+    status = runtime.find_executable("ffmpeg", explicit_path=bundled, root=tmp_path)
+
+    assert status.path == bundled
+    assert status.source == "bundled"
+
+
 def test_find_executable_falls_back_to_bundled_bin(tmp_path: Path, monkeypatch) -> None:
     bundled = tmp_path / "bin" / "deno" / "deno.exe"
     bundled.parent.mkdir(parents=True)

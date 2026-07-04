@@ -67,7 +67,8 @@ def find_executable(name: str, *, explicit_path: Path | None = None, root: Path 
     if explicit_path:
         path = _resolve_explicit_executable(explicit_path, executable)
         if path:
-            return DependencyStatus(name=name, path=path, source="settings")
+            source = "bundled" if _is_bundled_path(path, root=root) else "settings"
+            return DependencyStatus(name=name, path=path, source=source)
 
     bundled = _find_bundled_executable(executable, root=root)
     if bundled:
@@ -167,6 +168,22 @@ def _find_bundled_executable(executable: str, *, root: Path | None) -> Path | No
         return direct
     matches = sorted(bin_root.rglob(executable))
     return matches[0] if matches else None
+
+
+def _is_bundled_path(path: Path, *, root: Path | None) -> bool:
+    bin_root = bundled_bin_root(root)
+    if not bin_root.exists():
+        return False
+    try:
+        resolved_path = path.resolve()
+        resolved_root = bin_root.resolve()
+    except OSError:
+        return False
+    if os.name == "nt":
+        path_text = str(resolved_path).casefold()
+        root_text = str(resolved_root).casefold()
+        return path_text == root_text or path_text.startswith(root_text.rstrip("\\/") + "\\")
+    return resolved_path == resolved_root or resolved_root in resolved_path.parents
 
 
 def _find_winget_executable(executable: str) -> Path | None:

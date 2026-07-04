@@ -164,10 +164,12 @@ def _smoke_metadata(
 def _smoke_gui() -> None:
     from PySide6.QtWidgets import QApplication
 
+    from cueforge.icons import apply_app_icon
     from cueforge.gui.main_window import MainWindow
 
     app = QApplication.instance() or QApplication([])
     app.setApplicationName("CueForge")
+    apply_app_icon(app)
     window = MainWindow()
     window.close()
     window.deleteLater()

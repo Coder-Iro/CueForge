@@ -26,6 +26,7 @@ OutputBaseFilename=CueForge-{#AppVersion}-windows-x64-online-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\src\cueforge\assets\cueforge.ico
 UninstallDisplayIcon={app}\CueForge.exe
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible

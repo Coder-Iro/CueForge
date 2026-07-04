@@ -11,6 +11,9 @@ datas = collect_data_files("ytmusicapi", includes=["locales/**/*"])
 oauth_client_config = ROOT / "config" / "google_oauth_client.json"
 if oauth_client_config.exists():
     datas.append((str(oauth_client_config), "config"))
+icon_path = ROOT / "src" / "cueforge" / "assets" / "cueforge.ico"
+if icon_path.exists():
+    datas.append((str(icon_path), "cueforge/assets"))
 binaries = []
 hiddenimports = [
     "PySide6.QtCore",
@@ -50,6 +53,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=str(icon_path) if icon_path.exists() else None,
 )
 coll = COLLECT(
     exe,

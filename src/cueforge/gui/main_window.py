@@ -816,6 +816,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle("CueForge")
+        from cueforge.icons import cueforge_icon
+
+        self.setWindowIcon(cueforge_icon())
         self.resize(1120, 720)
         self._settings = settings or QSettings("CueForge", "CueForge")
         self.job_store = job_store or JobStore(_job_store_path_for_settings(self._settings))
@@ -3752,6 +3755,9 @@ class MainWindow(QMainWindow):
 
 def run_app() -> int:
     app = QApplication(sys.argv)
+    from cueforge.icons import apply_app_icon
+
+    apply_app_icon(app)
     window = MainWindow()
     window.show()
     return app.exec()

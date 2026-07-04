@@ -1,0 +1,1 @@
+"""Bundled CueForge visual assets."""

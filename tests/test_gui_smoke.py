@@ -783,6 +783,7 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
         assert window.analyze_selected_button.isHidden() is True
         assert window.download_selected_button is not None
         assert window.download_selected_button.isHidden() is True
+        assert window.parse_selected_button is not None
         assert window.retry_selected_button is not None
         assert window.retry_failed_button is not None
         assert window.remove_done_button is not None
@@ -794,6 +795,7 @@ def test_queue_action_buttons_do_not_overlap(tmp_path) -> None:
             for button in (
                 window.add_url_button,
                 window.cancel_current_button,
+                window.parse_selected_button,
                 window.retry_selected_button,
                 window.review_selected_button,
                 window.retry_failed_button,
@@ -2416,6 +2418,95 @@ def test_selected_queue_actions_start_selected_jobs(tmp_path, monkeypatch) -> No
         assert started[2] == (failed, None, False, False)
         assert failed.status == DownloadStatus.PENDING
         assert failed.error == ""
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_selected_parse_retry_updates_metadata_without_redownloading(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        final_path = tmp_path / "Old Artist - Old Song [abc].mp3"
+        final_path.write_bytes(b"fake mp3")
+        window.url_input.setText("https://youtu.be/abc")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.DONE
+        job.progress = 100.0
+        job.final_path = final_path
+        job.selected_metadata = TrackMetadata(title="Old Song", artist="Old Artist")
+        window._update_row(job)
+        window._load_job_for_review(job)
+        window.table.selectRow(0)
+        window._refresh_actions()
+
+        assert window.parse_selected_button is not None
+        assert window.parse_selected_button.isEnabled() is True
+
+        started = []
+
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, continue_queue=True, worker_mode=None):
+            started.append((job, approved_metadata, analyze_only, continue_queue, worker_mode))
+            metadata = TrackMetadata(title="New Song", artist="New Artist", bpm=128)
+            candidate = MetadataCandidate(
+                provider="chatgpt",
+                metadata=metadata,
+                score=0.92,
+                matched_fields=("title", "artist", "bpm"),
+            )
+            window._on_metadata_ready(job.id, metadata, "review_required", [candidate])
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+
+        window._retry_selected_parsing()
+
+        assert started == [(job, None, True, False, "parse_retry")]
+        assert job.status == DownloadStatus.DONE
+        assert job.progress == 100.0
+        assert job.final_path == final_path
+        assert job.selected_metadata.title == "New Song"
+        assert job.selected_metadata.artist == "New Artist"
+        assert job.selected_metadata.bpm == 128
+        assert window.review_fields["title"].text() == "New Song"
+        assert window.review_fields["artist"].text() == "New Artist"
+        assert "완료 파일은 그대로 두고 후보만 갱신됨" in window.log.toPlainText()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_selected_parse_retry_failure_restores_previous_status(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    try:
+        window.url_input.setText("https://youtu.be/failed")
+        window._add_url()
+        job = next(iter(window.jobs.values()))
+        job.status = DownloadStatus.FAILED
+        job.progress = 0.0
+        job.error = "old friendly error"
+        job.error_message = "old raw error"
+        job.error_category = ErrorCategory.NETWORK_TIMEOUT.value
+        window._update_row(job)
+        window.table.selectRow(0)
+        window._refresh_actions()
+
+        assert window.parse_selected_button is not None
+        assert window.parse_selected_button.isEnabled() is True
+
+        def fake_run_worker(job, approved_metadata=None, *, analyze_only=False, continue_queue=True, worker_mode=None):
+            window._on_job_failed(job.id, "temporary parser failure")
+
+        monkeypatch.setattr(window, "_run_worker", fake_run_worker)
+
+        window._retry_selected_parsing()
+
+        assert job.status == DownloadStatus.FAILED
+        assert job.error == "old friendly error"
+        assert job.error_message == "old raw error"
+        assert job.error_category == ErrorCategory.NETWORK_TIMEOUT.value
+        assert "메타데이터 파싱 재시도 실패" in window.log.toPlainText()
     finally:
         window.close()
         app.processEvents()

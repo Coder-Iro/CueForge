@@ -100,6 +100,13 @@ _ANALYZABLE_STATUSES = {
     DownloadStatus.FAILED,
     DownloadStatus.CANCELED,
 }
+_PARSING_RETRY_STATUSES = {
+    DownloadStatus.REVIEW_REQUIRED,
+    DownloadStatus.APPROVED,
+    DownloadStatus.DONE,
+    DownloadStatus.FAILED,
+    DownloadStatus.CANCELED,
+}
 _NON_RETRYABLE_ERROR_CATEGORIES = {ErrorCategory.VIDEO_UNAVAILABLE.value}
 _PIPELINE_STATUSES = (
     DownloadStatus.PENDING,
@@ -125,6 +132,15 @@ class OnboardingDependencyRow:
     name: str
     status: str
     tooltip: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ParseRetrySnapshot:
+    status: DownloadStatus
+    progress: float
+    error: str
+    error_message: str
+    error_category: str
 
 
 def _coerce_onboarding_dependency_row(row: OnboardingDependencyRow | tuple[str, str]) -> tuple[str, str, str]:
@@ -831,6 +847,7 @@ class MainWindow(QMainWindow):
         self.review_selected_button: QPushButton | None = None
         self.analyze_selected_button: QPushButton | None = None
         self.download_selected_button: QPushButton | None = None
+        self.parse_selected_button: QPushButton | None = None
         self.retry_selected_button: QPushButton | None = None
         self.retry_failed_button: QPushButton | None = None
         self.remove_done_button: QPushButton | None = None
@@ -868,6 +885,7 @@ class MainWindow(QMainWindow):
         self._openai_quota_status_text = ""
         self._openai_quota_log_result = True
         self._playlist_expander = playlist_expander
+        self._parse_retry_snapshots: dict[str, ParseRetrySnapshot] = {}
 
         self.url_input = UrlInput()
         self.url_input.setPlaceholderText("YouTube / YouTube Music / SoundCloud URL을 붙여넣고 Enter를 누르세요")
@@ -1127,6 +1145,10 @@ class MainWindow(QMainWindow):
         self.review_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.review_selected_button.clicked.connect(self._move_selected_to_review_queue)
         selection_layout.addWidget(self.review_selected_button)
+        self.parse_selected_button = QPushButton("파싱 재시도")
+        self.parse_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
+        self.parse_selected_button.clicked.connect(self._retry_selected_parsing)
+        selection_layout.addWidget(self.parse_selected_button)
         self.retry_selected_button = QPushButton("재시도")
         self.retry_selected_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
         self.retry_selected_button.clicked.connect(self._retry_selected)
@@ -2365,6 +2387,28 @@ class MainWindow(QMainWindow):
         self._prepare_job_retry(job, message="선택 항목 재시도 시작")
         self._run_worker(job, analyze_only=False, continue_queue=False)
 
+    def _retry_selected_parsing(self) -> None:
+        if self._work_running():
+            self._refresh_actions()
+            return
+        job = self._selected_job()
+        if not job or not _can_retry_parsing(job):
+            self._refresh_actions()
+            return
+        self._parse_retry_snapshots[job.id] = ParseRetrySnapshot(
+            status=job.status,
+            progress=job.progress,
+            error=job.error,
+            error_message=job.error_message,
+            error_category=job.error_category,
+        )
+        job.error = ""
+        job.error_message = ""
+        job.error_category = ""
+        self._update_row(job)
+        self._append_log(job.id, "메타데이터 파싱만 재시도 시작")
+        self._run_worker(job, analyze_only=True, continue_queue=False, worker_mode="parse_retry")
+
     def _start_retry_jobs(self, jobs: list[DownloadJob]) -> None:
         if not jobs:
             self._refresh_actions()
@@ -2640,6 +2684,10 @@ class MainWindow(QMainWindow):
             self._refresh_openai_status_bar()
         elif any(candidate.provider == "chatgpt" for candidate in candidates) and QApplication.platformName() != "offscreen":
             self._refresh_openai_quota(log_result=False)
+        parse_retry_snapshot = self._parse_retry_snapshots.pop(job.id, None)
+        if parse_retry_snapshot:
+            self._finish_parse_retry_success(job, parse_retry_snapshot)
+            return
         job.status = DownloadStatus.APPROVED
         self._update_row(job)
         if self.active_review_job_id == job.id:
@@ -2650,6 +2698,25 @@ class MainWindow(QMainWindow):
             self._append_log(job_id, "최상위 메타데이터 후보로 다운로드 진행; 필요하면 큐에서 더블클릭해 수정하세요")
         if scheduled_metadata and self.scheduler:
             self.scheduler.enqueue_downloads([job])
+        self._refresh_actions()
+
+    def _finish_parse_retry_success(self, job: DownloadJob, snapshot: ParseRetrySnapshot) -> None:
+        if snapshot.status in {DownloadStatus.DONE, DownloadStatus.APPROVED, DownloadStatus.REVIEW_REQUIRED}:
+            job.status = snapshot.status
+            job.progress = snapshot.progress
+        else:
+            job.status = DownloadStatus.APPROVED
+            job.progress = 0.0
+        job.error = ""
+        job.error_message = ""
+        job.error_category = ""
+        self._update_row(job)
+        if self.active_review_job_id == job.id:
+            self._load_job_for_review(job, select_row=False)
+        if job.status == DownloadStatus.DONE:
+            self._append_log(job.id, "메타데이터 파싱 재시도 완료; 완료 파일은 그대로 두고 후보만 갱신됨")
+        else:
+            self._append_log(job.id, "메타데이터 파싱 재시도 완료; 다운로드는 시작하지 않음")
         self._refresh_actions()
 
     def _on_job_done(self, job_id: str, final_path: str) -> None:
@@ -2668,6 +2735,12 @@ class MainWindow(QMainWindow):
         job = self.jobs[job_id]
         self._scheduled_metadata_job_ids.discard(job_id)
         category, friendly = user_facing_error(error)
+        parse_retry_snapshot = self._parse_retry_snapshots.pop(job_id, None)
+        if parse_retry_snapshot:
+            self._restore_parse_retry_snapshot(job, parse_retry_snapshot)
+            self._append_log(job_id, f"메타데이터 파싱 재시도 실패: {friendly}")
+            self._refresh_actions()
+            return
         job.status = DownloadStatus.FAILED
         job.error = friendly
         job.error_message = str(error)
@@ -2691,6 +2764,13 @@ class MainWindow(QMainWindow):
     def _on_job_canceled(self, job_id: str) -> None:
         job = self.jobs[job_id]
         self._scheduled_metadata_job_ids.discard(job_id)
+        parse_retry_snapshot = self._parse_retry_snapshots.pop(job_id, None)
+        if parse_retry_snapshot:
+            self._restore_parse_retry_snapshot(job, parse_retry_snapshot)
+            self.worker_mode = "canceled"
+            self._append_log(job_id, "메타데이터 파싱 재시도 취소됨")
+            self._refresh_actions()
+            return
         job.status = DownloadStatus.CANCELED
         job.progress = 0.0
         job.error = ""
@@ -2700,6 +2780,16 @@ class MainWindow(QMainWindow):
         self._update_row(job)
         self._append_log(job_id, "작업이 취소됨")
         self._refresh_actions()
+
+    def _restore_parse_retry_snapshot(self, job: DownloadJob, snapshot: ParseRetrySnapshot) -> None:
+        job.status = snapshot.status
+        job.progress = snapshot.progress
+        job.error = snapshot.error
+        job.error_message = snapshot.error_message
+        job.error_category = snapshot.error_category
+        self._update_row(job)
+        if self.active_review_job_id == job.id:
+            self._load_job_for_review(job, select_row=False)
 
     def _worker_finished(self) -> None:
         mode = self.worker_mode
@@ -3545,6 +3635,7 @@ class MainWindow(QMainWindow):
             and not running
         )
         can_download_selected = bool(selected_job and selected_job.status == DownloadStatus.APPROVED and not running)
+        can_parse_selected = bool(selected_job and _can_retry_parsing(selected_job) and not running)
         can_retry_selected = bool(selected_job and _can_retry_job(selected_job))
         selected_jobs = self._selected_jobs()
         can_remove_selected = any(job.status not in _ACTIVE_STATUSES for job in selected_jobs)
@@ -3569,6 +3660,8 @@ class MainWindow(QMainWindow):
             self.analyze_selected_button.setEnabled(can_analyze_selected)
         if self.download_selected_button:
             self.download_selected_button.setEnabled(can_download_selected)
+        if self.parse_selected_button:
+            self.parse_selected_button.setEnabled(can_parse_selected)
         if self.retry_selected_button:
             self.retry_selected_button.setEnabled(can_retry_selected)
         if self.retry_failed_button:
@@ -3863,6 +3956,14 @@ def _can_retry_job(job: DownloadJob) -> bool:
     if job.status != DownloadStatus.FAILED:
         return False
     return job.error_category not in _NON_RETRYABLE_ERROR_CATEGORIES
+
+
+def _can_retry_parsing(job: DownloadJob) -> bool:
+    if _is_playlist_url(job.url) or job.status in _ACTIVE_STATUSES:
+        return False
+    if job.status == DownloadStatus.FAILED:
+        return _can_retry_job(job)
+    return job.status in _PARSING_RETRY_STATUSES
 
 
 def _download_status_label(status: DownloadStatus | str) -> str:

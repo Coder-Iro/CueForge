@@ -84,6 +84,8 @@ def test_queue_url_column_can_be_resized_narrower(tmp_path) -> None:
         assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Stretch
         assert header.sectionResizeMode(4) == QHeaderView.ResizeMode.Stretch
         assert header.sectionResizeMode(5) == QHeaderView.ResizeMode.Interactive
+        assert header.sectionSize(0) == 96
+        assert header.sectionSize(1) == 92
         assert header.sectionSize(2) >= 320
 
         header.resizeSection(2, 80)

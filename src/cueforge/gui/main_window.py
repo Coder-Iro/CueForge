@@ -898,6 +898,8 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(0, 96)
+        self.table.setColumnWidth(1, 92)
         self.table.setColumnWidth(2, 360)
         self.table.setColumnWidth(5, 72)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

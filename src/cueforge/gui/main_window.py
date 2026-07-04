@@ -786,7 +786,7 @@ class ModelComboBox(QComboBox):
 
 
 class MainWindow(QMainWindow):
-    COLUMNS = ("상태", "진행률", "소스", "URL", "제목", "아티스트", "BPM")
+    COLUMNS = ("상태", "소스", "URL", "제목", "아티스트", "BPM")
     REVIEW_QUEUE_COLUMNS = ("제목", "아티스트", "신뢰도", "URL")
     CANDIDATE_COLUMNS = ("제공자", "점수", "신뢰도", "배지", "일치 항목", "제목", "아티스트", "앨범", "날짜", "BPM", "ISRC", "커버")
     CANDIDATE_PREVIEW_COLUMNS = ("필드", "현재 값", "후보 적용 값")
@@ -895,11 +895,11 @@ class MainWindow(QMainWindow):
 
         self.table = QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        self.table.setColumnWidth(3, 360)
-        self.table.setColumnWidth(6, 72)
+        self.table.setColumnWidth(2, 360)
+        self.table.setColumnWidth(5, 72)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -3171,7 +3171,6 @@ class MainWindow(QMainWindow):
         job.platform = job.platform or detect_source_platform(job.url).value
         values = (
             _download_status_label(job.status),
-            f"{job.progress:.0f}%",
             detect_source_platform(job.url).display_name,
             job.url,
             job.selected_metadata.title,

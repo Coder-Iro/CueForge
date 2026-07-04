@@ -62,10 +62,10 @@ def test_main_window_can_queue_url(tmp_path) -> None:
         assert window.table.rowCount() == 1
         job = next(iter(window.jobs.values()))
         assert job.status == DownloadStatus.PENDING
-        assert window.table.item(0, 2).text() == "YouTube Music"
-        assert window.table.item(0, 3).text() == "https://music.youtube.com/watch?v=abc"
-        assert window.table.horizontalHeaderItem(6).text() == "BPM"
-        assert window.table.item(0, 6).text() == ""
+        assert window.table.item(0, 1).text() == "YouTube Music"
+        assert window.table.item(0, 2).text() == "https://music.youtube.com/watch?v=abc"
+        assert window.table.horizontalHeaderItem(5).text() == "BPM"
+        assert window.table.item(0, 5).text() == ""
     finally:
         window.close()
         app.processEvents()
@@ -80,16 +80,16 @@ def test_queue_url_column_can_be_resized_narrower(tmp_path) -> None:
         app.processEvents()
 
         header = window.table.horizontalHeader()
-        assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Interactive
+        assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.Interactive
+        assert header.sectionResizeMode(3) == QHeaderView.ResizeMode.Stretch
         assert header.sectionResizeMode(4) == QHeaderView.ResizeMode.Stretch
-        assert header.sectionResizeMode(5) == QHeaderView.ResizeMode.Stretch
-        assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Interactive
-        assert header.sectionSize(3) >= 320
+        assert header.sectionResizeMode(5) == QHeaderView.ResizeMode.Interactive
+        assert header.sectionSize(2) >= 320
 
-        header.resizeSection(3, 80)
+        header.resizeSection(2, 80)
         app.processEvents()
 
-        assert header.sectionSize(3) == 80
+        assert header.sectionSize(2) == 80
     finally:
         window.close()
         app.processEvents()
@@ -107,14 +107,13 @@ def test_queue_table_shows_bpm_instead_of_output_path(tmp_path) -> None:
 
         assert [window.table.horizontalHeaderItem(index).text() for index in range(window.table.columnCount())] == [
             "상태",
-            "진행률",
             "소스",
             "URL",
             "제목",
             "아티스트",
             "BPM",
         ]
-        assert window.table.item(0, 6).text() == "128"
+        assert window.table.item(0, 5).text() == "128"
         assert str(job.output_dir) not in [window.table.item(0, index).text() for index in range(window.table.columnCount())]
     finally:
         window.close()
@@ -138,10 +137,10 @@ def test_main_window_can_queue_multiple_pasted_urls(tmp_path) -> None:
 
         assert window.table.rowCount() == 4
         assert [window.jobs[job_id].status for job_id in window.row_job_ids] == [DownloadStatus.PENDING] * 4
-        assert window.table.item(0, 3).text() == "https://youtu.be/8k8aIaoOA40?si=MDMx7eVZ1-Dr949J"
-        assert window.table.item(1, 3).text() == "https://youtu.be/7B4yU08Bs5A?si=JTpGDd5Z71F-Bysg"
-        assert window.table.item(2, 3).text() == "https://soundcloud.com/artist/track"
-        assert window.table.item(3, 3).text() == "https://music.youtube.com/watch?v=abc"
+        assert window.table.item(0, 2).text() == "https://youtu.be/8k8aIaoOA40?si=MDMx7eVZ1-Dr949J"
+        assert window.table.item(1, 2).text() == "https://youtu.be/7B4yU08Bs5A?si=JTpGDd5Z71F-Bysg"
+        assert window.table.item(2, 2).text() == "https://soundcloud.com/artist/track"
+        assert window.table.item(3, 2).text() == "https://music.youtube.com/watch?v=abc"
         assert window.queue_status_label.text().startswith("4개 트랙")
     finally:
         window.close()
@@ -209,7 +208,7 @@ def test_url_input_enter_submits_without_inserting_newline(tmp_path) -> None:
         window.url_input.keyPressEvent(event)
 
         assert window.table.rowCount() == 1
-        assert window.table.item(0, 3).text() == "https://youtu.be/abc"
+        assert window.table.item(0, 2).text() == "https://youtu.be/abc"
         assert window.url_input.text() == ""
     finally:
         window.close()
@@ -237,7 +236,7 @@ def test_main_window_queues_playlist_without_expanding(tmp_path) -> None:
 
         assert calls == []
         assert window.table.rowCount() == 1
-        assert window.table.item(0, 3).text() == "https://www.youtube.com/playlist?list=PL123"
+        assert window.table.item(0, 2).text() == "https://www.youtube.com/playlist?list=PL123"
         assert window.queue_status_label.text().startswith("1개 트랙")
     finally:
         window.close()
@@ -276,9 +275,9 @@ def test_main_window_flattens_playlist_when_analysis_starts(tmp_path, monkeypatc
         assert analyzed == ["https://www.youtube.com/watch?v=abc"]
         assert window.table.rowCount() == 3
         assert window.table.item(0, 0).text() == "완료"
-        assert window.table.item(0, 3).text() == "https://www.youtube.com/playlist?list=PL123"
-        assert window.table.item(1, 3).text() == "https://www.youtube.com/watch?v=abc"
-        assert window.table.item(2, 3).text() == "https://www.youtube.com/watch?v=def"
+        assert window.table.item(0, 2).text() == "https://www.youtube.com/playlist?list=PL123"
+        assert window.table.item(1, 2).text() == "https://www.youtube.com/watch?v=abc"
+        assert window.table.item(2, 2).text() == "https://www.youtube.com/watch?v=def"
     finally:
         window.close()
         app.processEvents()
@@ -311,9 +310,9 @@ def test_main_window_keeps_playlist_job_and_inserts_items_after_it(tmp_path) -> 
             "https://music.youtube.com/watch?v=def",
         ]
         assert window.table.rowCount() == 3
-        assert window.table.item(0, 3).text() == "https://music.youtube.com/playlist?list=LM"
-        assert window.table.item(1, 3).text() == "https://music.youtube.com/watch?v=abc"
-        assert window.table.item(2, 3).text() == "https://music.youtube.com/watch?v=def"
+        assert window.table.item(0, 2).text() == "https://music.youtube.com/playlist?list=LM"
+        assert window.table.item(1, 2).text() == "https://music.youtube.com/watch?v=abc"
+        assert window.table.item(2, 2).text() == "https://music.youtube.com/watch?v=def"
     finally:
         window.close()
         app.processEvents()
@@ -1013,8 +1012,8 @@ def test_main_window_marks_soundcloud_source(tmp_path) -> None:
         window._add_url()
 
         assert window.table.rowCount() == 1
-        assert window.table.item(0, 2).text() == "SoundCloud"
-        assert window.table.item(0, 3).text() == "https://soundcloud.com/artist/track"
+        assert window.table.item(0, 1).text() == "SoundCloud"
+        assert window.table.item(0, 2).text() == "https://soundcloud.com/artist/track"
     finally:
         window.close()
         app.processEvents()
@@ -1947,7 +1946,7 @@ def test_remove_selected_deletes_multiple_selected_queue_rows(tmp_path) -> None:
         window._remove_selected()
 
         assert window.table.rowCount() == 1
-        assert window.table.item(0, 3).text() == "https://youtu.be/two"
+        assert window.table.item(0, 2).text() == "https://youtu.be/two"
         assert [job.url for job in window.jobs.values()] == ["https://youtu.be/two"]
     finally:
         window.close()
@@ -2004,7 +2003,7 @@ def test_remove_done_jobs_deletes_only_completed_queue_rows(tmp_path) -> None:
         assert window.table.rowCount() == 2
         assert done_job.id not in window.jobs
         assert [job.id for job in window.jobs.values()] == [failed_job.id, pending_job.id]
-        assert [window.table.item(row, 3).text() for row in range(window.table.rowCount())] == [
+        assert [window.table.item(row, 2).text() for row in range(window.table.rowCount())] == [
             "https://youtu.be/failed",
             "https://youtu.be/pending",
         ]

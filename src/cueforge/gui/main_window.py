@@ -2320,50 +2320,32 @@ class MainWindow(QMainWindow):
         self._run_worker(job, approved_metadata=job.selected_metadata, continue_queue=False)
 
     def _retry_failed(self) -> None:
-        if self.worker and self.worker.isRunning():
-            self._refresh_actions()
-            return
         retried = 0
         skipped = 0
+        retry_jobs: list[DownloadJob] = []
         for job in list(self.jobs.values()):
             if job.status != DownloadStatus.FAILED:
                 continue
             if not _can_retry_job(job):
                 skipped += 1
                 continue
-            if _is_playlist_url(job.url):
-                job.status = DownloadStatus.PENDING
-                job.progress = 0.0
-                job.error = ""
-                job.error_message = ""
-                job.error_category = ""
-                job.retry_count += 1
-                self._update_row(job)
-                self._append_log(job.id, "재시도를 위해 큐에 추가됨")
-                retried += 1
-                continue
-            job.status = DownloadStatus.PENDING
-            job.progress = 0.0
-            job.error = ""
-            job.error_message = ""
-            job.error_category = ""
-            job.retry_count += 1
-            self._update_row(job)
-            self._append_log(job.id, "재시도를 위해 큐에 추가됨")
+            self._prepare_job_retry(job, message="재시도를 위해 큐에 추가됨")
+            retry_jobs.append(job)
             retried += 1
         self._refresh_actions()
         if skipped:
             self._append_log("system", f"재시도 대상이 아닌 실패 항목 {skipped}개는 건너뜀")
         if retried:
-            self._process_next()
+            self._start_retry_jobs(retry_jobs)
 
     def _retry_selected(self) -> None:
-        if self.worker and self.worker.isRunning():
-            self._refresh_actions()
-            return
         job = self._selected_job()
         if not job or not _can_retry_job(job):
             self._refresh_actions()
+            return
+        if self._work_running() and self.scheduler:
+            self._prepare_job_retry(job, message="선택 항목 재시도를 위해 큐에 추가됨")
+            self._start_retry_jobs([job])
             return
         if _is_playlist_url(job.url):
             job.status = DownloadStatus.PENDING
@@ -2379,6 +2361,24 @@ class MainWindow(QMainWindow):
             return
         self._prepare_job_retry(job, message="선택 항목 재시도 시작")
         self._run_worker(job, analyze_only=False, continue_queue=False)
+
+    def _start_retry_jobs(self, jobs: list[DownloadJob]) -> None:
+        if not jobs:
+            self._refresh_actions()
+            return
+        if self._work_running() and self.scheduler:
+            if self.worker and self.worker.isRunning():
+                ready_jobs = [job for job in jobs if job.status == DownloadStatus.PENDING and not _is_playlist_url(job.url)]
+                if ready_jobs:
+                    self.scheduler.enqueue_analysis(ready_jobs)
+                playlist_count = len([job for job in jobs if job.status == DownloadStatus.PENDING and _is_playlist_url(job.url)])
+                if playlist_count:
+                    self._append_log("system", f"플레이리스트 재시도 {playlist_count}개는 현재 작업이 끝난 뒤 처리됩니다")
+                self._refresh_actions()
+                return
+            self._schedule_pending_analysis()
+            return
+        self._process_next()
 
     def _prepare_job_retry(self, job: DownloadJob, *, message: str) -> None:
         _cleanup_temp_download(job)
@@ -3532,7 +3532,7 @@ class MainWindow(QMainWindow):
         active_review = self._active_review_job()
         can_start_pipeline = (pending_count > 0 or approved_count > 0) and not running
         can_download = approved_count > 0 and not running
-        can_retry = retryable_failed_count > 0 and not running
+        can_retry = retryable_failed_count > 0
         can_approve = bool(active_review and not _tag_edit_block_reason(active_review))
         can_move_selected_to_review = bool(selected_job and not _tag_edit_block_reason(selected_job))
         can_move_active_to_review = bool(active_review and not _tag_edit_block_reason(active_review))
@@ -3543,7 +3543,7 @@ class MainWindow(QMainWindow):
             and not running
         )
         can_download_selected = bool(selected_job and selected_job.status == DownloadStatus.APPROVED and not running)
-        can_retry_selected = bool(selected_job and _can_retry_job(selected_job) and not running)
+        can_retry_selected = bool(selected_job and _can_retry_job(selected_job))
         selected_jobs = self._selected_jobs()
         can_remove_selected = any(job.status not in _ACTIVE_STATUSES for job in selected_jobs)
         loaded_review = self._loaded_review_job()

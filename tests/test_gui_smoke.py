@@ -20,7 +20,7 @@ from cueforge.gui.main_window import (
     _extract_urls,
     _supported_urls,
 )
-from cueforge.models import ErrorCategory, DownloadStatus, MetadataCandidate, TrackMetadata
+from cueforge.models import DownloadJob, ErrorCategory, DownloadStatus, MetadataCandidate, TrackMetadata
 from cueforge.runtime import DependencyStatus
 
 
@@ -2412,6 +2412,65 @@ def test_selected_queue_actions_start_selected_jobs(tmp_path, monkeypatch) -> No
         assert failed.status == DownloadStatus.PENDING
         assert failed.error == ""
     finally:
+        window.close()
+        app.processEvents()
+
+
+def test_retry_failed_can_enqueue_while_scheduler_is_running(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(settings=_test_settings(tmp_path))
+    queued: list[list[DownloadJob]] = []
+    started: list[DownloadJob] = []
+
+    class RunningScheduler:
+        tag_semaphore = None
+
+        def is_running(self) -> bool:
+            return True
+
+        def enqueue_analysis(self, jobs) -> None:
+            queued.append(list(jobs))
+
+        def enqueue_downloads(self, jobs, *, priority: bool = False) -> None:
+            return None
+
+        def set_limits(self, limits) -> None:
+            return None
+
+    try:
+        for url in ("https://youtu.be/failed-a", "https://youtu.be/failed-b"):
+            window.url_input.setText(url)
+            window._add_url()
+        first, second = [window.jobs[job_id] for job_id in window.row_job_ids]
+        for job in (first, second):
+            job.status = DownloadStatus.FAILED
+            job.error = "old error"
+            job.error_message = "old raw error"
+            job.error_category = ErrorCategory.NETWORK_TIMEOUT.value
+            window._update_row(job)
+
+        monkeypatch.setattr(window, "_run_worker", lambda job, **_kwargs: started.append(job))
+        window.scheduler = RunningScheduler()
+        window.table.selectRow(0)
+        window._refresh_actions()
+
+        assert window.retry_failed_button is not None
+        assert window.retry_selected_button is not None
+        assert window.retry_failed_button.isEnabled() is True
+        assert window.retry_selected_button.isEnabled() is True
+
+        window._retry_failed()
+
+        assert queued == [[first, second]]
+        assert started == []
+        assert first.status == DownloadStatus.PENDING
+        assert second.status == DownloadStatus.PENDING
+        assert first.retry_count == 1
+        assert second.retry_count == 1
+        assert first.error == ""
+        assert second.error == ""
+    finally:
+        window.scheduler = None
         window.close()
         app.processEvents()
 

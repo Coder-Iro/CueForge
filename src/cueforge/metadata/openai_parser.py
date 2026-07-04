@@ -160,6 +160,7 @@ def _system_instructions() -> str:
         "원곡/공식 발매 녹음으로 보이면 suggested_release_search_queries를 사용해 album과 album_artist를 적극적으로 확인하세요. "
         "원곡/공식 발매물의 cover_url은 YouTube/플랫폼 썸네일보다 공식 싱글 또는 앨범 아트워크를 우선하세요. "
         "AWS S3 X-Amz-* 링크처럼 만료되거나 서명된 presigned/tokenized/temporary 아트워크 URL은 반환하지 마세요. "
+        "커버 업로드에서는 원곡 아티스트나 원곡 feat./featuring 크레딧을 실제 커버 참여자처럼 보존하지 마세요. "
         "원본 제목, 채널, 업로더에 출처 언어 표기가 신뢰 가능하게 나타나면 그 아티스트 표기를 보존하세요. 로마자 크레딧이 함께 있어도 임의로 로마자화하거나 번역하지 마세요. "
         "artist에는 대표 표기 하나만 넣고 원어명, 로마자명, 번역명, 괄호 별칭을 함께 이어 붙이지 마세요. "
         "공식 크레딧, 발매일, ISRC, 레이블, BPM 같은 사실은 웹 검색으로 검증하세요. "
@@ -213,11 +214,13 @@ def _prompt_context(info: dict[str, Any], reference: TrackMetadata, candidates: 
                 "곡/작품/녹음 제목만 사용하세요.",
                 "업로드 라벨, 형식 라벨, 채널/업로더명, 제목 바깥의 아티스트 크레딧, 홍보 문구 같은 플랫폼 표시 텍스트를 제거하세요.",
                 "cover/performance/remix/live/MV/lyrics 같은 설명어는 실제 발매 제목 또는 버전 제목의 일부가 아니면 포함하지 마세요.",
+                "커버 업로드 제목의 원곡 아티스트, 원곡 feat./featuring 크레딧, Original 표기는 실제 커버 제목의 일부가 아니면 제거하세요.",
                 "source.title 또는 source.fulltitle이 이미 깨끗한 태그 제목인 경우가 아니면 그대로 반환하지 마세요.",
             ],
             "artist": [
                 "이 업로드 오디오의 녹음 아티스트/퍼포머를 사용하세요.",
                 "커버 또는 보컬 퍼포먼스는 신뢰 가능할 때 커버 퍼포머를 우선하세요. 업로드가 원곡 녹음이 아닌데 원곡 아티스트로 바꾸지 마세요.",
+                "커버 제목의 'Covered by X'나 설명의 보컬 크레딧은 channel/uploader보다 강한 커버 퍼포머 근거입니다.",
                 "uploader/channel/creator는 자동 정답이 아니라 근거로만 사용하세요.",
                 "source title/channel/uploader에 나타난 아티스트 표기가 신뢰 가능하면 그 표기를 보존하세요. 신뢰 가능한 발매 메타데이터가 일관되게 다른 표기를 쓰는 경우가 아니면 번역, 로마자화, 음역하지 마세요.",
                 "한 필드에 여러 표기를 병기하지 마세요. 예: '텐코 시부키 TENKO SHIBUKI'가 아니라 '텐코 시부키', 'Charming Jo (조매력)'가 아니라 source에서 신뢰되는 대표 표기 하나만 반환하세요.",

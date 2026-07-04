@@ -384,6 +384,9 @@ def _looks_like_cover_source(info: dict[str, Any]) -> bool:
 
 
 def _cover_performer_artist(info: dict[str, Any]) -> str:
+    title_artist = _cover_performer_from_title(str(info.get("title") or info.get("fulltitle") or ""))
+    if title_artist:
+        return title_artist
     for key in ("channel", "uploader"):
         artist = _clean_cover_performer(str(info.get(key) or ""))
         if artist:
@@ -391,10 +394,22 @@ def _cover_performer_artist(info: dict[str, Any]) -> str:
     return ""
 
 
+def _cover_performer_from_title(value: str) -> str:
+    value = squash_spaces(value)
+    match = re.search(
+        r"(?:[【\[\(（]\s*)?covered\s+by\s+(?P<artist>.+?)(?:\s*[】\]\)）]|$)",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    return _clean_cover_performer(match.group("artist"))
+
+
 def _clean_cover_performer(value: str) -> str:
     value = squash_spaces(value)
     value = re.sub(r"\s+-\s+topic$", "", value, flags=re.IGNORECASE)
-    return value
+    return value.strip(" -–—/|｜ㅣ")
 
 
 def _cover_song_title_from_video_title(title: str, artist: str) -> str:
@@ -466,7 +481,22 @@ def _leading_title_before_bracket(value: str) -> str:
 def _clean_cover_song_title(value: str) -> str:
     value = squash_spaces(value)
     value = re.sub(r"^\s*(?:song|title|track)\s*[:：]\s*", "", value, flags=re.IGNORECASE)
+    value = _strip_cover_original_credit_tail(value)
     return squash_spaces(value).strip(" -–—/|｜ㅣ")
+
+
+def _strip_cover_original_credit_tail(value: str) -> str:
+    for separator in (" - ", " – ", " — "):
+        if separator not in value:
+            continue
+        left, right = value.split(separator, 1)
+        if _looks_like_original_credit_tail(right):
+            return left
+    return value
+
+
+def _looks_like_original_credit_tail(value: str) -> bool:
+    return bool(re.search(r"\b(?:feat\.?|ft\.?|featuring)\b", squash_spaces(value), flags=re.IGNORECASE))
 
 
 def _is_auto_generated_youtube_description(lines: list[str]) -> bool:

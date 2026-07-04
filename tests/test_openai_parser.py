@@ -152,16 +152,19 @@ def test_openai_metadata_suggester_builds_review_candidate_with_bpm(tmp_path) ->
     assert "출처 언어 표기" in session.calls[0]["json"]["instructions"]
     assert "대표 표기 하나만" in session.calls[0]["json"]["instructions"]
     assert "album과 album_artist를 적극적으로 확인" in session.calls[0]["json"]["instructions"]
+    assert "원곡 feat./featuring 크레딧" in session.calls[0]["json"]["instructions"]
     prompt_context = json.loads(session.calls[0]["json"]["input"][0]["content"])
     assert prompt_context["task"]["goal"] == "실제로 들리는 업로드 녹음에 대한 정규화된 음악 태그 메타데이터를 반환하세요."
     assert "YouTube/웹페이지 표시 제목" in prompt_context["task"]["not_goal"]
     assert "title" in prompt_context["field_policy"]
     assert any("source.title" in rule and "그대로 반환하지 마세요" in rule for rule in prompt_context["field_policy"]["title"])
+    assert any("원곡 feat./featuring 크레딧" in rule for rule in prompt_context["field_policy"]["title"])
     assert any("업로드된 녹음/버전" in rule for rule in prompt_context["field_policy"]["bpm"])
     assert any("원곡/작품/곡 BPM을 복사하지 마세요" in rule for rule in prompt_context["field_policy"]["bpm"])
     assert any("공식 싱글 또는 앨범 아트워크" in rule for rule in prompt_context["field_policy"]["cover_url"])
     assert any("번역, 로마자화, 음역하지 마세요" in rule for rule in prompt_context["field_policy"]["artist"])
     assert any("텐코 시부키 TENKO SHIBUKI" in rule for rule in prompt_context["field_policy"]["artist"])
+    assert any("Covered by X" in rule for rule in prompt_context["field_policy"]["artist"])
     assert any("공식 싱글 발매" in rule for rule in prompt_context["field_policy"]["album_album_artist"])
     assert any("앨범 수록곡" in rule for rule in prompt_context["field_policy"]["album_album_artist"])
     assert any('"Noisy video" "Uploader" album' in query for query in prompt_context["suggested_release_search_queries"])

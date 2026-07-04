@@ -161,6 +161,23 @@ def test_extracts_cover_song_before_bracket_when_performer_is_title_suffix() -> 
     assert hints[0].metadata.artist == "아카네 리제 AKANE LIZE"
 
 
+def test_cover_title_strips_original_featured_credit_and_uses_covered_by_artist() -> None:
+    candidates = build_hint_candidates(
+        {
+            "title": "DEADPOOL - 煮ル果実 feat. 花譜 (Covered by kahoca & DAZBEE)",
+            "channel": "kahoca",
+            "uploader": "kahoca",
+            "description": "Original\n煮ル果実/花譜\n\nCover\nVocal:\nDAZBEE\nkahoca",
+        }
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].provider == "title_cover"
+    assert candidates[0].metadata.title == "DEADPOOL"
+    assert candidates[0].metadata.artist == "kahoca & DAZBEE"
+    assert candidates[0].metadata.album_artist == "kahoca & DAZBEE"
+
+
 def test_cover_video_does_not_create_ambiguous_artist_dash_title_hint() -> None:
     candidates = build_hint_candidates(
         {

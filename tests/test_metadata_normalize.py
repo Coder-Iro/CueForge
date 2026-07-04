@@ -116,10 +116,10 @@ def test_clean_metadata_keeps_cached_cover_path_as_tagging_source() -> None:
     assert metadata.normalized().cover_source == "cached"
 
 
-def test_clean_metadata_removes_bilingual_artist_alias_noise() -> None:
-    assert TrackMetadata(artist="텐코 시부키 TENKO SHIBUKI").normalized().artist == "텐코 시부키"
-    assert TrackMetadata(artist="Charming Jo (조매력)").normalized().artist == "조매력"
-    assert TrackMetadata(artist="조매력 (Charming Jo)").normalized().artist == "조매력"
+def test_clean_metadata_preserves_artist_alias_text_from_provider_output() -> None:
+    assert TrackMetadata(artist="텐코 시부키 TENKO SHIBUKI").normalized().artist == "텐코 시부키 TENKO SHIBUKI"
+    assert TrackMetadata(artist="Charming Jo (조매력)").normalized().artist == "Charming Jo (조매력)"
+    assert TrackMetadata(artist="조매력 (Charming Jo)").normalized().artist == "조매력 (Charming Jo)"
     assert TrackMetadata(artist="ryo (supercell)").normalized().artist == "ryo (supercell)"
 
 

@@ -158,7 +158,7 @@ def test_extracts_cover_song_before_bracket_when_performer_is_title_suffix() -> 
 
     assert len(hints) == 1
     assert hints[0].metadata.title == "출항"
-    assert hints[0].metadata.artist == "아카네 리제"
+    assert hints[0].metadata.artist == "아카네 리제 AKANE LIZE"
 
 
 def test_cover_video_does_not_create_ambiguous_artist_dash_title_hint() -> None:

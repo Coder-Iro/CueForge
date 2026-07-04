@@ -50,7 +50,7 @@ def clean_title(value: str) -> str:
 
 
 def clean_artist(value: str) -> str:
-    return _clean_artist_aliases(squash_spaces(value))
+    return squash_spaces(value)
 
 
 def parse_artist_title(value: str) -> tuple[str, str]:
@@ -227,50 +227,6 @@ def _first(value: Any) -> str:
 
 def _candidate_priority(candidate: MetadataCandidate) -> tuple[float, int]:
     return (candidate.score, 1 if candidate.provider == "chatgpt" else 0)
-
-
-def _clean_artist_aliases(value: str) -> str:
-    if not value:
-        return ""
-    parenthetical = re.match(r"^(?P<main>.+?)\s*[\(（]\s*(?P<alias>[^()（）]+?)\s*[\)）]\s*$", value)
-    if parenthetical:
-        main = squash_spaces(parenthetical.group("main"))
-        alias = squash_spaces(parenthetical.group("alias"))
-        if _has_native_script(main) and _looks_like_latin_alias(alias):
-            return main
-        if _has_hangul(alias) and _looks_like_latin_alias(main):
-            return alias
-
-    trailing = re.match(r"^(?P<native>.*[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af][^A-Za-z]*?)\s+(?P<alias>[A-Za-z][A-Za-z0-9 .&'’_-]+)$", value)
-    if trailing:
-        native = squash_spaces(trailing.group("native"))
-        alias = squash_spaces(trailing.group("alias"))
-        if native and _looks_like_latin_alias(alias):
-            return native
-    return value
-
-
-def _has_native_script(value: str) -> bool:
-    return bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", value))
-
-
-def _has_hangul(value: str) -> bool:
-    return bool(re.search(r"[\uac00-\ud7af]", value))
-
-
-def _looks_like_latin_alias(value: str) -> bool:
-    text = squash_spaces(value)
-    if not re.search(r"[A-Za-z]", text):
-        return False
-    if _has_native_script(text):
-        return False
-    if not re.fullmatch(r"[A-Za-z0-9 .&'’_-]+", text):
-        return False
-    lowered = text.casefold()
-    if re.search(r"\b(?:feat|ft|featuring|with|prod|remix|edit)\b", lowered):
-        return False
-    words = re.findall(r"[A-Za-z]+", text)
-    return text == text.upper() or len(words) >= 2
 
 
 def _creator_values(info: dict[str, Any]) -> list[str]:

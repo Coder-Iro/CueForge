@@ -939,8 +939,8 @@ class MainWindow(QMainWindow):
         self.candidate_table.horizontalHeader().setMinimumSectionSize(64)
         self.candidate_table.setWordWrap(False)
         self.candidate_table.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.candidate_table.setMinimumHeight(136)
-        self.candidate_table.setMaximumHeight(190)
+        self.candidate_table.setMinimumHeight(112)
+        self.candidate_table.setMaximumHeight(150)
         for column, width in enumerate((140, 74, 96, 132, 156, 190, 160, 150, 110, 78, 128, 150)):
             self.candidate_table.setColumnWidth(column, width)
         self.candidate_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -957,8 +957,8 @@ class MainWindow(QMainWindow):
         self.candidate_preview_table.verticalHeader().setMinimumSectionSize(30)
         self.candidate_preview_table.setWordWrap(False)
         self.candidate_preview_table.setTextElideMode(Qt.TextElideMode.ElideRight)
-        self.candidate_preview_table.setMinimumHeight(128)
-        self.candidate_preview_table.setMaximumHeight(190)
+        self.candidate_preview_table.setMinimumHeight(104)
+        self.candidate_preview_table.setMaximumHeight(150)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -1234,13 +1234,13 @@ class MainWindow(QMainWindow):
         self.review_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
         content = QWidget()
-        content.setMinimumHeight(940)
+        content.setMinimumHeight(780)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(8, 8, 8, 8)
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(12)
-        splitter.setMinimumHeight(910)
+        splitter.setMinimumHeight(750)
         self.review_splitter = splitter
 
         review_queue_group = QGroupBox("태그 수정 목록")
@@ -1251,7 +1251,7 @@ class MainWindow(QMainWindow):
         review_queue_group.setVisible(False)
 
         provider_group = QGroupBox("태그 제공자")
-        provider_group.setMinimumHeight(340)
+        provider_group.setMinimumHeight(260)
         provider_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         provider_layout = QVBoxLayout(provider_group)
         provider_layout.addWidget(self.review_state_label)
@@ -1274,7 +1274,7 @@ class MainWindow(QMainWindow):
         provider_layout.addLayout(candidate_action_row)
 
         tag_editor_group = QGroupBox("태그 편집")
-        tag_editor_group.setMinimumHeight(360)
+        tag_editor_group.setMinimumHeight(320)
         tag_editor_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         tag_editor_layout = QVBoxLayout(tag_editor_group)
         tag_editor_layout.setSpacing(10)
@@ -1345,6 +1345,7 @@ class MainWindow(QMainWindow):
         side_layout.addStretch(1)
 
         editor_body = QWidget()
+        editor_body.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         editor_body_layout = QGridLayout(editor_body)
         editor_body_layout.setContentsMargins(0, 0, 0, 0)
         editor_body_layout.setHorizontalSpacing(18)
@@ -1377,7 +1378,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 0)
         splitter.setStretchFactor(2, 1)
-        splitter.setSizes([0, 360, 520])
+        splitter.setSizes([0, 260, 490])
         content_layout.addWidget(splitter)
         self.review_scroll_area.setWidget(content)
         layout.addWidget(self.review_scroll_area)

@@ -169,6 +169,31 @@ def test_merge_metadata_prefers_chatgpt_when_candidate_scores_tie() -> None:
     assert state == ReviewState.REVIEW_REQUIRED
 
 
+def test_merge_metadata_prefers_chatgpt_when_candidate_score_is_close() -> None:
+    description_hint = MetadataCandidate(
+        provider="description_credits",
+        score=0.78,
+        matched_fields=("description", "credits", "title", "artist"),
+        metadata=TrackMetadata(title="Song by ray", artist="BUMP OF CHICKEN"),
+    )
+    chatgpt = MetadataCandidate(
+        provider="chatgpt",
+        score=0.77,
+        matched_fields=("title", "artist"),
+        metadata=TrackMetadata(title="ray", artist="ゆう。"),
+        raw={"prefer_initial_metadata": True},
+    )
+
+    resolved, state = merge_metadata(
+        youtube=TrackMetadata(title="ゆう。 - ray / ゆう。 - cover[オリジナルMV]", artist="ゆう。"),
+        candidates=[description_hint, chatgpt],
+    )
+
+    assert resolved.title == "ray"
+    assert resolved.artist == "ゆう。"
+    assert state == ReviewState.REVIEW_REQUIRED
+
+
 def test_low_confidence_candidate_requires_review() -> None:
     resolved, state = merge_metadata(
         candidates=[

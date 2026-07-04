@@ -9,6 +9,7 @@ from typing import Any, Callable
 from cueforge.metadata.hints import build_hint_candidates
 from cueforge.metadata.normalize import (
     build_safe_fallback,
+    candidate_priority,
     merge_metadata,
     prefer_creator_artist_over_official_metadata,
 )
@@ -72,6 +73,7 @@ class MetadataResolver:
         reference = youtube.with_defaults_from(fallback).normalized()
         candidates = build_hint_candidates(info)
         candidates.extend(self._generative_suggestions(reference, info, candidates, log=log))
+        candidates.sort(key=candidate_priority, reverse=True)
         metadata, state = merge_metadata(youtube=reference, candidates=candidates, fallback=fallback)
         metadata = self.enrich_cover_art(metadata, platform=platform, fallback_cover_url=reference.cover_url or fallback.cover_url, log=log)
         return MetadataResolution(metadata=metadata, state=state, candidates=candidates, platform=platform)

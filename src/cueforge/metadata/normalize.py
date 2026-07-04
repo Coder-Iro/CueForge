@@ -195,7 +195,7 @@ def merge_metadata(
     if youtube:
         resolved = resolved.overlay(youtube.normalized())
 
-    best_candidate = max(candidates, key=_candidate_priority, default=None)
+    best_candidate = max(candidates, key=candidate_priority, default=None)
     state = ReviewState.MANUAL_REQUIRED
     if best_candidate:
         if (
@@ -225,8 +225,10 @@ def _first(value: Any) -> str:
     return ""
 
 
-def _candidate_priority(candidate: MetadataCandidate) -> tuple[float, int]:
-    return (candidate.score, 1 if candidate.provider == "chatgpt" else 0)
+def candidate_priority(candidate: MetadataCandidate) -> tuple[float, int]:
+    chatgpt_priority = 1 if candidate.provider == "chatgpt" else 0
+    adjusted_score = candidate.score + (0.02 if chatgpt_priority else 0.0)
+    return (adjusted_score, chatgpt_priority)
 
 
 def _creator_values(info: dict[str, Any]) -> list[str]:

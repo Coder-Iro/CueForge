@@ -825,6 +825,9 @@ def test_review_dialog_gives_provider_and_editor_room(tmp_path) -> None:
         assert window.review_splitter is not None
         assert window.review_splitter.count() == 3
         assert window.review_splitter.handleWidth() >= 10
+        assert window.review_splitter.minimumHeight() == 750
+        assert window.review_scroll_area.widget().minimumHeight() == 780
+        assert window.candidate_table.maximumHeight() == 150
         assert window.review_splitter.widget(0).isHidden() is True
 
         window.review_splitter.setSizes([0, 240, 520])

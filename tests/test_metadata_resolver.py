@@ -80,6 +80,26 @@ class FakeChatGPTArtworkSuggester:
         ]
 
 
+class CloseScoreChatGPTSuggester:
+    def suggest(
+        self,
+        *,
+        info: dict,
+        reference: TrackMetadata,
+        candidates: list[MetadataCandidate],
+        log=None,
+    ) -> list[MetadataCandidate]:
+        return [
+            MetadataCandidate(
+                provider="chatgpt",
+                score=0.77,
+                matched_fields=("title", "artist"),
+                metadata=TrackMetadata(title="ray", artist="ゆう。"),
+                raw={"prefer_initial_metadata": True},
+            )
+        ]
+
+
 def test_soundcloud_resolver_trusts_native_metadata() -> None:
     resolver = MetadataResolver(ytmusic_provider_factory=lambda **_: FailingYTMusicProvider())
 
@@ -347,4 +367,28 @@ def test_youtube_resolver_adds_chatgpt_fallback_as_review_candidate() -> None:
     assert any(candidate.provider == "chatgpt" for candidate in resolution.candidates)
     assert resolution.metadata.title == "Noisy Video Title"
     assert resolution.metadata.artist == "Uploader"
+    assert resolution.state == ReviewState.REVIEW_REQUIRED
+
+
+def test_youtube_resolver_orders_close_chatgpt_candidate_before_description_credits() -> None:
+    resolver = MetadataResolver(
+        ytmusic_provider_factory=lambda **_: EmptyYTMusicProvider(),
+        generative_suggester_factory=CloseScoreChatGPTSuggester,
+    )
+
+    resolution = resolver.resolve(
+        url="https://www.youtube.com/watch?v=A9W86K7i3mQ",
+        info={
+            "extractor_key": "Youtube",
+            "title": "ゆう。 - ray / ゆう。 - cover[オリジナルMV]",
+            "uploader": "ゆう。",
+            "channel": "ゆう。",
+            "description": "Song by ray\nArtist: BUMP OF CHICKEN\nCover: ゆう。",
+            "webpage_url": "https://www.youtube.com/watch?v=A9W86K7i3mQ",
+        },
+    )
+
+    assert resolution.candidates[0].provider == "chatgpt"
+    assert resolution.metadata.title == "ray"
+    assert resolution.metadata.artist == "ゆう。"
     assert resolution.state == ReviewState.REVIEW_REQUIRED

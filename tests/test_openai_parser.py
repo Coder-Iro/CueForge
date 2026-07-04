@@ -145,22 +145,22 @@ def test_openai_metadata_suggester_builds_review_candidate_with_bpm(tmp_path) ->
     assert "GPT-5.3-Codex-Spark 100% 남음" in candidate.raw["quota_status"]
     assert session.calls[0]["json"]["reasoning"] == {"effort": "medium"}
     assert session.calls[0]["json"]["tools"] == [{"type": "web_search", "search_context_size": "high"}]
-    assert "music metadata editor" in session.calls[0]["json"]["instructions"]
-    assert "BPM is an important DJ tag" in session.calls[0]["json"]["instructions"]
-    assert "not the original work" in session.calls[0]["json"]["instructions"]
-    assert "official single or album artwork" in session.calls[0]["json"]["instructions"]
-    assert "source-language display spelling" in session.calls[0]["json"]["instructions"]
+    assert "음악 메타데이터 편집자" in session.calls[0]["json"]["instructions"]
+    assert "BPM은 중요한 DJ 태그" in session.calls[0]["json"]["instructions"]
+    assert "원곡이 아니라 업로드된 버전 자체" in session.calls[0]["json"]["instructions"]
+    assert "공식 싱글 또는 앨범 아트워크" in session.calls[0]["json"]["instructions"]
+    assert "출처 언어 표기" in session.calls[0]["json"]["instructions"]
     prompt_context = json.loads(session.calls[0]["json"]["input"][0]["content"])
-    assert prompt_context["task"]["goal"] == "Return normalized music tag metadata for the audible uploaded recording."
-    assert "Do not transcribe or preserve YouTube/webpage display titles" in prompt_context["task"]["not_goal"]
+    assert prompt_context["task"]["goal"] == "실제로 들리는 업로드 녹음에 대한 정규화된 음악 태그 메타데이터를 반환하세요."
+    assert "YouTube/웹페이지 표시 제목" in prompt_context["task"]["not_goal"]
     assert "title" in prompt_context["field_policy"]
-    assert any("Do not return source.title" in rule for rule in prompt_context["field_policy"]["title"])
-    assert any("uploaded recording/version" in rule for rule in prompt_context["field_policy"]["bpm"])
-    assert any("Do not copy original/work/song BPM" in rule for rule in prompt_context["field_policy"]["bpm"])
-    assert any("official single or album artwork" in rule for rule in prompt_context["field_policy"]["cover_url"])
-    assert any("do not translate, romanize, or transliterate" in rule for rule in prompt_context["field_policy"]["artist"])
+    assert any("source.title" in rule and "그대로 반환하지 마세요" in rule for rule in prompt_context["field_policy"]["title"])
+    assert any("업로드된 녹음/버전" in rule for rule in prompt_context["field_policy"]["bpm"])
+    assert any("원곡/작품/곡 BPM을 복사하지 마세요" in rule for rule in prompt_context["field_policy"]["bpm"])
+    assert any("공식 싱글 또는 앨범 아트워크" in rule for rule in prompt_context["field_policy"]["cover_url"])
+    assert any("번역, 로마자화, 음역하지 마세요" in rule for rule in prompt_context["field_policy"]["artist"])
     assert any('"Noisy video" BPM' in query for query in prompt_context["suggested_bpm_search_queries"])
-    assert any("parser hypotheses" in rule for rule in prompt_context["candidate_policy"])
+    assert any("파서 가설" in rule for rule in prompt_context["candidate_policy"])
     assert "max_output_tokens" not in session.calls[0]["json"]
     assert session.calls[0]["headers"]["ChatGPT-Account-ID"] == "acct_test"
     assert session.calls[0]["stream"] is True
@@ -217,7 +217,7 @@ def test_openai_metadata_suggester_keeps_cover_url_for_cache_stage_while_prompt_
     assert candidate.metadata.cover_url == signed_url.rstrip(":")
     assert "cover_url" in candidate.matched_fields
     request = session.calls[0]["json"]
-    assert "Do not return expiring" in request["instructions"]
+    assert "temporary 아트워크 URL은 반환하지 마세요" in request["instructions"]
     prompt_context = json.loads(request["input"][0]["content"])
     assert any("X-Amz" in rule for rule in prompt_context["field_policy"]["cover_url"])
 

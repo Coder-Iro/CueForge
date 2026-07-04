@@ -1439,19 +1439,75 @@ def test_settings_are_saved_when_leaving_settings_tab(tmp_path, monkeypatch) -> 
         app.processEvents()
 
 
-def test_first_run_opens_onboarding_and_can_complete(tmp_path) -> None:
+def test_first_run_onboarding_requires_both_account_logins_to_complete(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])
     settings = _test_settings(tmp_path)
     window = MainWindow(settings=settings)
     try:
         assert window.onboarding_dialog is not None
         assert window.onboarding_dialog.isVisible()
+        assert window.onboarding_dialog.done_button.isEnabled() is False
+        assert window.onboarding_dialog.skip_button.isEnabled() is True
+        assert "CLI 도구" in window.onboarding_dialog.prepare_status_label.text()
+
+        window.onboarding_dialog._complete()
+        app.processEvents()
+
+        assert settings.value("onboarding/completed", False) is False
+        assert window.onboarding_dialog is not None
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_first_run_onboarding_can_complete_after_both_accounts_and_cli_tools_are_ready(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+
+    def fake_find_executable(name: str, *, explicit_path=None, root=None) -> DependencyStatus:
+        return DependencyStatus(name=name, path=tmp_path / f"{name}.exe", source="PATH")
+
+    monkeypatch.setattr("cueforge.gui.main_window.find_executable", fake_find_executable)
+    window = MainWindow(settings=settings)
+    try:
+        assert window.onboarding_dialog is not None
+        window._openai_oauth_connected = lambda: True
+        window._ytmusic_oauth_connected = lambda: True
+        window._refresh_onboarding_account_actions()
+
+        assert window.onboarding_dialog.done_button.isEnabled() is True
+        assert window.onboarding_dialog.skip_button.isEnabled() is False
 
         window.onboarding_dialog._complete()
         app.processEvents()
 
         assert settings.value("onboarding/completed") is True
         assert window.onboarding_dialog is None
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_first_run_onboarding_still_requires_cli_tools_after_both_accounts_are_connected(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+
+    def fake_find_executable(name: str, *, explicit_path=None, root=None) -> DependencyStatus:
+        if name == "ffmpeg":
+            return DependencyStatus(name=name, path=tmp_path / "ffmpeg.exe", source="PATH")
+        return DependencyStatus(name=name, path=None, source="missing")
+
+    monkeypatch.setattr("cueforge.gui.main_window.find_executable", fake_find_executable)
+    window = MainWindow(settings=settings)
+    try:
+        assert window.onboarding_dialog is not None
+        window._openai_oauth_connected = lambda: True
+        window._ytmusic_oauth_connected = lambda: True
+        window._refresh_onboarding_account_actions()
+
+        assert window.onboarding_dialog.done_button.isEnabled() is False
+        assert window.onboarding_dialog.skip_button.isEnabled() is True
+        assert "CLI 도구" in window.onboarding_dialog.prepare_status_label.text()
     finally:
         window.close()
         app.processEvents()
@@ -1546,6 +1602,85 @@ def test_settings_can_reopen_onboarding(tmp_path) -> None:
 
         assert window.onboarding_dialog is not None
         assert window.onboarding_dialog.isVisible()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_onboarding_exposes_account_login_actions(tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    settings.setValue("onboarding/completed", True)
+    window = MainWindow(settings=settings)
+    calls: list[str] = []
+    try:
+        window._openai_oauth_connected = lambda: False
+        window._ytmusic_oauth_client_file = lambda: tmp_path / "google_oauth_client.json"
+        window._ytmusic_oauth_connected = lambda: False
+        window._connect_openai_oauth = lambda: calls.append("openai")
+        window._connect_google_oauth = lambda: calls.append("google")
+
+        window._open_onboarding()
+        app.processEvents()
+
+        dialog = window.onboarding_dialog
+        assert dialog is not None
+        assert dialog.account_action_buttons["ChatGPT"].isEnabled() is True
+        assert dialog.account_action_buttons["Google"].isEnabled() is True
+        assert dialog.done_button.isEnabled() is False
+        assert dialog.skip_button.isEnabled() is True
+        assert dialog.account_status_labels["ChatGPT"].text() == "미연결"
+        assert dialog.account_status_labels["Google"].text() == "연결 가능"
+
+        dialog.account_action_buttons["ChatGPT"].click()
+        dialog.account_action_buttons["Google"].click()
+
+        assert calls == ["openai", "google"]
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_onboarding_account_actions_refresh_after_login(tmp_path, monkeypatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    settings = _test_settings(tmp_path)
+    settings.setValue("onboarding/completed", True)
+
+    def fake_find_executable(name: str, *, explicit_path=None, root=None) -> DependencyStatus:
+        return DependencyStatus(name=name, path=tmp_path / f"{name}.exe", source="PATH")
+
+    monkeypatch.setattr("cueforge.gui.main_window.find_executable", fake_find_executable)
+    window = MainWindow(settings=settings)
+    try:
+        window._openai_oauth_connected = lambda: False
+        window._ytmusic_oauth_client_file = lambda: tmp_path / "google_oauth_client.json"
+        window._ytmusic_oauth_connected = lambda: False
+        window._connect_openai_oauth = lambda: None
+        window._connect_google_oauth = lambda: None
+        window._open_onboarding()
+        app.processEvents()
+        dialog = window.onboarding_dialog
+        assert dialog is not None
+
+        window._openai_oauth_connected = lambda: True
+        window._openai_oauth_account_label = lambda: "dj@example.com"
+        window._refresh_onboarding_account_actions()
+
+        assert dialog.account_status_labels["ChatGPT"].text() == "연결됨: dj@example.com"
+        assert dialog.account_action_buttons["ChatGPT"].text() == "연결됨"
+        assert dialog.account_action_buttons["ChatGPT"].isEnabled() is False
+        assert dialog.done_button.isEnabled() is False
+        assert dialog.skip_button.isEnabled() is True
+
+        window._ytmusic_oauth_connected = lambda: True
+        window._google_oauth_account_label = lambda: "yt@example.com"
+        window._refresh_onboarding_account_actions()
+
+        assert dialog.account_status_labels["Google"].text() == "연결됨: yt@example.com"
+        assert dialog.account_action_buttons["Google"].text() == "연결됨"
+        assert dialog.account_action_buttons["Google"].isEnabled() is False
+        assert dialog.done_button.isEnabled() is True
+        assert dialog.skip_button.isEnabled() is False
     finally:
         window.close()
         app.processEvents()

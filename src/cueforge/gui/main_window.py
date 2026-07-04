@@ -6,7 +6,7 @@ import re
 import sys
 import threading
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -109,6 +109,15 @@ _PIPELINE_STATUSES = (
     DownloadStatus.DONE,
     DownloadStatus.FAILED,
 )
+
+
+@dataclass(slots=True)
+class OnboardingAccountAction:
+    name: str
+    status: str
+    button_text: str
+    callback: Callable[[], None]
+    enabled: bool
 
 
 class JobWorker(QThread):
@@ -485,17 +494,22 @@ class OnboardingDialog(QDialog):
         prepare_steps: list[OnboardingPrepareStep],
         auto_prepare: bool,
         on_done: Callable[[], None],
+        account_actions: list[OnboardingAccountAction] | None = None,
+        can_complete: bool = True,
     ) -> None:
         super().__init__(parent)
         self._on_done = on_done
         self._prepare_steps = prepare_steps
         self._auto_prepare = auto_prepare
+        self._can_complete = can_complete
         self._can_skip = not prepare_steps
         self._prepare_started = False
         self._prepare_worker: OnboardingPrepareWorker | None = None
+        self.account_status_labels: dict[str, QLabel] = {}
+        self.account_action_buttons: dict[str, QPushButton] = {}
         self.setWindowTitle("초기 환경 점검")
         self.setWindowModality(Qt.WindowModality.ApplicationModal)
-        self.resize(560, 420)
+        self.resize(640, 520)
 
         layout = QVBoxLayout(self)
         intro_text = (
@@ -523,6 +537,25 @@ class OnboardingDialog(QDialog):
             optional_layout.addRow(name, label)
         layout.addWidget(optional_group)
 
+        if account_actions:
+            account_group = QGroupBox("계정 연결")
+            account_layout = QFormLayout(account_group)
+            for action in account_actions:
+                row = QWidget()
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                status_label = QLabel(action.status)
+                status_label.setWordWrap(True)
+                row_layout.addWidget(status_label, 1)
+                button = QPushButton(action.button_text)
+                button.setEnabled(action.enabled)
+                button.clicked.connect(action.callback)
+                row_layout.addWidget(button)
+                self.account_status_labels[action.name] = status_label
+                self.account_action_buttons[action.name] = button
+                account_layout.addRow(action.name, row)
+            layout.addWidget(account_group)
+
         self.prepare_status_label = QLabel(self._initial_prepare_status())
         self.prepare_status_label.setWordWrap(True)
         layout.addWidget(self.prepare_status_label)
@@ -536,10 +569,11 @@ class OnboardingDialog(QDialog):
         action_row.addStretch(1)
         self.skip_button = QPushButton("건너뛰기")
         self.skip_button.setVisible(self._can_skip)
-        self.skip_button.setEnabled(self._can_skip)
+        self.skip_button.setEnabled(self._can_skip and not self._can_complete)
         self.skip_button.clicked.connect(self.reject)
         action_row.addWidget(self.skip_button)
         self.done_button = QPushButton("준비 후 시작" if self._prepare_steps else "확인")
+        self.done_button.setEnabled(self._can_complete)
         self.done_button.clicked.connect(self._complete)
         action_row.addWidget(self.done_button)
         layout.addLayout(action_row)
@@ -554,7 +588,25 @@ class OnboardingDialog(QDialog):
             return
         super().reject()
 
+    def update_account_action(self, action: OnboardingAccountAction) -> None:
+        status_label = self.account_status_labels.get(action.name)
+        if status_label:
+            status_label.setText(action.status)
+        button = self.account_action_buttons.get(action.name)
+        if button:
+            button.setText(action.button_text)
+            button.setEnabled(action.enabled)
+
+    def update_completion_enabled(self, enabled: bool) -> None:
+        self._can_complete = enabled
+        if not (self._prepare_worker and self._prepare_worker.isRunning()):
+            self.done_button.setEnabled(enabled)
+            self.skip_button.setEnabled(self._can_skip and not enabled)
+        self.prepare_status_label.setText(self._initial_prepare_status())
+
     def _complete(self) -> None:
+        if not self._can_complete:
+            return
         if self._prepare_steps:
             self._start_prepare()
             return
@@ -582,14 +634,17 @@ class OnboardingDialog(QDialog):
     def _prepare_succeeded(self) -> None:
         self.prepare_status_label.setText("필수 구성 요소 준비 완료")
         self._set_prepare_progress(100.0)
-        self._on_done()
-        self.accept()
+        if self._can_complete:
+            self._on_done()
+            self.accept()
+            return
+        self.done_button.setEnabled(False)
 
     def _prepare_failed(self, message: str) -> None:
         self.prepare_status_label.setText(f"필수 구성 요소 준비 실패: {message}")
         QMessageBox.warning(self, "초기 준비 실패", message)
-        self.skip_button.setEnabled(self._can_skip)
-        self.done_button.setEnabled(True)
+        self.skip_button.setEnabled(self._can_skip and not self._can_complete)
+        self.done_button.setEnabled(self._can_complete)
         self.prepare_progress_bar.setRange(0, 100)
 
     def _set_prepare_progress(self, value: object) -> None:
@@ -609,6 +664,8 @@ class OnboardingDialog(QDialog):
         worker.deleteLater()
 
     def _initial_prepare_status(self) -> str:
+        if not self._can_complete:
+            return "ChatGPT, Google 계정과 CLI 도구가 모두 준비되면 확인할 수 있습니다. 나중에 설정하려면 건너뛰세요."
         if not self._prepare_steps:
             return "추가 다운로드가 필요하지 않습니다."
         labels = ", ".join(label for label, _step in self._prepare_steps)
@@ -1597,6 +1654,7 @@ class MainWindow(QMainWindow):
         if self.openai_oauth_disconnect_button:
             self.openai_oauth_disconnect_button.setVisible(is_connected)
             self.openai_oauth_disconnect_button.setEnabled(is_connected and not is_connecting)
+        self._refresh_onboarding_account_actions()
 
     def _openai_oauth_token_file(self) -> Path:
         return default_openai_codex_oauth_token_path()
@@ -1763,6 +1821,7 @@ class MainWindow(QMainWindow):
         if self.google_oauth_disconnect_button:
             self.google_oauth_disconnect_button.setVisible(is_connected)
             self.google_oauth_disconnect_button.setEnabled(is_connected and not is_connecting)
+        self._refresh_onboarding_account_actions()
 
     def _ytmusic_oauth_client_file(self) -> Path | None:
         return find_ytmusic_oauth_client_file(app_root())
@@ -1840,6 +1899,8 @@ class MainWindow(QMainWindow):
             prepare_steps=self._onboarding_prepare_steps(),
             auto_prepare=QApplication.platformName() != "offscreen",
             on_done=self._complete_onboarding,
+            account_actions=self._onboarding_account_actions(),
+            can_complete=self._onboarding_can_complete(),
         )
         dialog.finished.connect(lambda _result: self._onboarding_finished(dialog))
         self.onboarding_dialog = dialog
@@ -1873,6 +1934,67 @@ class MainWindow(QMainWindow):
             ("Google OAuth", google_oauth),
             ("YTMusic 인증", ytmusic_auth),
         ]
+
+    def _onboarding_account_actions(self) -> list[OnboardingAccountAction]:
+        openai_connected = self._openai_oauth_connected()
+        openai_connecting = bool(self.openai_oauth_worker and self.openai_oauth_worker.isRunning())
+        openai_label = self._openai_oauth_account_label() if openai_connected else ""
+        if openai_connecting:
+            openai_status = "브라우저에서 ChatGPT 계정 승인을 완료하세요."
+        elif openai_connected:
+            openai_status = f"연결됨: {openai_label}" if openai_label else "연결됨"
+        else:
+            openai_status = "미연결"
+
+        google_client_file = self._ytmusic_oauth_client_file()
+        google_connected = self._ytmusic_oauth_connected()
+        google_connecting = bool(self.google_oauth_worker and self.google_oauth_worker.isRunning())
+        google_label = self._google_oauth_account_label() if google_connected else ""
+        if google_connecting:
+            google_status = "브라우저에서 Google 계정 승인을 완료하세요."
+        elif google_connected:
+            google_status = f"연결됨: {google_label}" if google_label else "연결됨"
+        elif google_client_file:
+            google_status = "연결 가능"
+        else:
+            google_status = "OAuth 클라이언트 없음"
+
+        return [
+            OnboardingAccountAction(
+                name="ChatGPT",
+                status=openai_status,
+                button_text="연결됨" if openai_connected else "연결",
+                callback=self._connect_openai_oauth,
+                enabled=not openai_connected and not openai_connecting,
+            ),
+            OnboardingAccountAction(
+                name="Google",
+                status=google_status,
+                button_text="연결됨" if google_connected else "연결",
+                callback=self._connect_google_oauth,
+                enabled=bool(google_client_file) and not google_connected and not google_connecting,
+            ),
+        ]
+
+    def _onboarding_can_complete(self) -> bool:
+        return (
+            self._openai_oauth_connected()
+            and self._ytmusic_oauth_connected()
+            and self._onboarding_dependencies_ready()
+        )
+
+    def _onboarding_dependencies_ready(self) -> bool:
+        ffmpeg = find_executable("ffmpeg", explicit_path=_optional_path(self.ffmpeg_path_input.text()))
+        deno = find_executable("deno")
+        return ffmpeg.available and deno.available
+
+    def _refresh_onboarding_account_actions(self) -> None:
+        dialog = self.onboarding_dialog
+        if not dialog or not dialog.isVisible():
+            return
+        for action in self._onboarding_account_actions():
+            dialog.update_account_action(action)
+        dialog.update_completion_enabled(self._onboarding_can_complete())
 
     def _onboarding_prepare_steps(self) -> list[OnboardingPrepareStep]:
         return []

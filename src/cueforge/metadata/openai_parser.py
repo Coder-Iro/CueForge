@@ -152,9 +152,10 @@ def _system_instructions() -> str:
         "Your job is to identify the audible recording and return normalized tag fields. "
         "The source page title, uploader, channel, and description are noisy evidence, not fields to copy. "
         "Prefer concise tags a DJ would want in Rekordbox/ID3 over platform display text. "
-        "BPM is an important DJ tag: make a dedicated effort to find a practical tempo value with web search. "
+        "BPM is an important DJ tag: make a dedicated effort to find a tempo value for the uploaded recording with web search. "
         "Never conclude that BPM is unknown before trying the suggested_bpm_search_queries from the user context. "
-        "For Japanese songs, search Japanese tempo terms such as BPM（テンポ）, テンポ, and 原曲BPM; "
+        "For cover, live, remix, or performance uploads, BPM must describe that uploaded version, not the original work; return null if only original-song BPM is available. "
+        "For original Japanese recordings, search Japanese tempo terms such as BPM（テンポ）, テンポ, and 原曲BPM; "
         "tempo sources such as ChordWiki, KeyTube, Chord Rinne, Tunebat, SongBPM, and chord/score pages are acceptable evidence. "
         "For original recordings, prefer official single or album artwork over YouTube/platform thumbnails when returning cover_url. "
         "Do not return expiring, signed, presigned, tokenized, or temporary artwork URLs such as AWS S3 X-Amz-* links. "
@@ -190,6 +191,7 @@ def _prompt_context(info: dict[str, Any], reference: TrackMetadata, candidates: 
             "url": str(info.get("webpage_url") or info.get("original_url") or ""),
             "extractor": str(info.get("extractor_key") or info.get("extractor") or ""),
             "id": str(info.get("id") or ""),
+            "probable_cover_upload": _probable_cover_upload(info),
             "title": str(info.get("title") or ""),
             "fulltitle": str(info.get("fulltitle") or ""),
             "track": str(info.get("track") or ""),
@@ -225,11 +227,12 @@ def _prompt_context(info: dict[str, Any], reference: TrackMetadata, candidates: 
                 "Do not use the YouTube upload date as release_date unless the upload itself is the release and no better date exists.",
             ],
             "bpm": [
-                "Actively search for a BPM/tempo value; do not omit BPM just because the source is a YouTube cover.",
+                "Actively search for a BPM/tempo value for the uploaded recording/version.",
                 "Try suggested_bpm_search_queries before returning bpm null.",
                 "Prefer the exact uploaded recording/version BPM when available.",
-                "For covers or performances, if exact BPM is unavailable but the original/work BPM is widely agreed and the upload gives no evidence of a tempo change, return that practical BPM and explain the basis in reason.",
-                "Leave bpm null only when targeted BPM searches find no credible value or credible sources materially disagree.",
+                "If source.probable_cover_upload is true, return bpm only when credible evidence describes this cover/upload/performance/version.",
+                "Do not copy original/work/song BPM into a cover, live performance, remix, or other non-original upload.",
+                "Leave bpm null when targeted BPM searches find only original-song BPM, no credible uploaded-version BPM, or materially disagreeing sources.",
             ],
             "cover_url": [
                 "For original recordings, actively look for official single or album artwork from credible music sources.",
@@ -282,23 +285,36 @@ def _bpm_search_queries(info: dict[str, Any], reference: TrackMetadata, candidat
             str(info.get("channel") or ""),
         ]
     )
+    is_cover_upload = _probable_cover_upload(info)
     queries: list[str] = []
     for title in titles[:3]:
         if not title:
             continue
         if artists:
             queries.append(f'"{title}" "{artists[0]}" BPM')
+            if is_cover_upload:
+                queries.append(f'"{title}" "{artists[0]}" cover BPM')
+                queries.append(f'"{title}" "{artists[0]}" 歌ってみた BPM')
         queries.extend(
             [
                 f'"{title}" BPM',
                 f'"{title}" BPM テンポ',
-                f'"{title}" 原曲BPM',
                 f'"{title}" ChordWiki BPM',
                 f'"{title}" KeyTube BPM',
                 f'"{title}" Tunebat',
             ]
         )
+        if not is_cover_upload:
+            queries.append(f'"{title}" 原曲BPM')
     return _dedupe_preserving_order(queries)[:12]
+
+
+def _probable_cover_upload(info: dict[str, Any]) -> bool:
+    source = " ".join(
+        str(info.get(key) or "")
+        for key in ("fulltitle", "title", "track", "description")
+    ).casefold()
+    return any(token in source for token in ("cover", "커버", "歌ってみた", "covered by"))
 
 
 def _searchable_source_title(value: str) -> str:

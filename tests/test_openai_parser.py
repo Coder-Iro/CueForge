@@ -147,6 +147,7 @@ def test_openai_metadata_suggester_builds_review_candidate_with_bpm(tmp_path) ->
     assert session.calls[0]["json"]["tools"] == [{"type": "web_search", "search_context_size": "high"}]
     assert "music metadata editor" in session.calls[0]["json"]["instructions"]
     assert "BPM is an important DJ tag" in session.calls[0]["json"]["instructions"]
+    assert "not the original work" in session.calls[0]["json"]["instructions"]
     assert "official single or album artwork" in session.calls[0]["json"]["instructions"]
     assert "source-language display spelling" in session.calls[0]["json"]["instructions"]
     prompt_context = json.loads(session.calls[0]["json"]["input"][0]["content"])
@@ -154,7 +155,8 @@ def test_openai_metadata_suggester_builds_review_candidate_with_bpm(tmp_path) ->
     assert "Do not transcribe or preserve YouTube/webpage display titles" in prompt_context["task"]["not_goal"]
     assert "title" in prompt_context["field_policy"]
     assert any("Do not return source.title" in rule for rule in prompt_context["field_policy"]["title"])
-    assert any("do not omit BPM just because the source is a YouTube cover" in rule for rule in prompt_context["field_policy"]["bpm"])
+    assert any("uploaded recording/version" in rule for rule in prompt_context["field_policy"]["bpm"])
+    assert any("Do not copy original/work/song BPM" in rule for rule in prompt_context["field_policy"]["bpm"])
     assert any("official single or album artwork" in rule for rule in prompt_context["field_policy"]["cover_url"])
     assert any("do not translate, romanize, or transliterate" in rule for rule in prompt_context["field_policy"]["artist"])
     assert any('"Noisy video" BPM' in query for query in prompt_context["suggested_bpm_search_queries"])
@@ -269,6 +271,9 @@ def test_openai_metadata_suggester_includes_bpm_search_queries_in_primary_reques
     prompt_context = json.loads(session.calls[0]["json"]["input"][0]["content"])
     assert any('"Cover Song" BPM' in query for query in prompt_context["suggested_bpm_search_queries"])
     assert any('"Cover Song" BPM テンポ' in query for query in prompt_context["suggested_bpm_search_queries"])
+    assert any('"Cover Song" "Cover Singer" cover BPM' in query for query in prompt_context["suggested_bpm_search_queries"])
+    assert prompt_context["source"]["probable_cover_upload"] is True
+    assert not any("原曲BPM" in query for query in prompt_context["suggested_bpm_search_queries"])
     assert session.calls[0]["json"]["text"]["format"]["name"] == "cueforge_music_metadata"
 
 

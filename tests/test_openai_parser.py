@@ -150,6 +150,7 @@ def test_openai_metadata_suggester_builds_review_candidate_with_bpm(tmp_path) ->
     assert "원곡이 아니라 업로드된 버전 자체" in session.calls[0]["json"]["instructions"]
     assert "공식 싱글 또는 앨범 아트워크" in session.calls[0]["json"]["instructions"]
     assert "출처 언어 표기" in session.calls[0]["json"]["instructions"]
+    assert "대표 표기 하나만" in session.calls[0]["json"]["instructions"]
     prompt_context = json.loads(session.calls[0]["json"]["input"][0]["content"])
     assert prompt_context["task"]["goal"] == "실제로 들리는 업로드 녹음에 대한 정규화된 음악 태그 메타데이터를 반환하세요."
     assert "YouTube/웹페이지 표시 제목" in prompt_context["task"]["not_goal"]
@@ -159,6 +160,7 @@ def test_openai_metadata_suggester_builds_review_candidate_with_bpm(tmp_path) ->
     assert any("원곡/작품/곡 BPM을 복사하지 마세요" in rule for rule in prompt_context["field_policy"]["bpm"])
     assert any("공식 싱글 또는 앨범 아트워크" in rule for rule in prompt_context["field_policy"]["cover_url"])
     assert any("번역, 로마자화, 음역하지 마세요" in rule for rule in prompt_context["field_policy"]["artist"])
+    assert any("텐코 시부키 TENKO SHIBUKI" in rule for rule in prompt_context["field_policy"]["artist"])
     assert any('"Noisy video" BPM' in query for query in prompt_context["suggested_bpm_search_queries"])
     assert any("파서 가설" in rule for rule in prompt_context["candidate_policy"])
     assert "max_output_tokens" not in session.calls[0]["json"]

@@ -116,6 +116,13 @@ def test_clean_metadata_keeps_cached_cover_path_as_tagging_source() -> None:
     assert metadata.normalized().cover_source == "cached"
 
 
+def test_clean_metadata_removes_bilingual_artist_alias_noise() -> None:
+    assert TrackMetadata(artist="텐코 시부키 TENKO SHIBUKI").normalized().artist == "텐코 시부키"
+    assert TrackMetadata(artist="Charming Jo (조매력)").normalized().artist == "조매력"
+    assert TrackMetadata(artist="조매력 (Charming Jo)").normalized().artist == "조매력"
+    assert TrackMetadata(artist="ryo (supercell)").normalized().artist == "ryo (supercell)"
+
+
 def test_merge_metadata_user_values_win() -> None:
     fallback = TrackMetadata(title="Video Title", artist="Uploader")
     youtube = TrackMetadata(title="YT Title", artist="YT Artist", album="YT Album")
@@ -139,6 +146,27 @@ def test_merge_metadata_user_values_win() -> None:
     assert resolved.album == "YT Album"
     assert resolved.genre == "House"
     assert state == ReviewState.AUTO_APPROVED
+
+
+def test_merge_metadata_prefers_chatgpt_when_candidate_scores_tie() -> None:
+    hint = MetadataCandidate(
+        provider="title_cover",
+        score=0.78,
+        matched_fields=("title", "artist"),
+        metadata=TrackMetadata(title="Hint Title", artist="Hint Artist"),
+    )
+    chatgpt = MetadataCandidate(
+        provider="chatgpt",
+        score=0.78,
+        matched_fields=("title", "artist"),
+        metadata=TrackMetadata(title="ChatGPT Title", artist="ChatGPT Artist"),
+    )
+
+    resolved, state = merge_metadata(candidates=[hint, chatgpt])
+
+    assert resolved.title == "ChatGPT Title"
+    assert resolved.artist == "ChatGPT Artist"
+    assert state == ReviewState.REVIEW_REQUIRED
 
 
 def test_low_confidence_candidate_requires_review() -> None:
